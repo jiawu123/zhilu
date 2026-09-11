@@ -7,3 +7,10 @@ coverage/
 !.env.example
 data/
 *.log
+.DS_Store
+node_modules/
+dist/
+.vite/
+coverage/
+data/
+*.tsbuildinfo

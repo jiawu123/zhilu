@@ -1,0 +1,10 @@
+{
+  "id": "event-hours-6",
+  "type": "constraint_changed",
+  "title": "每周可投入时间减少",
+  "description": "每周投入从 12 小时降到 6 小时",
+  "targetNodeIds": [],
+  "occurredAt": "2026-09-21T08:00:00.000Z",
+  "changes": { "weeklyHours": 6 },
+  "confirmed": true
+}
