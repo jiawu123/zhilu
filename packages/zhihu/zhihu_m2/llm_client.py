@@ -1,13 +1,16 @@
 """Call the official DeepSeek API. Importing this module sends no request.
 
 Scope: transport + JSON-object parsing only. This is not an evidence validator.
-API keys are read from the current process, never written to source files.
+API keys use the current environment, supplemented by package-local .env.
+Importing does not load .env; credentials are never written to source files.
 """
 import json
 import os
 from typing import Any
 
 import httpx
+
+from zhihu_m2.config import load_local_env
 
 
 MODEL = "deepseek-v4-pro"
@@ -73,9 +76,13 @@ def generate_json(
     if type(max_tokens) is not int or max_tokens < 1:
         raise ValueError("max_tokens must be a positive integer.")
 
+    load_local_env()
     api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
     if not api_key:
-        raise LLMError("Set DEEPSEEK_API_KEY in this terminal before calling the model.")
+        raise LLMError(
+            "Set DEEPSEEK_API_KEY in the environment or packages/zhihu/.env "
+            "before calling the model."
+        )
 
     payload = {
         "model": MODEL,

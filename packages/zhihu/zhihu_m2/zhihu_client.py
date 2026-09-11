@@ -1,8 +1,11 @@
 import os
 import json
+import shutil
 import subprocess
 
 from pathlib import Path
+
+from zhihu_m2.config import PACKAGE_ROOT, load_local_env
 
 
 def validate_count(count):
@@ -38,7 +41,7 @@ def extract_items(response):
 
     if response.get("Code") != 0:
         raise RuntimeError(
-            response.get("Message", "Zhihu search failed")
+            "Zhihu search failed. Check CLI authorization and service status."
         )
 
     data = response.get("Data", {})
@@ -47,37 +50,39 @@ def extract_items(response):
 
 
 def get_cli_path():
-    """
-    Find the locally installed Zhihu CLI executable.
+    """Find a local CLI without depending on a particular Windows username.
 
-    Returns:
-        Path to zhihu-cli.exe.
-
-    Raises:
-        RuntimeError: If LOCALAPPDATA cannot be found.
-        FileNotFoundError: If Zhihu CLI is not installed.
+    Order: explicit ZHIHU_CLI_PATH, the existing Windows install location,
+    then PATH. Relative overrides are relative to packages/zhihu, not cwd.
+    This locates the binary only; it does not verify authentication.
     """
+    load_local_env()
+    configured = os.environ.get("ZHIHU_CLI_PATH", "").strip()
+    if configured:
+        cli_path = Path(configured).expanduser()
+        if not cli_path.is_absolute():
+            cli_path = PACKAGE_ROOT / cli_path
+        if not cli_path.is_file():
+            raise FileNotFoundError(
+                "ZHIHU_CLI_PATH does not point to an existing CLI executable."
+            )
+        return cli_path
 
     local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        cli_path = Path(local_app_data) / "ZhihuCLI" / "current" / "zhihu-cli.exe"
+        if cli_path.is_file():
+            return cli_path
 
-    if local_app_data is None:
-        raise RuntimeError(
-            "LOCALAPPDATA environment variable was not found"
-        )
+    discovered = shutil.which("zhihu-cli")
+    if discovered:
+        return Path(discovered)
 
-    cli_path = (
-        Path(local_app_data)
-        / "ZhihuCLI"
-        / "current"
-        / "zhihu-cli.exe"
+    raise FileNotFoundError(
+        "Zhihu CLI was not found. Install the official CLI, or set "
+        "ZHIHU_CLI_PATH in packages/zhihu/.env to its executable path."
     )
 
-    if not cli_path.exists():
-        raise FileNotFoundError(
-            f"Zhihu CLI not found at {cli_path}"
-        )
-
-    return cli_path
 
 def search_zhihu(query, count=5):
     """
@@ -108,18 +113,31 @@ def search_zhihu(query, count=5):
         str(count),
     ]
 
-    result = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
+    # No secret in command-line arguments, no shell, no automatic auth write.
+    # The CLI inherits the current process environment by default.
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Zhihu CLI timed out; no automatic retry was performed.") from None
+    except OSError:
+        raise RuntimeError("Unable to start Zhihu CLI. Check its installation and permissions.") from None
 
     if result.returncode != 0:
+        # Do not copy raw CLI output into exceptions: it can contain secrets.
         raise RuntimeError(
-            f"Zhihu CLI failed: {result.stderr}"
+            f"Zhihu CLI failed (exit code {result.returncode}). "
+            "Check CLI authorization, configuration, and connectivity."
         )
 
-    response = json.loads(result.stdout)
+    try:
+        response = json.loads(result.stdout)
+    except ValueError:
+        raise RuntimeError("Zhihu CLI returned invalid JSON.") from None
 
     return extract_items(response)

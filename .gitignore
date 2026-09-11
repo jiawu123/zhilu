@@ -7,3 +7,13 @@ coverage/
 !.env.example
 data/
 *.log
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Python local environment and caches
+.venv/
+__pycache__/
+.pytest_cache/
