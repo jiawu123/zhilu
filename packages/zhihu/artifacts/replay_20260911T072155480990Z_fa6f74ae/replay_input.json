@@ -1,0 +1,21 @@
+{
+  "query": "Agent Engineer 学习路线",
+  "goal": "8周内完成一个可运行、带基本测试的 Agent 小项目。",
+  "research_question": "在 Agent 开发练习中，可以怎样检验程序流程或逻辑是否按预期工作？",
+  "user_context": {
+    "python_level": "beginner",
+    "weekly_hours": 10,
+    "is_demo": true
+  },
+  "retrieved_at": "2026-09-10T06:44:00.382511+00:00",
+  "source": {
+    "id": "zhihu:Answer:7829587162879975942",
+    "provider": "zhihu",
+    "title": "怎么成为一个 ai agent 工程师? - 知乎",
+    "url": "https://www.zhihu.com/question/1936375725931361485/answer/2076621442737779822?utm_medium=openapi_platform&utm_source=cf621feb3f2d",
+    "author": "AI炼丹师",
+    "snippet": "可以看看我写的：《从零到一实现一个Coding Agent》系列教程\nCoding Agent = LLM + Protocol + Loop + Tools + State\n本教程共 24 章（知乎已发布前 18 章），分为 5 个阶段，从 30 行调用一次 LLM 到 750 行完整 Coding Agent，逐步拆解 AI 编程智能体的核心原理。\n专栏地址： 动手实现一个coding agent\nPart 0 · 序章\n第 00 章： 观察一次完整的 Agent 运行过程\n在写代码之前先看全貌：一次 \"读取文件并总结\" 的请求如何走完 LLM 调用 → 工具执行 → 结果返回的完整闭环。建立直觉，理解 Agent 不是魔法，就是一个循环。\nPart I · 模型与协议\n核心问题：如何调用 LLM？如何多轮对话？如何适配不同厂商？\n第 01 章： Hello LLM — 30 行代码调用大模型\n30 行 TypeScript 代码调用 Claude / GPT API 并获取回复。构建 Agent 的第一步——确认你能用代码拿到模型的输出。\n第 02 章： EventStream 事件流 — 流式输出的秘密\n实现流式输出，让模型回答逐字显示。理解 Server-Sent Events 协议和逐 token 渲染机制。\n第 03 章： 多轮对话 — 消息协议与记忆\n模型为什么不记得上一句话？解答 messages 数组累积、角色区分、上下文传递——多轮对话的本质是\"每次都把聊天记录全发过去\"。\n第 04 章： 多模型适配 — 一套代码切换不同厂商\nAnthropic 和 OpenAI 的 API 格式完全不同。用适配器模式实现一套代码无缝切换不同厂商。\n第 05 章： 模拟测试 — 不花钱验证 Agent 逻辑\n每次测试都调真实 API 太慢太贵。用 ScriptedModel 预设响应做确定性测试，零 API 费用验证 Agent 逻辑。\nPart II · 工具与循环\n核心问题：如何让 LLM 调用函数？如何实现 Agent Loop？\n第 06 章： Tool Use 工具调用 — 让 LLM 调用函数\nLLM 只能生成文本，怎样让它\"做事\"？实现工具调用协议：JSON Schema 声明工具、解析 tool_call、配对返回 tool_result。\n第 07 章： Agent Loop 循环引擎 — 从一次调用到自主循环",
+    "retrievedAt": "2026-09-10T06:44:00.382511+00:00",
+    "source_scope": "search_snippet"
+  }
+}
