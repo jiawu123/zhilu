@@ -24,3 +24,34 @@ docs                     PRD、分工与架构文档
 ```
 
 团队分工、模块边界和 Git 规则见 [`docs/team-and-repo-plan.md`](docs/team-and-repo-plan.md)。
+
+## 当前可运行纵切
+
+Jia / Core 第一版已经跑通：
+
+```text
+Demo Fixture → Plan Engine → 本地 API → Roadmap → Event → pending Diff → Commit
+```
+
+当前支持创建任意目标项目、6 个核心问题与 1 个条件化追问、User Context Card / Goal Contract 确认、Markdown/TXT 背景导入、本周焦点、节点编辑/改期/完成/新增/归档、节点级与时间约束事件、依据检查、确定性影响定位、Patch 审批、本地持久化、History，以及 JSON、Markdown、`.planbundle.zip` 导出。确认目标后先生成“研究准备版”；随后可用明确标注的 Mock Research 跑通 `Research Question → EvidencePack → 两条 Route → Roadmapper Draft → 用户确认 Baseline`。真实知乎执行器仍未合并，Mock 卡片不会伪装成知乎来源。
+
+## 本地运行
+
+```bash
+pnpm install
+pnpm dev
+```
+
+- Roadmap：`http://127.0.0.1:5173`
+- Local API：`http://127.0.0.1:8787`
+- Demo project：`agent-engineer-demo`
+
+验证命令：
+
+```bash
+pnpm typecheck
+pnpm test
+pnpm build
+```
+
+PRD 到代码之间已冻结的第一版规则见 [`docs/core-implementation-decisions.md`](docs/core-implementation-decisions.md)。
