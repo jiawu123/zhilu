@@ -1,5 +1,6 @@
 import {
   PLAN_SCHEMA_VERSION,
+  type BaselineProposal,
   type ImpactDiff,
   type PatchProposal,
   type PlanCommit,
@@ -111,6 +112,20 @@ export function validatePlan(plan: PlanState): ValidationResult {
   for (const node of plan.nodes) {
     if (node.milestoneId && !nodeIds.has(node.milestoneId)) {
       issues.push(issue("MISSING_MILESTONE", `节点 ${node.id} 的里程碑不存在`, `nodes.${node.id}.milestoneId`));
+    }
+  }
+
+  if (plan.research) {
+    const routeIds = new Set(plan.research.routeCandidates.map((route) => route.id));
+    if (!routeIds.has(plan.research.selectedRouteId)) {
+      issues.push(issue("UNKNOWN_SELECTED_ROUTE", `当前路线不存在：${plan.research.selectedRouteId}`, "research.selectedRouteId"));
+    }
+    for (const [index, route] of plan.research.routeCandidates.entries()) {
+      for (const evidenceId of route.evidenceIds) {
+        if (!evidenceIds.has(evidenceId)) {
+          issues.push(issue("MISSING_ROUTE_EVIDENCE", `候选路线 ${route.id} 引用了不存在的证据 ${evidenceId}`, `research.routeCandidates.${index}.evidenceIds`));
+        }
+      }
     }
   }
 
@@ -273,6 +288,36 @@ export function applyPatch(plan: PlanState, patch: PatchProposal, updatedAt: str
   assertValid(validatePatch(plan, patch));
   const next = applyPatchUnchecked(plan, patch);
   next.updatedAt = updatedAt;
+  return next;
+}
+
+/** 用户确认候选路线后，才把 Roadmapper 的完整预览写成下一版 Baseline。 */
+export function applyBaselineProposal(
+  plan: PlanState,
+  proposal: BaselineProposal,
+  routeId: string,
+  updatedAt: string,
+): PlanState {
+  if (proposal.projectId !== plan.projectId) {
+    throw new PlanEngineError([issue("PROJECT_MISMATCH", "Baseline 提案不属于当前项目", "projectId")]);
+  }
+  if (proposal.baseVersion !== plan.version) {
+    throw new PlanEngineError([
+      issue("VERSION_CONFLICT", `Baseline 基于版本 ${proposal.baseVersion}，当前版本是 ${plan.version}`, "baseVersion"),
+    ]);
+  }
+  const preview = proposal.previews.find((item) => item.routeId === routeId);
+  if (!preview) {
+    throw new PlanEngineError([issue("UNKNOWN_ROUTE", `候选路线不存在：${routeId}`, "routeId")]);
+  }
+  const next = structuredClone(preview.plan);
+  if (next.projectId !== plan.projectId || next.research?.runId !== proposal.researchRun.id || next.research.selectedRouteId !== routeId) {
+    throw new PlanEngineError([issue("BASELINE_PREVIEW_MISMATCH", "Baseline 预览与当前项目、研究运行或所选路线不一致", "previews")]);
+  }
+  next.version = plan.version + 1;
+  next.currentCommitId = String(next.version).padStart(6, "0");
+  next.updatedAt = updatedAt;
+  assertValid(validatePlan(next));
   return next;
 }
 

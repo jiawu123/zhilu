@@ -33,7 +33,7 @@ Jia / Core 第一版已经跑通：
 Demo Fixture → Plan Engine → 本地 API → Roadmap → Event → pending Diff → Commit
 ```
 
-当前支持本周焦点、节点编辑/改期/完成/新增/归档、节点级与时间约束事件、依据检查、确定性影响定位、Patch 审批、本地持久化、History，以及 JSON、Markdown、`.planbundle.zip` 导出。自动新排期与真实知乎检索尚未接入，页面中会明确显示此边界。
+当前支持创建任意目标项目、6 个核心问题与 1 个条件化追问、User Context Card / Goal Contract 确认、Markdown/TXT 背景导入、本周焦点、节点编辑/改期/完成/新增/归档、节点级与时间约束事件、依据检查、确定性影响定位、Patch 审批、本地持久化、History，以及 JSON、Markdown、`.planbundle.zip` 导出。确认目标后先生成“研究准备版”；随后可用明确标注的 Mock Research 跑通 `Research Question → EvidencePack → 两条 Route → Roadmapper Draft → 用户确认 Baseline`。真实知乎执行器仍未合并，Mock 卡片不会伪装成知乎来源。
 
 ## 本地运行
 

@@ -123,7 +123,17 @@ export interface PlanState {
   nodes: PlanNode[];
   relations: PlanRelation[];
   evidence: EvidenceCard[];
+  userContext?: UserContextCard;
+  goalContract?: GoalContract;
+  research?: PlanResearchState;
   updatedAt: string;
+}
+
+export interface PlanResearchState {
+  mode: "mock" | "live";
+  runId: string;
+  selectedRouteId: string;
+  routeCandidates: RouteCandidate[];
 }
 
 export type EventType =
@@ -191,6 +201,32 @@ export interface ValidationResult {
   issues: ValidationIssue[];
 }
 
+export interface UserContextCard {
+  currentSituation: string;
+  weeklyHours: number;
+  constraints: string[];
+  backgroundNotes?: string;
+  confirmed: boolean;
+}
+
+export interface GoalContract {
+  goal: string;
+  targetDate: string;
+  successCriteria: string[];
+  nonGoals: string[];
+  mustHaveOutcomes: string[];
+  tradeoffs: string[];
+  reviewCadence: "weekly" | "biweekly" | "monthly";
+  confirmed: boolean;
+}
+
+export interface CreateProjectInput {
+  userContext: UserContextCard;
+  goalContract: GoalContract;
+  adaptiveQuestion: string;
+  adaptiveAnswer: string;
+}
+
 export interface ImpactDiff {
   eventId: string;
   affectedNodeIds: string[];
@@ -232,14 +268,42 @@ export interface ResearchRequest {
 export interface EvidencePack {
   requestId: string;
   evidence: EvidenceCard[];
-  routeCandidates: Array<{
-    id: string;
-    title: string;
-    applicableWhen: string[];
-    evidenceIds: string[];
-    risks: string[];
-  }>;
+  routeCandidates: RouteCandidate[];
   unresolvedQuestions: string[];
+}
+
+export interface RouteCandidate {
+  id: string;
+  title: string;
+  summary: string;
+  applicableWhen: string[];
+  evidenceIds: string[];
+  risks: string[];
+}
+
+export interface ResearchRunResult {
+  id: string;
+  mode: "mock" | "live";
+  generatedAt: string;
+  questions: ResearchQuestionDraft[];
+  requests: ResearchRequest[];
+  evidencePacks: EvidencePack[];
+  routeCandidates: RouteCandidate[];
+}
+
+export interface BaselineRoutePreview {
+  routeId: string;
+  plan: PlanState;
+}
+
+export interface BaselineProposal {
+  id: string;
+  projectId: string;
+  baseVersion: number;
+  createdAt: string;
+  recommendedRouteId: string;
+  researchRun: ResearchRunResult;
+  previews: BaselineRoutePreview[];
 }
 
 export interface RoadmapView {

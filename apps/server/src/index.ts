@@ -3,20 +3,24 @@ import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { strToU8, zipSync } from "fflate";
 import type {
+  BaselineProposal,
+  CreateProjectInput,
   PatchProposal,
   PlanEvent,
   PlanNode,
   PlanNodeUpdate,
   PlanState,
 } from "@zhilu/contracts";
-import { decideWorkflow } from "@zhilu/agent-runtime";
+import { createMockBaselineProposal, createResearchReadyPlan, decideWorkflow, validateProjectCreationInput } from "@zhilu/agent-runtime";
 import {
   PlanEngineError,
+  applyBaselineProposal,
   applyPatch,
   calculateImpact,
   createCommit,
   projectView,
   validateEvent,
+  validatePlan,
 } from "@zhilu/plan-engine";
 import { PlanRepository } from "./repository";
 
@@ -64,6 +68,35 @@ async function route(
     return;
   }
 
+  if (request.method === "POST" && pathname === "/api/projects") {
+    const input = await readBody<CreateProjectInput>(request);
+    const now = new Date().toISOString();
+    const validation = validateProjectCreationInput(input, now.slice(0, 10));
+    if (!validation.valid) throw new PlanEngineError(validation.issues);
+    const projectId = `project-${crypto.randomUUID().slice(0, 8)}`;
+    const plan = createResearchReadyPlan(input, projectId, now);
+    const planValidation = validatePlan(plan);
+    if (!planValidation.valid) throw new PlanEngineError(planValidation.issues);
+    const baseline = createCommit(null, plan, {
+      id: plan.currentCommitId,
+      createdAt: now,
+      actor: "user",
+      reason: "用户确认 Goal Contract，建立研究准备版",
+    });
+    await planRepository.savePlan(plan);
+    await planRepository.saveCommit(projectId, baseline);
+    sendJson(response, 201, {
+      projectId,
+      plan,
+      view: projectView(plan),
+      history: [baseline],
+      pending: [],
+      baselineProposals: [],
+      workflow: decideWorkflow({ hasConfirmedGoal: true, hasConfirmedContext: true, plan: null }),
+    });
+    return;
+  }
+
   const projectMatch = pathname.match(/^\/api\/projects\/([^/]+)$/);
   if (request.method === "GET" && projectMatch) {
     const projectId = decodeURIComponent(requiredMatch(projectMatch, 1));
@@ -73,6 +106,62 @@ async function route(
       view: projectView(plan),
       history: await planRepository.getHistory(projectId),
       pending: await planRepository.getPending(projectId),
+      baselineProposals: await planRepository.getBaselineProposals(projectId),
+    });
+    return;
+  }
+
+  const mockResearchMatch = pathname.match(/^\/api\/projects\/([^/]+)\/research\/mock$/);
+  if (request.method === "POST" && mockResearchMatch) {
+    const projectId = decodeURIComponent(requiredMatch(mockResearchMatch, 1));
+    const plan = await planRepository.getPlan(projectId);
+    if (!plan.evidence.some((item) => item.riskTags.includes("等待知乎研究"))) {
+      throw new HttpError(409, "当前项目已经有 Baseline；需要新研究时请从 knowledge_gap Event 发起");
+    }
+    for (const existing of await planRepository.getBaselineProposals(projectId)) {
+      await planRepository.removeBaselineProposal(projectId, existing.id);
+    }
+    const now = new Date().toISOString();
+    const proposal = createMockBaselineProposal(plan, {
+      runId: uniqueId("research"),
+      proposalId: uniqueId("baseline"),
+      requestIdFactory: (index) => `rq-${String(index + 1).padStart(2, "0")}-${crypto.randomUUID().slice(0, 6)}`,
+      now,
+    });
+    for (const preview of proposal.previews) {
+      const validation = validatePlan(preview.plan);
+      if (!validation.valid) throw new PlanEngineError(validation.issues);
+    }
+    await planRepository.saveBaselineProposal(projectId, proposal);
+    sendJson(response, 202, proposal);
+    return;
+  }
+
+  const baselineApplyMatch = pathname.match(/^\/api\/projects\/([^/]+)\/baseline\/apply$/);
+  if (request.method === "POST" && baselineApplyMatch) {
+    const projectId = decodeURIComponent(requiredMatch(baselineApplyMatch, 1));
+    const { proposalId, routeId } = await readBody<{ proposalId: string; routeId: string }>(request);
+    const proposal = (await planRepository.getBaselineProposals(projectId)).find((item) => item.id === proposalId);
+    if (!proposal) throw new HttpError(404, `Baseline 提案不存在：${proposalId}`);
+    const plan = await planRepository.getPlan(projectId);
+    const now = new Date().toISOString();
+    const next = applyBaselineProposal(plan, proposal, routeId, now);
+    const route = proposal.researchRun.routeCandidates.find((item) => item.id === routeId);
+    const commit = createCommit(plan, next, {
+      id: next.currentCommitId,
+      createdAt: now,
+      actor: "user",
+      reason: `用户确认 Mock Research 路线：${route?.title ?? routeId}`,
+    });
+    await planRepository.savePlan(next);
+    await planRepository.saveCommit(projectId, commit);
+    await planRepository.removeBaselineProposal(projectId, proposal.id);
+    sendJson(response, 200, {
+      plan: next,
+      view: projectView(next),
+      history: await planRepository.getHistory(projectId),
+      pending: await planRepository.getPending(projectId),
+      baselineProposals: [],
     });
     return;
   }

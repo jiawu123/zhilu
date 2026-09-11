@@ -1,6 +1,6 @@
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { PatchProposal, PlanCommit, PlanEvent, PlanState } from "@zhilu/contracts";
+import type { BaselineProposal, PatchProposal, PlanCommit, PlanEvent, PlanState } from "@zhilu/contracts";
 import { createCommit } from "@zhilu/plan-engine";
 
 export interface PendingChange {
@@ -75,6 +75,27 @@ export class PlanRepository {
 
   async removePending(projectId: string, patchId: string): Promise<void> {
     await rm(join(this.projectRoot(projectId), "pending", `${patchId}.json`), { force: true });
+  }
+
+  async saveBaselineProposal(projectId: string, proposal: BaselineProposal): Promise<void> {
+    await writeJsonAtomic(join(this.projectRoot(projectId), "baseline-proposals", `${proposal.id}.json`), proposal);
+  }
+
+  async getBaselineProposals(projectId: string): Promise<BaselineProposal[]> {
+    const directory = join(this.projectRoot(projectId), "baseline-proposals");
+    try {
+      const files = (await readdir(directory)).filter((file) => file.endsWith(".json")).sort();
+      return await Promise.all(
+        files.map(async (file) => JSON.parse(await readFile(join(directory, file), "utf8")) as BaselineProposal),
+      );
+    } catch (error) {
+      if (isMissingFile(error)) return [];
+      throw error;
+    }
+  }
+
+  async removeBaselineProposal(projectId: string, proposalId: string): Promise<void> {
+    await rm(join(this.projectRoot(projectId), "baseline-proposals", `${proposalId}.json`), { force: true });
   }
 
   private planPath(projectId: string): string {
