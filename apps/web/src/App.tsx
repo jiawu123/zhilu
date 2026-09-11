@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties, type DragEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import type {
   BaselineProposal,
   CreateProjectInput,
@@ -12,7 +12,7 @@ import type {
   PlanState,
   RoadmapView,
 } from "@zhilu/contracts";
-import { shiftIsoDate, weeksFromDragDistance } from "./roadmap-date";
+import { positionDateInRange, shiftIsoDate, weeksFromDragDistance } from "./roadmap-date";
 import { getWeekFocusTasks } from "./roadmap-focus";
 import { Onboarding } from "./Onboarding";
 
@@ -38,6 +38,27 @@ interface WorkspacePayload {
 
 interface GraphPoint {
   id: string;
+  x: number;
+  y: number;
+}
+
+interface NodeDragState {
+  id: string;
+  pointerId: number;
+  startX: number;
+  currentX: number;
+  weeks: number;
+}
+
+interface CanvasPanState {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  originX: number;
+  originY: number;
+}
+
+interface PanOffset {
   x: number;
   y: number;
 }
@@ -304,7 +325,7 @@ export function App() {
 
       <RoadmapGraph workspace={workspace} selectedId={selectedId} focusId={focusTasks[0]?.id ?? null} pending={pending} onSelect={setSelectedId} onReschedule={(node, weeks) => void rescheduleNode(node, weeks)} />
 
-      <div className="canvas-hint"><span className="hint-dot" /> 点击路标，探索任务与它背后的知乎依据</div>
+      <div className="canvas-hint"><span className="hint-dot" /> 拖动画布查看全图 · 横向拖动路标按周改期</div>
       <div className="commit-whisper">v{workspace.plan.currentCommitId}</div>
       {researchPending && !pending && (
         <button className="research-beacon" onClick={() => setShowResearch(true)}>
@@ -373,9 +394,13 @@ function ResearchStudio({ proposal, selectedRouteId, busy, onClose, onRun, onSel
 }
 
 function RoadmapGraph({ workspace, selectedId, focusId, pending, onSelect, onReschedule }: { workspace: WorkspacePayload; selectedId: string | null; focusId: string | null; pending: PendingChange | null; onSelect: (id: string) => void; onReschedule: (node: PlanNode, weeks: number) => void }) {
-  const [dragging, setDragging] = useState<{ id: string; startX: number } | null>(null);
+  const [dragging, setDragging] = useState<NodeDragState | null>(null);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [panning, setPanning] = useState<CanvasPanState | null>(null);
+  const suppressClick = useRef(false);
   const tasks = workspace.view.milestones.flatMap((group) => group.tasks);
-  const points = buildGraphPoints(tasks);
+  const milestones = workspace.view.milestones.map((group) => group.milestone);
+  const points = buildGraphPoints(tasks, milestones);
   const pointMap = new Map(points.map((point) => [point.id, point]));
   const start = { id: "start", x: 70, y: 355 };
   const goal = { id: "goal", x: 1130, y: 270 };
@@ -392,9 +417,17 @@ function RoadmapGraph({ workspace, selectedId, focusId, pending, onSelect, onRes
   });
 
   return (
-    <main className="graph-viewport" aria-label="Roadmap 路线图">
+    <main
+      className={`graph-viewport ${panning ? "is-panning" : ""}`}
+      aria-label="Roadmap 路线图"
+      onPointerDown={(event) => beginCanvasPan(event, pan, setPanning)}
+      onPointerMove={(event) => moveCanvasPan(event, panning, setPan)}
+      onPointerUp={(event) => endCanvasPan(event, panning, setPanning)}
+      onPointerCancel={() => setPanning(null)}
+      onDoubleClick={(event) => { if (!(event.target as Element).closest("button")) setPan({ x: 0, y: 0 }); }}
+    >
       <div className="ambient ambient-one" /><div className="ambient ambient-two" />
-      <div className="graph-stage">
+      <div className="graph-stage" style={{ "--pan-x": `${pan.x}px`, "--pan-y": `${pan.y}px` } as CSSProperties}>
         <svg className="route-svg" viewBox={`0 0 ${canvasWidth} ${canvasHeight}`} role="img" aria-label={workspace.plan.title}>
           <defs>
             <linearGradient id="routeGradient" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stopColor="#f2b45a" /><stop offset="0.45" stopColor="#ff7e67" /><stop offset="1" stopColor="#8c7dff" /></linearGradient>
@@ -417,7 +450,7 @@ function RoadmapGraph({ workspace, selectedId, focusId, pending, onSelect, onRes
         </svg>
 
         {milestoneSpots.map((spot) => (
-          <button key={spot.milestone.id} className={`phase-label phase-label-${spot.index % 3}`} style={{ "--x": `${(spot.x / canvasWidth) * 100}%` } as CSSProperties} onClick={() => onSelect(spot.milestone.id)}>
+          <button key={spot.milestone.id} className={`phase-label phase-label-${spot.index % 3}`} style={{ "--x": `${(spot.x / canvasWidth) * 100}%` } as CSSProperties} onPointerDown={(event) => event.stopPropagation()} onClick={() => onSelect(spot.milestone.id)}>
             <span>0{spot.index + 1}</span><strong>{spot.milestone.title}</strong>
           </button>
         ))}
@@ -425,28 +458,27 @@ function RoadmapGraph({ workspace, selectedId, focusId, pending, onSelect, onRes
         {tasks.map((task, index) => {
           const point = pointMap.get(task.id); if (!point) return null;
           const affected = pending?.impact.affectedNodeIds.includes(task.id);
+          const dragX = dragging?.id === task.id ? dragging.currentX - dragging.startX : 0;
           return (
             <button
               key={task.id}
               className={`route-node status-${task.status} ${selectedId === task.id ? "is-selected" : ""} ${focusId === task.id ? "is-focus" : ""} ${affected ? "is-affected" : ""} ${dragging?.id === task.id ? "is-dragging" : ""}`}
-              style={{ "--x": `${(point.x / canvasWidth) * 100}%`, "--y": `${(point.y / canvasHeight) * 100}%`, "--delay": `${index * -0.55}s` } as CSSProperties}
-              draggable
+              style={{ "--x": `${(point.x / canvasWidth) * 100}%`, "--y": `${(point.y / canvasHeight) * 100}%`, "--delay": `${index * -0.55}s`, "--drag-x": `${dragX}px` } as CSSProperties}
               title="点击查看；水平拖动按周调整日期"
-              onClick={() => onSelect(task.id)}
-              onDragStart={(event) => beginNodeDrag(event, task.id, setDragging)}
-              onDragEnd={(event) => {
-                if (!dragging || dragging.id !== task.id) return;
-                const weeks = weeksFromDragDistance(event.clientX - dragging.startX);
-                setDragging(null);
-                if (weeks !== 0) onReschedule(task, weeks);
-              }}
+              onClick={(event) => { if (suppressClick.current) event.preventDefault(); else onSelect(task.id); }}
+              onPointerDown={(event) => beginNodePointerDrag(event, task.id, setDragging)}
+              onPointerMove={(event) => moveNodePointerDrag(event, dragging, setDragging)}
+              onPointerUp={(event) => endNodePointerDrag(event, task, dragging, setDragging, suppressClick, onReschedule)}
+              onPointerCancel={() => setDragging(null)}
             >
               {focusId === task.id && <span className="next-badge">下一站</span>}
+              {dragging?.id === task.id && dragging.weeks !== 0 && <span className="drag-badge">{dragging.weeks > 0 ? `顺延 ${dragging.weeks} 周` : `提前 ${Math.abs(dragging.weeks)} 周`}</span>}
               <span className="node-index">{String(index + 1).padStart(2, "0")}</span><span className="node-status-dot" /><strong>{task.title}</strong><small>{task.estimatedHours ?? "—"}h</small><span className="node-arrow">↗</span>
             </button>
           );
         })}
       </div>
+      {(pan.x !== 0 || pan.y !== 0) && <button className="reset-canvas" onPointerDown={(event) => event.stopPropagation()} onClick={() => setPan({ x: 0, y: 0 })}>回到全图</button>}
     </main>
   );
 }
@@ -501,9 +533,16 @@ function DiffPanel({ pending, before, busy, onApply, onClose }: { pending: Pendi
   return <section className="impact-dock"><div className="impact-icon">↯</div><div className="impact-copy"><small>路线预演 · 尚未生效</small><strong>{summary}</strong><span>{pending.impact.affectedNodeIds.length} 个节点会受影响</span></div><div className="impact-actions"><button onClick={onClose}>稍后</button><button disabled={busy} onClick={onApply}>沿新路线前进 →</button></div></section>;
 }
 
-function buildGraphPoints(tasks: PlanNode[]): GraphPoint[] {
-  const yPattern = [355, 245, 405, 285, 390, 235]; const span = tasks.length > 1 ? 870 / (tasks.length - 1) : 0;
-  return tasks.map((task, index) => ({ id: task.id, x: 165 + span * index, y: yPattern[index % yPattern.length] ?? 330 }));
+function buildGraphPoints(tasks: PlanNode[], milestones: PlanNode[]): GraphPoint[] {
+  const yPattern = [355, 245, 405, 285, 390, 235];
+  const start = milestones.map((item) => item.startDate).filter((value): value is string => Boolean(value)).sort()[0];
+  const end = milestones.map((item) => item.endDate).filter((value): value is string => Boolean(value)).sort().at(-1);
+  const fallbackSpan = tasks.length > 1 ? 870 / (tasks.length - 1) : 0;
+  return tasks.map((task, index) => ({
+    id: task.id,
+    x: start && end ? positionDateInRange(task.startDate, start, end, 145, 1040) ?? 165 + fallbackSpan * index : 165 + fallbackSpan * index,
+    y: yPattern[index % yPattern.length] ?? 330,
+  }));
 }
 
 function smoothPath(points: Array<Pick<GraphPoint, "x" | "y">>): string {
@@ -512,10 +551,49 @@ function smoothPath(points: Array<Pick<GraphPoint, "x" | "y">>): string {
   return path;
 }
 
-function beginNodeDrag(event: DragEvent<HTMLButtonElement>, id: string, setDragging: (value: { id: string; startX: number }) => void): void {
-  event.dataTransfer.effectAllowed = "move";
-  event.dataTransfer.setData("text/plain", id);
-  setDragging({ id, startX: event.clientX });
+function beginNodePointerDrag(event: ReactPointerEvent<HTMLButtonElement>, id: string, setDragging: (value: NodeDragState) => void): void {
+  if (event.button !== 0) return;
+  event.stopPropagation();
+  event.currentTarget.setPointerCapture(event.pointerId);
+  setDragging({ id, pointerId: event.pointerId, startX: event.clientX, currentX: event.clientX, weeks: 0 });
+}
+
+function moveNodePointerDrag(event: ReactPointerEvent<HTMLButtonElement>, dragging: NodeDragState | null, setDragging: (value: NodeDragState | null) => void): void {
+  if (!dragging || dragging.pointerId !== event.pointerId) return;
+  const distance = event.clientX - dragging.startX;
+  setDragging({ ...dragging, currentX: event.clientX, weeks: weeksFromDragDistance(distance) });
+}
+
+function endNodePointerDrag(event: ReactPointerEvent<HTMLButtonElement>, task: PlanNode, dragging: NodeDragState | null, setDragging: (value: null) => void, suppressClick: { current: boolean }, onReschedule: (node: PlanNode, weeks: number) => void): void {
+  if (!dragging || dragging.pointerId !== event.pointerId) return;
+  event.stopPropagation();
+  event.currentTarget.releasePointerCapture(event.pointerId);
+  const weeks = weeksFromDragDistance(event.clientX - dragging.startX);
+  setDragging(null);
+  if (weeks === 0) return;
+  suppressClick.current = true;
+  window.setTimeout(() => { suppressClick.current = false; }, 0);
+  onReschedule(task, weeks);
+}
+
+function beginCanvasPan(event: ReactPointerEvent<HTMLElement>, pan: PanOffset, setPanning: (value: CanvasPanState) => void): void {
+  if (event.button !== 0 || (event.target as Element).closest("button")) return;
+  event.currentTarget.setPointerCapture(event.pointerId);
+  setPanning({ pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, originX: pan.x, originY: pan.y });
+}
+
+function moveCanvasPan(event: ReactPointerEvent<HTMLElement>, panning: CanvasPanState | null, setPan: (value: PanOffset) => void): void {
+  if (!panning || panning.pointerId !== event.pointerId) return;
+  setPan({
+    x: Math.max(-320, Math.min(320, panning.originX + event.clientX - panning.startX)),
+    y: Math.max(-120, Math.min(120, panning.originY + event.clientY - panning.startY)),
+  });
+}
+
+function endCanvasPan(event: ReactPointerEvent<HTMLElement>, panning: { pointerId: number } | null, setPanning: (value: null) => void): void {
+  if (!panning || panning.pointerId !== event.pointerId) return;
+  event.currentTarget.releasePointerCapture(event.pointerId);
+  setPanning(null);
 }
 
 async function api<T = unknown>(path: string, init?: RequestInit): Promise<T> {
