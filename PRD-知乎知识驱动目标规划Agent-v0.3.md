@@ -399,7 +399,8 @@ MVP 不应先把“知乎所有历史回答”下载并做成一个巨大向量�
 ```text
 Goal Contract + User Context
 → 能力缺口与决策问题
-→ Query Planner 生成 6–10 个查询
+→ Query Planner 生成 1–3 个 Research Question
+→ 为每个 Research Question 生成并去重知乎检索 Query（总计 6–10 个）
 → 知乎 Search API / MCP
 → 初筛候选答案
 → 去重、时效判断、质量过滤
@@ -411,6 +412,10 @@ Goal Contract + User Context
 ```
 
 ### 6.3 Query Planner
+
+这里的 Query Planner 是 Zhihu Research Subagent 内部的研究规划能力，不是第三个 Agent。它接收已经由用户确认的 Goal Contract 和最小必要 User Context；在计划更新场景中，还接收受影响节点的知识缺口摘要。它负责生成 1–3 个可检索、可验证的 Research Question，再将每个 Research Question 改写为若干条知乎检索 Query。
+
+Workflow Controller 不负责撰写 Research Question。它只根据状态机判断是否需要研究，检查 Query Planner 输出的数量、必填字段和隐私边界，然后为每个 Research Question 分配 ID，补充相关用户条件、时效要求和 Evidence 数量上限，组装为 `ResearchRequest`。“生成问题内容”属于 Query Planner；“组装、校验和调度请求”属于 Controller。
 
 一个用户目标至少拆成以下查询维度：
 
@@ -575,7 +580,7 @@ RAG 的对象是“已经筛选过的 Evidence Card、用户产出和历史计�
 - 在已有 Route 之间切换；
 - 仅根据现有依赖重新排期。
 
-需要重新研究时，只围绕受影响节点生成 1–3 个 Research Question，并默认补充 2–5 张 Evidence Card；不得重新加载整个知乎研究结果。判断结果写入 Event 的处理记录，包含 `research_needed`、触发原因和使用的 Evidence ID。
+需要重新研究时，Workflow Controller 只向 Query Planner 传入受影响节点的知识缺口摘要和最小必要用户条件；Query Planner 据此生成 1–3 个 Research Question。默认补充 2–5 张 Evidence Card，不得重新加载整个知乎研究结果。判断结果写入 Event 的处理记录，包含 `research_needed`、触发原因和使用的 Evidence ID。
 
 ---
 
@@ -901,7 +906,9 @@ Roadmapper Agent 和 Research Subagent 可以调用同一个模型、API Endpoin
 
 #### 9.4.1 Zhihu Research Subagent
 
-Research Subagent 每次接收一个小型 `ResearchRequest`，包含研究问题、与问题相关的用户条件、时效要求和 Evidence 数量上限。它可以使用知乎搜索、回答读取、Claim 分类和 Evidence 保存工具，但不能读取完整 Roadmap、调用 Patch Apply 或创建 Commit。
+Research Subagent 内部的 Query Planner 先根据已确认的 Goal Contract、最小必要 User Context 和可选的知识缺口摘要生成 Research Question。Workflow Controller 对输出做数量、Schema 和隐私校验，并将每个问题组装为小型 `ResearchRequest`，其中包含研究问题、与问题相关的用户条件、时效要求和 Evidence 数量上限。
+
+Research Subagent 随后用该 `ResearchRequest` 执行知乎搜索、回答读取、Claim 分类和 Evidence 保存，但不能读取完整 Roadmap、调用 Patch Apply 或创建 Commit。
 
 它的唯一正式输出是 `EvidencePack`：
 
@@ -940,12 +947,13 @@ P1 再允许用户自己的外部 Agent 替换内置 Roadmapper，通过 CLI 或
 **首次制定计划**
 
 1. Workflow Controller 先调用 Interview Manager，形成经用户确认的 User Context 和 Goal Contract；
-2. Controller 创建 `ResearchRequest`，启动一次独立的 Research Subagent Run；
-3. Research Subagent 检索知乎并返回 EvidencePack，Run 随即结束；
-4. Controller 把 Goal Contract、必要的用户条件和 EvidencePack 交给 Roadmapper；
-5. Roadmapper 生成 Route 和 Draft Plan；
-6. Plan Engine 校验依赖、时间、字段和来源引用；
-7. 前端展示 Roadmap，用户确认后，Engine 才写入 `plan.json` 并创建 Baseline Commit。
+2. Controller 判断 `shouldResearch=true`，将 Goal Contract 和最小必要 User Context 交给 Research Subagent 内的 Query Planner；
+3. Query Planner 生成 1–3 个 Research Question；Controller 检查数量、Schema 和隐私边界，分配 ID 并补充时效与 Evidence 上限，组装为 `ResearchRequest`；
+4. Controller 为每个 `ResearchRequest` 启动一次独立的 Research Subagent Run；Research Subagent 检索知乎并返回 EvidencePack，Run 随即结束；
+5. Controller 把 Goal Contract、必要的用户条件和 EvidencePack 交给 Roadmapper；
+6. Roadmapper 生成 Route 和 Draft Plan；
+7. Plan Engine 校验依赖、时间、字段和来源引用；
+8. 前端展示 Roadmap，用户确认后，Engine 才写入 `plan.json` 并创建 Baseline Commit。
 
 **普通进度或时间变化**
 
@@ -953,7 +961,7 @@ P1 再允许用户自己的外部 Agent 替换内置 Roadmapper，通过 CLI 或
 
 **出现新的知识缺口**
 
-例如原计划依赖的学习资料失效，现有 Evidence 又没有替代路线。Controller 判断 `shouldResearch=true`，只围绕“有哪些可替代路线”启动一次新的 Research Subagent Run。新增 EvidencePack 与受影响 Plan 子图一起交给 Roadmapper，未受影响节点不进入 Context，也不重新生成整个计划。
+例如原计划依赖的学习资料失效，现有 Evidence 又没有替代路线。Controller 判断 `shouldResearch=true`，将“原资料失效且缺少替代路线”这一知识缺口摘要交给 Query Planner；Query Planner 生成“在当前目标和用户条件下有哪些可替代路线”等 Research Question。Controller 组装 `ResearchRequest` 并启动新的 Research Subagent Run。新增 EvidencePack 与受影响 Plan 子图一起交给 Roadmapper，未受影响节点不进入 Context，也不重新生成整个计划。
 
 ### 9.5 UI CLI 与 MCP 的关系
 
