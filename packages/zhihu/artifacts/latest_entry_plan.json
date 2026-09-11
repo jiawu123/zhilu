@@ -1,0 +1,69 @@
+{
+  "protocol_version": "m2-entry-v0.1",
+  "run_id": "entry_e6871f31eb0c499fab068b297d10f2b4",
+  "action": "plan",
+  "ok": true,
+  "data": {
+    "planner_version": "m2-query-planner-v0.1.0",
+    "status": "ready_for_review",
+    "generation_basis": "model_proposal_not_evidence",
+    "input_scope": "goal_and_user_context_only",
+    "requires_human_review": true,
+    "human_approved": false,
+    "semantic_quality_checked": false,
+    "coverage_verified": false,
+    "queries_executed": false,
+    "new_zhihu_search": false,
+    "evidence_compilation_performed": false,
+    "goal": "8周内完成一个可运行、带基本测试的 Agent 小项目。",
+    "user_context": {
+      "python_level": "beginner",
+      "weekly_hours": 10
+    },
+    "limits": {
+      "max_questions": 3,
+      "queries_per_question": 2
+    },
+    "reason": "将目标拆解为选择合适的项目范围、掌握必要的测试方法和理解Agent相关风险三个独立子问题。",
+    "research_questions": [
+      {
+        "question_id": "rq_f3eb97d5e41d1c8d",
+        "research_question": "适合Python初学者的Agent项目有哪些具体示例和实现路径？",
+        "evidence_need": "resource",
+        "why_needed": "帮助用户选择一个可实现的Agent项目，确保项目范围与初学者技能水平匹配。",
+        "queries": [
+          "Python 初学者 Agent 项目 示例",
+          "适合初学者的 Agent 开发项目"
+        ]
+      },
+      {
+        "question_id": "rq_a58de34918206aa4",
+        "research_question": "如何为一个Python Agent项目编写基本测试？",
+        "evidence_need": "method",
+        "why_needed": "用户需要了解测试Agent项目的常用方法和工具，以便在8周内完成带基本测试的项目。",
+        "queries": [
+          "Python Agent 单元测试 方法",
+          "Pytest Agent 测试 示例"
+        ]
+      },
+      {
+        "question_id": "rq_5e1a892de55a9bee",
+        "research_question": "Python初学者开发Agent项目时常见的坑和需要注意的限制有哪些？",
+        "evidence_need": "risk",
+        "why_needed": "帮助用户提前识别潜在风险，避免在项目过程中遇到意外障碍影响8周完成目标。",
+        "queries": [
+          "Python Agent 开发 常见错误",
+          "LLM Agent 项目 风险 限制"
+        ]
+      }
+    ],
+    "clarification_questions": [],
+    "planned_query_count": 6
+  },
+  "error": null,
+  "metrics": {
+    "planner_calls_attempted": 1,
+    "new_zhihu_search": false,
+    "automatic_retries": false
+  }
+}

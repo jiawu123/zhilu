@@ -1,0 +1,7 @@
+{
+  "goal": "8周内完成一个可运行、带基本测试的 Agent 小项目。",
+  "user_context": {
+    "python_level": "beginner",
+    "weekly_hours": 10
+  }
+}
