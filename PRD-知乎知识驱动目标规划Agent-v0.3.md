@@ -388,11 +388,11 @@ Agent 工程师面试常见考察
 
 ### 6.1 核心判断
 
-MVP 不应先把“知乎所有历史回答”下载并做成一个巨大向量库。更合适的是：
+MVP 不应先把“知乎所有历史回答”下载并做成一个巨大向量库。更合适的是直接把知乎 Search API 作为外部知识来源：
 
 > **按目标拆问题 → 实时检索知乎 → 筛选少量证据 → 压缩成证据卡 → 只把证据卡送入计划生成。**
 
-这是一种 Just-in-time RAG。它比“全库先向量化”更适合黑客松：实现更轻、来源更新、可追溯，也更容易证明知乎内容实际参与了生成。
+本文将这种方式称为“按需知乎检索（On-demand Zhihu Search）”。它仍属于先检索再生成的 RAG，但 P0 不建设向量数据库：知乎 Search API 负责返回候选内容，本地 Evidence Cache 只保存已经筛选和采用的证据。相比“全库先向量化”，它实现更轻、来源更新、可追溯，也更容易证明知乎内容实际参与了生成。
 
 ### 6.2 检索链路
 
@@ -400,20 +400,19 @@ MVP 不应先把“知乎所有历史回答”下载并做成一个巨大向量�
 Goal Contract + User Context
 → 能力缺口与决策问题
 → Query Planner 生成 1–3 个 Research Question
-→ 为每个 Research Question 生成并去重知乎检索 Query（总计 6–10 个）
-→ 知乎 Search API / MCP
-→ 初筛候选答案
-→ 去重、时效判断、质量过滤
-→ 切分为候选知识块
-→ 混合检索与重排
+→ 生成并去重候选检索 Query，首轮选择优先级最高的 2–3 个
+→ 并发调用知乎 Search API
+→ 使用接口返回的相关性、作者、时间和互动信息做基础过滤与去重
+→ 将候选结果一次性交给模型，批量判断适用条件、论据和风险
 → 多样性约束
-→ 生成 6–12 张 Evidence Card
+→ 生成 6–8 张 Evidence Card
+→ 缺少关键路线、限制条件或反方观点时，再补充 1–3 个 Query
 → Plan Compiler
 ```
 
 ### 6.3 Query Planner
 
-这里的 Query Planner 是 Zhihu Research Subagent 内部的研究规划能力，不是第三个 Agent。它接收已经由用户确认的 Goal Contract 和最小必要 User Context；在计划更新场景中，还接收受影响节点的知识缺口摘要。它负责生成 1–3 个可检索、可验证的 Research Question，再将每个 Research Question 改写为若干条知乎检索 Query。
+这里的 Query Planner 是 Zhihu Research Subagent 内部的研究规划能力，不是第三个 Agent。它接收已经由用户确认的 Goal Contract 和最小必要 User Context；在计划更新场景中，还接收受影响节点的知识缺口摘要。它负责生成 1–3 个可检索、可验证的 Research Question，再将问题改写为候选知乎检索 Query。首轮只执行优先级最高的 2–3 个 Query；只有候选结果缺少关键路线、限制条件或反方观点时，才补充 1–3 个 Query，不要求把所有查询维度都执行一遍。
 
 Workflow Controller 不负责撰写 Research Question。它只根据状态机判断是否需要研究，检查 Query Planner 输出的数量、必填字段和隐私边界，然后为每个 Research Question 分配 ID，补充相关用户条件、时效要求和 Evidence 数量上限，组装为 `ResearchRequest`。“生成问题内容”属于 Query Planner；“组装、校验和调度请求”属于 Controller。
 
@@ -432,58 +431,52 @@ Query 只包含完成检索所需的通用背景。例如使用“有一年 Pyth
 
 ### 6.4 候选内容初筛
 
-进入排序前先确定每类知识在计划中的用途：已验证事实用于日期、资格、工具能力等硬约束；个人经验用于补充实际步骤和常见困难；观点用于比较路线；疑似推广内容只作为风险提示或被排除；AI 推断必须单独标注。LLM 负责抽取和建议分类，用户与验证规则决定哪些内容可以进入正式 Fact。
+进入排序前先确定每类知识在计划中的用途：已验证事实用于日期、资格、工具能力等硬约束；个人经验用于补充实际步骤和常见困难；观点用于比较路线；疑似推广内容只作为风险提示或被排除；AI 推断必须单独标注。LLM 负责抽取和建议分类，用户与验证规则决定哪些内容的 `verificationStatus` 可以标记为 `verified`。
 
-P0 的已验证事实只来自用户确认的材料，或知乎回答中可以访问和核对的官方链接；本要求不额外扩展为通用 Web 搜索。如果无法核对外部来源，内容继续保持 `fact_claim + unverified`，不能为了生成完整计划而自动升级。
+P0 的已验证事实只来自用户确认的材料，或知乎回答中可以访问和核对的官方链接；本要求不额外扩展为通用 Web 搜索。如果无法核对外部来源，内容继续保持 `factual_claim + unverified`，不能为了生成完整计划而自动升级。
 
-每个候选知识块先标注内容类型，再进行过滤和排序。P0 内容类型为：
+每个候选知识块先标注一个主要内容类型，再进行过滤和排序。P0 使用与共享 Contract 一致的类型：
 
 - **experience**：作者描述自己的经历、步骤或结果；
 - **opinion**：价值判断、路线偏好或分析观点；
-- **fact_claim**：可以外部验证的事实主张，但当前不代表已经验证；
-- **promotion_suspected**：出现利益相关、导流或推广特征；这是风险标签，不直接断言作者在发布广告；
-- **unknown**：上下文不足，暂时无法分类。
+- **factual_claim**：可以外部验证的事实主张，但当前不代表已经验证；
+- **advice**：面向行动的建议，但仍需结合适用条件判断是否采用。
 
-分类结果必须附带理由，并允许多标签。LLM 可以提出分类，但不能单独把 `fact_claim` 升级为正式 Fact。只有用户确认、可靠外部来源支持或多来源交叉验证后，内容才能标记为 `verified_fact`。
+每张 Evidence Card 只保存一个主要 `contentType`；疑似推广、上下文不足和可能过时等情况放入可多选的 `riskTags`。无法确定主要类型的候选不进入 Evidence Pack。LLM 可以提出分类，但不能单独把 `factual_claim` 的 `verificationStatus` 升级为 `verified`；只有用户确认、可靠外部来源支持或多来源交叉验证后才能升级。
 
-初筛和排序可使用：
+初筛分为接口字段和模型判断两层。第一层使用知乎 Search API 已返回的字段，不为每条候选结果单独调用模型：
 
-- 标题和正文与当前子问题的相关度；
-- 作者专业背景或认证信息；
-- 发布时间和更新时间；
+- 标题和 `ContentText` 摘要与当前子问题的相关度；
+- API 返回的相关性分数和权威度等级；
+- 作者信息、发布时间和更新时间；
 - 赞同、评论等社区信号；
+- URL、内容 ID 和摘要重复度。
+
+第二层将基础过滤后的候选结果一次性交给模型，批量判断：
+
 - 是否包含可验证案例、数据、代码或外部来源；
-- 回答是否明确说明适用前提；
+- 是否明确说明适用前提；
 - 是否包含步骤、先后顺序、避免事项或可检查结果；
 - 是否存在疑似推广、单一个案、上下文不足或可能过时等风险；
-- 是否与其他高质量回答高度重复。
+- 对当前用户是匹配、部分匹配还是不匹配。
 
 社区热度和“先、然后、避免”等行动词都只能作为排序信号，不能单独决定保留或删除。与问题明显无关的内容可以硬过滤；高风险领域内容进入安全限制流程，不因相关度高而直接生成执行任务。
 
-### 6.5 重排公式
+### 6.5 分层筛选，不使用固定权重
 
-每个候选知识块归一化后计算：
+P0 不使用未经评测的 `EvidenceScore` 固定权重，也不要求 Embedding 重排。知乎 API 已经完成第一轮搜索排序，候选数量较少时，再增加向量计算不一定改善结果，反而增加实现和解释成本。
 
-```text
-EvidenceScore =
-0.35 × 与当前子问题的语义相关度
-+ 0.20 × 来源质量
-+ 0.15 × 论据密度
-+ 0.10 × 时效性
-+ 0.10 × 对当前用户的可执行性
-+ 0.10 × 对观点多样性的贡献
-```
+筛选按三个阶段执行：
 
-说明：
+1. **硬过滤**：删除没有可访问来源、与子问题明显无关、内容 ID 或摘要重复、摘要不足以判断的候选；高风险内容不是直接删除，而是进入安全限制流程。
+2. **模型批量分级**：一次调用对全部候选标注相关性（高/中/低）、用户适用性（匹配/部分匹配/不匹配）、支撑程度（具体/一般/只有观点）和时效风险（低/中/高）。
+3. **多样性选择**：在高相关候选中保留不同作者、不同路线和至少一条限制条件或反方观点，再生成 Evidence Card。
 
-- 来源质量包含作者背景、内容完整性和可追溯性，不只看赞同数；
-- 时效性按主题动态计算，框架和岗位信息衰减快，基础方法论衰减慢；
-- 多样性用于避免十条证据都来自同一作者或同一种观点；
-- 具体权重是 MVP 假设，必须通过人工标注集评测，不作为真理。
+只有团队建立人工标注集，并证明某种额外排序方法能稳定提升相关证据命中率后，才引入数值权重、Embedding 或专用 Reranker。
 
 ### 6.6 多样性与去重约束
 
-- 最终 Context 默认保留 6–12 张 Evidence Card；
+- 最终 Context 默认保留 6–8 张 Evidence Card；
 - 同一回答最多保留 2 张；
 - 同一作者默认不超过 3 张；
 - 至少保留 1 张反例、限制条件或不同路线；
@@ -499,64 +492,59 @@ EvidenceScore =
 ```json
 {
   "id": "E-04",
-  "claim": "Agent 工程作品集应展示评测和失败处理，而不只是 Demo 界面",
-  "content_type": ["experience", "opinion"],
-  "verification_status": "unverified",
-  "applies_when": "目标是工程岗位或生产级项目",
-  "missing_context": ["目标公司的岗位级别"],
-  "risk_flags": ["single_user_experience", "potentially_outdated"],
-  "evidence_summary": "多位工程实践者强调可观测性、评测、状态和错误恢复",
-  "counterpoint": "原型岗位或黑客松阶段可先降低生产要求",
-  "source_urls": ["https://www.zhihu.com/..."],
-  "published_at": "...",
-  "used_as": ["route", "risk"],
-  "used_by": ["milestone-03", "task-03-04"]
+  "title": "作品集需要展示评测和失败处理",
+  "summary": "多位工程实践者强调可观测性、评测、状态和错误恢复，而不只是 Demo 界面。",
+  "sourceType": "zhihu",
+  "contentType": "experience",
+  "verificationStatus": "unverified",
+  "sourceUrl": "https://www.zhihu.com/...",
+  "author": "...",
+  "publishedAt": "...",
+  "retrievedAt": "...",
+  "supportingQuote": "...",
+  "applicableWhen": ["目标是工程岗位或生产级项目"],
+  "caveats": ["原型岗位或黑客松阶段可先降低生产要求"],
+  "riskTags": ["single_user_experience", "potentially_outdated"],
+  "adoptionReason": "与当前用户的工程作品集目标和后端背景匹配"
 }
 ```
 
-`verification_status` 可取 `unverified`、`corroborated`、`verified_fact` 或 `disputed`。`risk_flags` 至少支持 `single_user_experience`、`promotion_suspected`、`missing_context`、`potentially_outdated` 和 `high_risk_domain`。
+P0 的 `verificationStatus` 只使用 `verified`、`unverified` 和 `not_applicable`，与共享 Contract 保持一致。`riskTags` 可使用 `single_user_experience`、`promotion_suspected`、`missing_context`、`potentially_outdated` 和 `high_risk_domain`；标签用于解释和限制使用，不自动决定保留或删除。
 
-只保存 API 条款允许的必要摘要、元数据和短引用；不默认复制完整回答正文。Evidence Card 进入计划时仍保留 Source、Claim 和分类结果，不能只留下模型总结。
+只保存 API 条款允许的必要摘要、元数据和短引用；不默认复制完整回答正文。Plan Node 通过 `evidenceIds` 引用 Evidence Card，因此可以追踪某条证据被哪些任务使用。Evidence Card 进入计划时仍保留来源、内容类型和验证状态，不能只留下模型总结。
 
 ### 6.8 Context 防爆策略
 
 每次生成计划时执行硬限制：
 
-- Evidence Card：最多 12 张；
-- 每张摘要：建议不超过 500 个中文字符；
-- 当前调用的证据总量：建议不超过 6,000 个中文字符；
+- Evidence Card：默认 6–8 张；
+- 每张摘要：建议控制在 150–300 个中文字符；
+- 当前调用的证据摘要总量：建议不超过 3,000 个中文字符；
 - 用户画像只传与当前子目标相关的字段；
 - 旧对话不整段传入，先压缩为 User Context Card 和 Goal Contract；
 - 当前 Plan 只传相关里程碑和依赖子图；
 - 原始知乎回答留在检索层，需要时再取，不进入每次生成 Context。
 
-输入预算建议：
+百分比 Context 预算不作为 P0 验收条件；使用上述绝对数量和长度上限控制输入即可。
 
-| 内容 | Context 预算占比 |
-| --- | ---: |
-| 工作流和输出 Schema | 15% |
-| User Context + Goal Contract | 15% |
-| 当前计划相关部分 | 20% |
-| Evidence Cards | 40% |
-| 余量与异常信息 | 10% |
-
-### 6.9 是否需要向量数据库
+### 6.9 P0 不使用向量数据库
 
 #### P0
 
-不强制使用长期向量库。使用知乎实时搜索、关键词召回、Embedding 重排和本地 Evidence Cache 即可。
+直接调用知乎 Search API 获取候选内容，利用接口返回的相关性、作者、时间和互动信息完成基础过滤，再由模型批量判断内容的适用条件、论据和风险，生成 6–8 张 Evidence Card。筛选结果保存在本地 Evidence Cache，避免重复调用并保留计划依据。P0 不使用 Embedding、专用 Reranker 或向量数据库。
 
 #### P1
 
-当用户产生大量历史计划和已保存证据后，再建立个人 RAG：
+当用户积累了多个项目和较多历史 Evidence 后，先为用户自己的内容增加普通检索：
 
 - SQLite 保存结构化元数据；
-- FTS/BM25 做关键词检索；
-- 向量索引做语义召回；
-- Reranker 做最终排序；
+- 使用项目 ID、Evidence ID、时间、来源和 Plan Node 的 `evidenceIds` 关系做结构化查询；
+- 只有字段查询难以找到历史内容时，再使用 SQLite FTS 做关键词检索；
 - 引用和原始链接始终保留。
 
-RAG 的对象是“已经筛选过的 Evidence Card、用户产出和历史计划”，不是无限复制知乎全站回答。
+#### P2
+
+只有在历史 Evidence、用户产出和计划数量继续增长，并且人工评测证明字段查询与 FTS 经常漏掉语义相关内容时，才增加 Embedding 向量检索。个人检索的对象始终是“已经筛选过的 Evidence Card、用户产出和历史计划”，不是无限复制知乎全站回答。
 
 ### 6.10 何时重新调用知乎 Research Subagent
 
@@ -1000,7 +988,7 @@ CLI 与 MCP 都不能保存自己的计划副本。候选 Event 和 Patch 写入
 6. Workflow Controller 依据状态机控制访谈、研究、规划和更新，并执行 `shouldResearch()`；
 7. 内置 Roadmapper Agent 与无长期记忆的 Research Subagent 使用独立 Context、Tool Allowlist 和 Run ID；两者可以共用同一模型/API；
 8. Research Subagent 调用真实知乎知识接口，只输出结构化 EvidencePack；
-9. 从候选结果生成 6–12 张 Evidence Cards；
+9. 从候选结果生成 6–8 张 Evidence Cards；
 10. 每张证据卡有来源、内容类型、验证状态、适用条件和风险标签；
 11. 至少将一组条件不同或彼此冲突的知乎经验生成两个 Route Candidate；
 12. 生成 8–12 周 Plan Bundle，并说明 Current Path 的选择依据；
@@ -1016,7 +1004,7 @@ CLI 与 MCP 都不能保存自己的计划副本。候选 Event 和 Patch 写入
 ### 10.2 P1 — 有余力再做
 
 - PDF/简历解析；
-- 个人历史 Evidence RAG；
+- 个人历史 Evidence 的结构化查询与 SQLite FTS；
 - CLI 接入；
 - MCP 接入；
 - 基于同一份 Plan Bundle 的 Flow、Routes 和 Timeline/Gantt 视图；
@@ -1033,6 +1021,7 @@ CLI 与 MCP 都不能保存自己的计划副本。候选 Event 和 Patch 写入
 - 团队成长计划；
 - 招聘岗位反向匹配；
 - 自动检查 GitHub 产出；
+- 个人历史 Evidence 的 Embedding 向量检索（仅在评测证明字段查询与 FTS 召回不足后）；
 - 跨设备同步；
 - 公开 Plan Bundle 社区。
 
@@ -1217,7 +1206,7 @@ CLI 与 MCP 都不能保存自己的计划副本。候选 Event 和 Patch 写入
 - [ ] Research Subagent 无法读取完整 Plan 或调用 Apply/Commit，只输出符合 Schema 的 EvidencePack；
 - [ ] Roadmapper 默认只接收 EvidencePack 和相关 Plan 子图，不接收整批知乎原文；
 - [ ] 系统调用真实知乎知识能力；
-- [ ] 系统生成 6–12 张带来源的 Evidence Cards；
+- [ ] 系统生成 6–8 张带来源的 Evidence Cards；
 - [ ] Evidence Cards 包含内容类型、验证状态、适用条件和风险标签，至少一张包含限制或反方观点；
 - [ ] 未经验证的单篇知乎经验不会直接生成正式 Fact；
 - [ ] 至少一组条件不同或冲突的经验形成两个 Route Candidate；
