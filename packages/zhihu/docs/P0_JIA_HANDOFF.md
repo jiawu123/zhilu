@@ -1,5 +1,7 @@
 # P0 Jia 接入交接
 
+2026-09-12 更新：本页首轮调用示例已对齐新分工。批量、补充规划、缓存、完整状态与回退以 [M2 新分工实施与交接](../../../docs/M2_FOLLOWUP_STATUS_2026-09-12.md) 为准；下方历史逐篇实现与旧预算记录不再代表生产默认。
+
 实施规格在根目录 `docs/CODEX_M2_P0_INTEGRATION.md`；参考摘录与合成 fixtures 均已阅读，实际字段以当前源码为准。共享 Contracts、现有 adapter、排序算法、Mock 路线模板均保持原有职责。
 
 ## Jia 下一步调用
@@ -17,12 +19,13 @@ if (planning.status === "needs_clarification") {
   // 交给现有访谈流程；本轮不 assemble、不 research，不自动第二次模型调用。
   return planning;
 }
-const validation = validateResearchQuestionDrafts(planning.questions);
+const validation = validateResearchQuestionDrafts(planning.questions, "initial");
 if (!validation.valid) throw new Error("Research drafts rejected");
 const requests = assembleResearchRequests({
   questions: planning.questions,
+  queryPolicy: "initial",
   relevantUserConditions: [plan.userContext!.currentSituation, ...plan.userContext!.constraints],
-  evidenceLimitPerQuestion: 4,
+  evidenceLimitPerQuestion: 8,
   idFactory: () => `rq-${randomUUID()}`,
 });
 const selectedRequest = requests[0]!; // 由 Controller 选定本次请求
@@ -31,7 +34,7 @@ const result = await provider.researchOne({ ...context, request: selectedRequest
 return result;
 ```
 
-`planForBaseline()` 只映射 `research_question → question`、`queries → searchQueries`、`why_needed → rationale`，并运行原有 Draft validator。`question_id` 留在 Python 内部；对外 ID 来自 Controller 的 `idFactory`。首次模式严格 3 题、每题 2 Query、全局不重复；通用 Planner 仍允许少于 3 题。没有提升 human_approved、coverage_verified、semantic_quality_checked。
+`planForBaseline()` 只映射 `research_question → question`、`queries → searchQueries`、`why_needed → rationale`，并运行原有 Draft validator 的新 initial policy。`question_id` 留在 Python 内部；对外 ID 来自 Controller 的 `idFactory`。新首次模式为 1–3 个问题、全轮总计 2–3 条不重复 Query；旧严格 3×2 模式仅通过显式配置回退。没有提升 human_approved、coverage_verified、semantic_quality_checked。
 
 ## 精确公开签名
 

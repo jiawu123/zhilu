@@ -30,7 +30,7 @@ ISSUE_CODES = frozenset({
     'search_timeout', 'search_network_error', 'search_upstream_error',
     'search_invalid_response', 'source_invalid', 'rank_failed',
     'compiler_failed', 'compiler_invalid_output', 'compiler_budget_exhausted',
-    'freshness_not_enforced',
+    'freshness_not_enforced', 'candidate_batch_truncated',
 })
 
 
@@ -192,6 +192,14 @@ def _select_v3(*args, **kwargs):
     return select_next_source(*args, **kwargs)
 
 
+def _batch_compile(*args, **kwargs):
+    from zhihu_m2.batch_screening import compile_batch, BatchValidationError
+    try:
+        return compile_batch(*args, **kwargs)
+    except BatchValidationError:
+        raise ResearchError('compilation_failed') from None
+
+
 @dataclass
 class ResearchDependencies:
     search: Callable = _search
@@ -204,6 +212,7 @@ class ResearchDependencies:
     rank_v3: Callable = _rank_v3
     select_v3: Callable = _select_v3
     diagnostics: list = field(default_factory=list)
+    batch_compile: Callable = _batch_compile
 
 
 def _validate_ranked_sources(ranked, pool):
@@ -344,7 +353,7 @@ def _compile_with_deadline(result, *, timeout, compiler=None, **kwargs):
         process.close()
 
 
-def run_research(payload: dict, *, dependencies=None, limits=None, metrics=None, options=None) -> dict:
+def run_research(payload: dict, *, dependencies=None, limits=None, metrics=None, options=None, cache=None) -> dict:
     """Execute one request; return M2ResearchData or a safe typed failure.
 
     Attempts count boundary invocations, never charges or token usage. Overall
@@ -354,7 +363,7 @@ def run_research(payload: dict, *, dependencies=None, limits=None, metrics=None,
     """
     frozen = validate_research_input(payload)
     try:
-        return _run(frozen, dependencies=dependencies, limits=limits, metrics=metrics, options=options)
+        return _run(frozen, dependencies=dependencies, limits=limits, metrics=metrics, options=options, cache=cache)
     except ResearchError:
         raise
     except ImportError:
@@ -363,7 +372,104 @@ def run_research(payload: dict, *, dependencies=None, limits=None, metrics=None,
         raise ResearchError('execution_error') from None
 
 
-def _run(frozen, *, dependencies, limits, metrics, options):
+def assess_coverage(outputs, route_candidates):
+    """Structural coverage only; semantic sufficiency always needs human review.
+
+    Callable on the union of accepted outputs after Controller deduplication and
+    global caps. This function never searches or calls the Planner.
+    """
+    cards = {card['id']: card for output in outputs for card in output['evidence_cards']}
+    has_caveat = any(card['caveats'] for card in cards.values())
+    gaps = []
+    if len(cards) < 6:
+        gaps.append({'kind': 'evidence_count', 'reason': '可用证据少于6张；仅在确有可补充来源时补检索，不凑数。'})
+    if not has_caveat:
+        gaps.append({'kind': 'counterevidence', 'reason': '尚无带明确反例或限制说明的证据。'})
+    if not route_candidates:
+        gaps.append({'kind': 'route', 'reason': '尚无有引用依据的研究路线候选；不得编造第二条路线。'})
+    return {'status': 'insufficient' if gaps else 'sufficient', 'evidenceCount': len(cards),
+            'targetMin': 6, 'targetMax': 8, 'hasCaveat': has_caveat, 'gaps': gaps,
+            'reviewStatus': 'needs_human_review'}
+
+
+def _run_batch(frozen, dep, occurrences, counts, issues, remaining):
+    from dataclasses import asdict
+    from zhihu_m2.batch_screening import select_evidence
+    from zhihu_m2.candidate_pool import build_candidate_pool, variant_key
+    from zhihu_m2.llm_client import LLMError
+    # RRF is solely a recall ordering for the bounded batch, never truth scoring.
+    pool = build_candidate_pool(occurrences)
+    def rrf(source):
+        best = {}
+        for occurrence in source.occurrences:
+            best[occurrence.query_index] = min(best.get(occurrence.query_index, occurrence.result_rank), occurrence.result_rank)
+        return sum(1 / (60 + rank) for rank in best.values())
+    pool.sort(key=lambda source: (-rrf(source), source.source_id))
+    variants = []
+    for source in pool:
+        seen, originals = set(), []
+        for occurrence in source.occurrences:
+            key = variant_key(occurrence)
+            if key not in seen:
+                seen.add(key)
+                originals.append(occurrence)
+        variants.append(originals)
+    # First representative of every source before alternate snippets of a source.
+    ordered = [items[index] for index in range(max(map(len, variants), default=0))
+               for items in variants if index < len(items)]
+    counts.update(valid_occurrence_count=len(occurrences), variant_count=len(ordered))
+    candidates = []
+    for occurrence in ordered[:24]:
+        candidate = {'result': asdict(occurrence.result), 'retrieved_at': occurrence.retrieved_at}
+        # Leave room for the system prompt and confirmed context. Select whole
+        # originals; never shorten a snippet to make a model request fit.
+        if len(_json(candidates + [candidate]).encode('utf-8')) <= 192 * 1024:
+            candidates.append(candidate)
+    if len(ordered) > len(candidates):
+        issues.append({'code': 'candidate_batch_truncated', 'stage': 'coverage'})
+    batch_started = dep.monotonic()
+    if candidates:
+        try:
+            kwargs = dict(goal=frozen['goal'], user_context=_context(frozen),
+                          research_question=frozen['request']['question'])
+            remaining()
+            counts['batch_model_calls_attempted'] += 1
+            counts['model_calls_attempted'] += 1
+            if dep.batch_compile is _batch_compile:
+                result = _compile_with_deadline(candidates, timeout=remaining(), compiler=_batch_compile, **kwargs)
+            else:
+                result = dep.batch_compile(copy.deepcopy(candidates), **kwargs)
+            remaining()
+            selected = select_evidence(result, evidence_limit=frozen['request']['evidenceLimit'])
+        except LLMError as error:
+            raise ResearchError(_llm_fatal(error) or 'compilation_failed') from None
+        except ResearchError:
+            raise
+        except Exception:
+            raise ResearchError('compilation_failed') from None
+        finally:
+            counts['batch_duration_ms'] = max(0, round((dep.monotonic() - batch_started) * 1000))
+        for item in selected['issues']:
+            issues.append({'code': 'compiler_invalid_output', 'stage': 'compile'})
+        outputs = selected['compilerOutputs']
+        routes = selected['researchCandidates']
+    else:
+        outputs, routes = [], []
+    counts['batch_duration_ms'] = max(0, round((dep.monotonic() - batch_started) * 1000))
+    coverage = assess_coverage(outputs, routes)
+    counts['evidence_count'] = coverage['evidenceCount']
+    if 'freshness' in frozen['request']:
+        # Model labels cannot establish a source's real date or enforce a range.
+        issues.append({'code': 'freshness_not_enforced', 'stage': 'coverage'})
+        coverage['gaps'].append({'kind': 'conditions', 'reason': '时效要求尚未通过原始来源日期核验。'})
+        coverage['status'] = 'insufficient'
+    status = 'partial' if issues else ('ok' if counts['evidence_count'] else 'no_evidence')
+    return {'requestId': frozen['request']['id'], 'status': status, 'compilerOutputs': outputs,
+            'routeCandidates': routes, 'unresolvedQuestions': [gap['reason'] for gap in coverage['gaps']],
+            'issues': issues, 'coverage': coverage}
+
+
+def _run(frozen, *, dependencies, limits, metrics, options, cache):
     from zhihu_m2.evidence_compiler import _source_record, EvidenceValidationError
     from zhihu_m2.llm_client import LLMError
     from zhihu_m2.plan_retrieval import SearchError, BLOCKING_ERRORS
@@ -377,18 +483,44 @@ def _run(frozen, *, dependencies, limits, metrics, options):
     if not isinstance(options, RetrievalOptions):
         raise ResearchError('configuration_error')
     v3 = options.profile == 'v3'
+    batch = options.profile == 'batch-v1'
+    preserve_variants = v3 or batch
     limits = limits if limits is not None else _environment_limits()
     if not isinstance(limits, ResearchLimits):
         raise ResearchError('configuration_error')
     counts = metrics if metrics is not None else {}
     metric_names = ['search_calls_attempted', 'compiler_calls_attempted', 'candidate_count', 'evidence_count']
-    if v3:
+    if preserve_variants:
         metric_names += ['raw_item_count', 'valid_occurrence_count', 'variant_count']
+    if batch:
+        metric_names += ['batch_model_calls_attempted', 'model_calls_attempted', 'cache_hit',
+                         'saved_search_calls', 'saved_model_calls', 'cache_write_success']
     for name in metric_names:
         counts.setdefault(name, 0)
         if type(counts[name]) is not int or counts[name] < 0:
             raise ResearchError('configuration_error')
     request = frozen['request']
+    if batch:
+        if cache is None and dependencies is None:
+            from pathlib import Path
+            from zhihu_m2.evidence_cache import EvidenceCache
+            from zhihu_m2.config import PACKAGE_ROOT
+            if os.environ.get('ZHIHU_EVIDENCE_CACHE_ENABLED', 'true').lower() == 'true':
+                directory = Path(os.environ.get('ZHIHU_EVIDENCE_CACHE_DIR', str(PACKAGE_ROOT / 'artifacts' / 'evidence-cache')))
+                cache = EvidenceCache(directory)
+        if cache is not None:
+            cache_started = dep.monotonic()
+            cached = cache.get(frozen)
+            counts['cache_read_duration_ms'] = max(0, round((dep.monotonic() - cache_started) * 1000))
+            if cached is not None and isinstance(cached['result'].get('coverage'), dict):
+                counts.update(cache_hit=1, saved_search_calls=cached['saved_search_calls'],
+                              saved_model_calls=cached['saved_model_calls'],
+                              evidence_count=cached['result']['coverage']['evidenceCount'],
+                              search_duration_ms=0, batch_duration_ms=0,
+                              total_duration_ms=counts['cache_read_duration_ms'])
+                return cached['result']
+        if os.environ.get('ZHIHU_EVIDENCE_CACHE_ONLY', '').lower() == 'true':
+            raise ResearchError('configuration_error')
     issues, unresolved, outputs, candidates, cards = [], [], [], {}, {}
     occurrences, successful_queries = [], set()
     started = dep.monotonic()
@@ -430,7 +562,7 @@ def _run(frozen, *, dependencies, limits, metrics, options):
         searches_ok += 1
         successful_queries.add(query_index)
         timestamp = dep.now()
-        if v3:
+        if preserve_variants:
             counts['raw_item_count'] += len(response['Data']['Items'])
         for result_rank, raw in enumerate(response['Data']['Items'], start=1):
             try:
@@ -440,14 +572,14 @@ def _run(frozen, *, dependencies, limits, metrics, options):
                 source = _source_record(result, timestamp)
                 # Rank metadata is typed before ranker arithmetic/string methods.
                 number_fields = ('vote_up_count', 'comment_count', 'edit_time')
-                if v3:
+                if preserve_variants:
                     number_fields += ('ranking_score',)
                 for field_name in number_fields:
                     if type(getattr(result, field_name)) not in (int, float) or not math.isfinite(getattr(result, field_name)):
                         raise ValueError()
                 sid = source['id']
                 digest = hashlib.sha256(result.content_text.encode('utf-8')).hexdigest()
-                if v3:
+                if preserve_variants:
                     from zhihu_m2.candidate_pool import SearchOccurrence, variant_key
                     occurrence = SearchOccurrence(query_index, result_rank, timestamp, result)
                     # All variant fields must encode before this item joins the
@@ -461,12 +593,19 @@ def _run(frozen, *, dependencies, limits, metrics, options):
                               'snippet': result.content_text})
             # First valid occurrence deterministically owns the original variant.
             candidates.setdefault(sid, (copy.deepcopy(result), timestamp))
-            if v3:
+            if preserve_variants:
                 occurrences.append(occurrence)
     if not searches_ok:
         raise ResearchError('research_failed')
     counts['candidate_count'] = len(candidates)
     remaining()
+    if batch:
+        counts['search_duration_ms'] = max(0, round((dep.monotonic() - started) * 1000))
+        result = _run_batch(frozen, dep, occurrences, counts, issues, remaining)
+        counts['total_duration_ms'] = max(0, round((dep.monotonic() - started) * 1000))
+        if cache is not None:
+            counts['cache_write_success'] = int(cache.put(frozen, result, counts))
+        return result
     if v3:
         from zhihu_m2.candidate_pool import build_candidate_pool, variant_key
         from zhihu_m2.ranker_v3 import RankingContext

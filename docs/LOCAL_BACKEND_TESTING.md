@@ -1,5 +1,7 @@
 # 本地后端完整测试（Windows PowerShell）
 
+2026-09-12 新分工：测试脚本现在还包含批量 M2 的编程／写作跨语言验证；`-Profile` 支持 `batch-v1`（默认）、legacy、v3。新增有预算上限的 Planner→研究→缓存脚本与真实运行记录见 [M2 新分工实施与交接](M2_FOLLOWUP_STATUS_2026-09-12.md)。以下原有 HTTP 请求与 Mock/baseline/apply 流程保持兼容。
+
 这套代码针对当前 `zhilu` 工作区。`C:\Users\Kylee\Desktop\zhilu.zip` 的关键后端文件与工作区一致，ZIP只读核对过，没有解压覆盖已有修改。所有脚本从自身路径寻找仓库，不依赖激活虚拟环境，不自动安装依赖。
 
 ## 1. 一条命令跑完整离线后端检查

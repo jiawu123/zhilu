@@ -77,8 +77,12 @@ export function decideWorkflow(input: WorkflowInput): WorkflowDecision {
   };
 }
 
+/** Query budgets are selected by the caller; this helper never schedules searches. */
+export type ResearchQueryPolicy = "legacy" | "initial" | "supplemental";
+
 export interface AssembleResearchRequestsInput {
   questions: ResearchQuestionDraft[];
+  queryPolicy?: ResearchQueryPolicy;
   relevantUserConditions: string[];
   freshness?: string;
   evidenceLimitPerQuestion: number;
@@ -90,7 +94,7 @@ export interface AssembleResearchRequestsInput {
  * 这里不生成、改写或合并 Research Question。
  */
 export function assembleResearchRequests(input: AssembleResearchRequestsInput): ResearchRequest[] {
-  const validation = validateResearchQuestionDrafts(input.questions);
+  const validation = validateResearchQuestionDrafts(input.questions, input.queryPolicy);
   const issues = [...validation.issues];
   if (!Number.isInteger(input.evidenceLimitPerQuestion) || input.evidenceLimitPerQuestion < 1 || input.evidenceLimitPerQuestion > 12) {
     issues.push({ code: "INVALID_EVIDENCE_LIMIT", message: "每个 Research Question 的 Evidence 上限必须是 1–12", path: "evidenceLimitPerQuestion" });
@@ -110,19 +114,29 @@ export function assembleResearchRequests(input: AssembleResearchRequestsInput): 
   }));
 }
 
-export function validateResearchQuestionDrafts(questions: ResearchQuestionDraft[]): ValidationResult {
+export function validateResearchQuestionDrafts(
+  questions: ResearchQuestionDraft[],
+  policy: ResearchQueryPolicy = "legacy",
+): ValidationResult {
   const issues: ValidationIssue[] = [];
+  if (policy !== "legacy" && policy !== "initial" && policy !== "supplemental") {
+    return { valid: false, issues: [{ code: "INVALID_QUERY_POLICY", message: "不支持的研究查询预算策略", path: "queryPolicy" }] };
+  }
   if (questions.length < 1 || questions.length > 3) {
     issues.push({ code: "QUESTION_COUNT", message: "Query Planner 必须生成 1–3 个 Research Question", path: "questions" });
   }
   const totalQueryCount = questions.reduce((sum, question) => sum + question.searchQueries.length, 0);
-  if (totalQueryCount < 6 || totalQueryCount > 10) {
-    issues.push({ code: "QUERY_COUNT", message: "全部 Research Question 合计必须包含 6–10 个知乎检索 Query", path: "questions.searchQueries" });
+  const [minimumQueries, maximumQueries]: [number, number] = policy === "legacy" ? [6, 10] : policy === "initial" ? [2, 3] : [1, 3];
+  if (totalQueryCount < minimumQueries || totalQueryCount > maximumQueries) {
+    issues.push({ code: "QUERY_COUNT", message: `全部 Research Question 合计必须包含 ${minimumQueries}–${maximumQueries} 个知乎检索 Query`, path: "questions.searchQueries" });
   }
   const normalizedQuestions = new Set<string>();
   const normalizedQueries = new Set<string>();
   for (const [index, question] of questions.entries()) {
     const path = `questions.${index}`;
+    if (policy !== "legacy" && (question.searchQueries.length < 1 || question.searchQueries.length > 2)) {
+      issues.push({ code: "QUESTION_QUERY_COUNT", message: "首轮或补充研究的每个问题必须包含 1–2 个 Query", path: `${path}.searchQueries` });
+    }
     if (!question.question.trim()) issues.push({ code: "EMPTY_QUESTION", message: "Research Question 不能为空", path: `${path}.question` });
     if (!question.rationale.trim()) issues.push({ code: "EMPTY_RATIONALE", message: "Research Question 必须说明为什么需要研究", path: `${path}.rationale` });
     const normalizedQuestion = normalizeText(question.question);

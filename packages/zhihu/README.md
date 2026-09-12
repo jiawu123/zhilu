@@ -1,8 +1,21 @@
 # Zhihu Knowledge
 
-## Retrieval V3：本地选择与可重复评测
+## 2026-09-12 新分工：首轮预算、批量证据、缓存
 
-默认 `ZHIHU_RETRIEVAL_PROFILE=legacy`。`v3` 保留同一来源的各 Query 原始片段，以原始结果名次计算 RRF，按问题需要选择一个原始 variant，再根据**已经产出卡片**的来源做软多样性选择；不会追加搜索或调用研究 Planner。分数只用于优先级，不是事实可信度。阶段 B 的额外 LLM 重排未实现。
+生产默认已更新为 `ZHIHU_RETRIEVAL_PROFILE=batch-v1`；Server Planner 默认 `m2-initial`，全轮总计 2–3 条查询。研究仅执行本次请求，用一次模型批量分级/编译替换固定权重与逐篇调用，继续重用原 compiler 校验和 TS adapter。新增覆盖报告、带引用的研究假设、本地缓存与显式补充规划；不生成或批准正式 Roadmap。
+
+完整接口、Jia 调用方式、预算、回退、真实配额阻塞记录见 [新分工实施与交接](../../docs/M2_FOLLOWUP_STATUS_2026-09-12.md)。现有 HTTP 接口保持不变且默认关闭。真实批量质量和来源分歧仍为 `needs_human_review`。
+
+```powershell
+Set-Location 'C:\Users\Kylee\Desktop\zhilu'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-backend.ps1
+# 仅验证编程／写作的 Provider → Python 批量 → adapter，完全离线
+node .\node_modules\tsx\dist\cli.mjs .\apps\server\scripts\test_m2_followup.ts
+```
+
+## Retrieval V3：保留的本地实验与回退
+
+旧 `legacy` / `v3` 通过本地配置显式选择，已不是生产默认。`v3` 保留同一来源的各 Query 原始片段，以原始结果名次计算 RRF，按问题需要选择一个原始 variant，再根据**已经产出卡片**的来源做软多样性选择；不会追加搜索或调用研究 Planner。分数只用于优先级，不是事实可信度。旧阶段 B 的额外第二次 LLM 重排未实现；新生产路径用一次批量调用替换逐篇编译。
 
 两种模式共用 `run_research`、compiler、Server Provider 和原 adapter；请求和 EvidencePack 不变。`planning_profile=baseline` 控制首次 Baseline 数量，`ZHIHU_RETRIEVAL_PROFILE` 控制本地检索/提示词策略，两者独立。配置无效会安全失败，HTTP body 不能选择 profile。Python 从进程环境或固定的本目录 `.env` 读取；Node 启动时继承环境，重启后才作用于新子进程。不得将此配置或密钥写进 `VITE_*`。
 

@@ -10,8 +10,8 @@ Examples:
 param(
     [ValidateSet('Test', 'Http', 'Serve')]
     [string]$Mode = 'Test',
-    [ValidateSet('legacy', 'v3')]
-    [string]$Profile = 'legacy',
+    [ValidateSet('legacy', 'v3', 'batch-v1')]
+    [string]$Profile = 'batch-v1',
     [switch]$Live,
     [ValidateRange(1, 65535)]
     [int]$Port = 8787,
@@ -93,11 +93,13 @@ try {
             Invoke-CheckedNative -Label 'Python backend suite (offline)' -Executable $pythonPath -Arguments @('-B', '-m', 'pytest', '-q')
         } finally { Pop-Location }
         Invoke-CheckedNative -Label 'Server and backend dependency tests (offline)' -Executable $nodePath -Arguments @(
-            $vitestPath, 'run', 'apps/server/src', 'packages/agent-runtime/src', 'packages/plan-engine/src')
+            $vitestPath, 'run', 'apps/server/src', 'apps/server/scripts/test_m2_followup.test.ts', 'packages/agent-runtime/src', 'packages/plan-engine/src')
         Invoke-CheckedNative -Label 'Server typecheck' -Executable $nodePath -Arguments @(
             $tscPath, '--noEmit', '-p', 'apps/server/tsconfig.json')
         Invoke-CheckedNative -Label 'Full local HTTP flow (offline)' -Executable $nodePath -Arguments @(
             $tsxPath, 'apps/server/scripts/test_backend_http.ts')
+        Invoke-CheckedNative -Label 'M2 batch Provider and adapter, two domains (offline)' -Executable $nodePath -Arguments @(
+            $tsxPath, 'apps/server/scripts/test_m2_followup.ts')
     } elseif ($Mode -eq 'Http') {
         $httpArgs = @($tsxPath, 'apps/server/scripts/test_backend_http.ts')
         if ($Live) { $httpArgs += '--live' }
