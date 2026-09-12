@@ -134,6 +134,16 @@ export interface PlanResearchState {
   runId: string;
   selectedRouteId: string;
   routeCandidates: RouteCandidate[];
+  roadmapper?: RoadmapperRun;
+}
+
+/** 模型只提出草案；Run ID 和批准状态由 Controller / 用户管理。 */
+export interface RoadmapperRun {
+  runId: string;
+  mode: "model";
+  recommendationReason: string;
+  recommendationEvidenceIds: string[];
+  warnings: string[];
 }
 
 export type EventType =
@@ -304,6 +314,7 @@ export interface BaselineProposal {
   recommendedRouteId: string;
   researchRun: ResearchRunResult;
   previews: BaselineRoutePreview[];
+  roadmapper?: RoadmapperRun;
 }
 
 export interface RoadmapView {

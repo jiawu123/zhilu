@@ -415,19 +415,156 @@ function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose, onRun
       <div className="research-constellation"><span>问</span><i /><i /><i /></div>
       <p className="section-kicker">Research Subagent · Just in time</p>
       <h2 id="research-title">先让证据回来，<br />再决定走哪条路。</h2>
-      <p>系统会先拆出研究问题，再实时检索少量知乎结果并压缩为 Evidence Cards。研究结果只生成待确认路线，不会直接改动当前计划。</p>
+      <p>从你的目标与背景出发，检索知乎证据，再规划路线、任务与时间。你可以检查依据，选好路线后再点亮图。</p>
       <div className="research-steps"><span><b>01</b>拆出研究问题</span><span><b>02</b>检索并压缩证据</span><span><b>03</b>你确认后写入图</span></div>
-      {error && <div className="research-error">{error}</div>}
-      <button className="research-primary" disabled={busy} onClick={onRunLive}>{busy ? "正在检索知乎并整理证据…" : "运行真实知乎研究"}<span>→</span></button>
+      {error && <div className="research-error" role="alert">{error}</div>}
+      <button className="research-primary" disabled={busy} onClick={onRunLive}>{busy ? "正在研究并规划路线…" : "用知乎证据规划路线"}<span>→</span></button>
       <button className="research-secondary" disabled={busy} onClick={onRunMock}>本机尚未配置？使用 Mock 演示</button>
     </section></div>;
   }
   const isLive = proposal.researchRun.mode === "live";
+  const roadmapper = proposal.roadmapper;
   const route = proposal.researchRun.routeCandidates.find((item) => item.id === selectedRouteId) ?? proposal.researchRun.routeCandidates[0];
   const preview = proposal.previews.find((item) => item.routeId === route?.id)?.plan;
-  const evidenceCount = proposal.researchRun.evidencePacks.reduce((sum, pack) => sum + pack.evidence.length, 0);
+  const previewReviewNodes = preview?.nodes.filter((node) => node.type === "checkpoint" || node.type === "assumption") ?? [];
+  const researchEvidence = [...new Map(proposal.researchRun.evidencePacks.flatMap((pack) => pack.evidence).map((card) => [card.id, card])).values()];
+  const recommendationEvidence = researchEvidence.filter((card) => roadmapper?.recommendationEvidenceIds.includes(card.id));
+  const routeEvidence = researchEvidence.filter((card) => route?.evidenceIds.includes(card.id));
   const queryCount = proposal.researchRun.questions.reduce((sum, question) => sum + question.searchQueries.length, 0);
-  return <div className="research-backdrop"><section className="route-lab" role="dialog" aria-modal="true" aria-labelledby="route-lab-title"><button className="research-close" onClick={onClose}>×</button><header><div><p className="section-kicker">Roadmapper Draft · 尚未写入</p><h2 id="route-lab-title">哪条路更像你的路？</h2></div><div className="research-metrics"><span><b>{proposal.researchRun.questions.length}</b>问题</span><span><b>{queryCount}</b>Queries</span><span><b>{evidenceCount}</b>{isLive ? "知乎 Cards" : "Mock Cards"}</span></div></header><div className="route-lab-grid"><section className="question-rail"><p className="section-kicker">研究问了什么</p>{proposal.researchRun.questions.map((question, index) => <article key={question.question}><span>0{index + 1}</span><p>{question.question}</p><small>{question.rationale}</small></article>)}<div className="mock-stamp">{isLive ? "LIVE ZHIHU / UNVERIFIED" : "MOCK / UNVERIFIED"}</div></section><section className="route-choice"><p className="section-kicker">选择路线</p>{proposal.researchRun.routeCandidates.map((candidate) => <button key={candidate.id} className={candidate.id === route?.id ? "is-selected" : ""} onClick={() => onSelectRoute(candidate.id)}><span className="route-radio" /><div><small>{candidate.id === proposal.recommendedRouteId ? "推荐起点" : "另一种节奏"}</small><h3>{candidate.title}</h3><p>{candidate.summary}</p><em>适合：{candidate.applicableWhen.join(" · ")}</em></div></button>)}</section><section className="preview-rail"><p className="section-kicker">图会变成这样</p>{preview?.nodes.filter((node) => node.type === "task").map((node, index) => <article key={node.id}><span>{index + 1}</span><div><strong>{node.title}</strong><small>{node.deliverable}</small></div></article>)}<div className="preview-note">应用后生成 v{preview?.currentCommitId}。原研究准备版仍保留在版本历史中。</div></section></div><footer><div><span className="route-proof-dot" /><small>{isLive ? "路线使用真实知乎来源，但内容仍需用户判断适用性。" : "这是机制演示，不是已验证的知乎研究结论。"}</small></div><button className="research-primary" disabled={busy || !selectedRouteId} onClick={onApply}>{busy ? "正在写入路线…" : `选择“${route?.title ?? "这条路线"}”并点亮图`}<span>→</span></button></footer></section></div>;
+  return (
+    <div className="research-backdrop">
+      <section className="route-lab" role="dialog" aria-modal="true" aria-labelledby="route-lab-title">
+        <button className="research-close" aria-label="关闭路线预览" onClick={onClose}>×</button>
+        <header>
+          <div>
+            <p className="section-kicker">{roadmapper ? "模型路线草案" : isLive ? "规则路线草案" : "演示路线草案"} · 尚未写入</p>
+            <h2 id="route-lab-title">哪条路更像你的路？</h2>
+          </div>
+          <div className="research-metrics">
+            <span><b>{proposal.researchRun.questions.length}</b>问题</span>
+            <span><b>{queryCount}</b>检索词</span>
+            <span><b>{researchEvidence.length}</b>{isLive ? "知乎证据" : "演示证据"}</span>
+          </div>
+          {error && <div className="research-error" role="alert">{error}</div>}
+        </header>
+        <div className="route-lab-grid">
+          <section className="question-rail">
+            <p className="section-kicker">研究问了什么</p>
+            {proposal.researchRun.questions.map((question, index) => (
+              <article key={question.question}>
+                <span>{String(index + 1).padStart(2, "0")}</span>
+                <p>{question.question}</p>
+                <small>{question.rationale}</small>
+              </article>
+            ))}
+            <div className="mock-stamp">{isLive ? "知乎来源 · 内容待判断" : "MOCK · 机制演示"}</div>
+            {roadmapper && roadmapper.warnings.length > 0 && (
+              <details className="research-details planning-warnings">
+                <summary>规划中的 {roadmapper.warnings.length} 个待确认点</summary>
+                <ul>{roadmapper.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>
+              </details>
+            )}
+          </section>
+          <section className="route-choice">
+            <p className="section-kicker">选择路线</p>
+            {roadmapper && (
+              <div className="route-recommendation">
+                <small>为什么推荐这个起点</small>
+                <p>{roadmapper.recommendationReason}</p>
+                <EvidenceDisclosure label="查看推荐依据" evidence={recommendationEvidence} />
+              </div>
+            )}
+            {proposal.researchRun.routeCandidates.map((candidate) => (
+              <button key={candidate.id} aria-pressed={candidate.id === route?.id} className={candidate.id === route?.id ? "is-selected" : ""} onClick={() => onSelectRoute(candidate.id)}>
+                <span className="route-radio" />
+                <div>
+                  <small>{candidate.id === proposal.recommendedRouteId ? "推荐起点" : "另一种节奏"}</small>
+                  <h3>{candidate.title}</h3>
+                  <p>{candidate.summary}</p>
+                  <em>适合：{candidate.applicableWhen.join(" · ")}</em>
+                </div>
+              </button>
+            ))}
+            {route && (
+              <div className="selected-route-details" key={route.id}>
+                {route.risks.length > 0 && (
+                  <details className="research-details planning-warnings">
+                    <summary>这条路线的 {route.risks.length} 个风险与取舍</summary>
+                    <ul>{route.risks.map((risk, index) => <li key={index}>{risk}</li>)}</ul>
+                  </details>
+                )}
+                <EvidenceDisclosure label="查看这条路线的原始依据" evidence={routeEvidence} />
+              </div>
+            )}
+          </section>
+          <section className="preview-rail" key={route?.id}>
+            <p className="section-kicker">图会变成这样</p>
+            {roadmapper && <p className="preview-note">任务拆分、日期与工时是 AI 推断，确认后仍可在图上调整。</p>}
+            {preview?.nodes.filter((node) => node.type === "task").map((node, index) => (
+              <article className="preview-task" key={node.id}>
+                <span>{index + 1}</span>
+                <div>
+                  <strong>{node.title}</strong>
+                  <small>{formatDateRange(node)} · {node.estimatedHours ?? "—"}h</small>
+                  <details className="research-details">
+                    <summary>产出、验收与依据</summary>
+                    {node.deliverable && <p>{node.deliverable}</p>}
+                    <ul>{node.acceptanceCriteria?.map((item, criterionIndex) => <li key={criterionIndex}>{item}</li>)}</ul>
+                    <EvidenceDisclosure label="查看任务依据" evidence={preview.evidence.filter((card) => node.evidenceIds.includes(card.id))} />
+                  </details>
+                </div>
+              </article>
+            ))}
+            {previewReviewNodes.length > 0 && (
+              <details className="research-details review-preview">
+                <summary>复盘与待确认假设 · {previewReviewNodes.length}</summary>
+                {previewReviewNodes.map((node) => (
+                  <div key={node.id}>
+                    <small>{nodeTypeLabel(node.type)} · {formatDateRange(node)}</small>
+                    <strong>{node.title}</strong>
+                    {(node.description || node.deliverable) && <p>{node.description ?? node.deliverable}</p>}
+                  </div>
+                ))}
+              </details>
+            )}
+            <div className="preview-note">应用后生成 v{preview?.currentCommitId}。原研究准备版仍保留在版本历史中。</div>
+          </section>
+        </div>
+        <footer>
+          <div><span className="route-proof-dot" /><small>{isLive ? "知乎内容提供依据；路线安排仍需结合你的实际情况确认。" : "这是机制演示，不是已验证的知乎研究结论。"}</small></div>
+          <button className="research-primary" disabled={busy || !selectedRouteId} onClick={onApply}>{busy ? "正在写入路线…" : `选择“${route?.title ?? "这条路线"}”并点亮图`}<span>→</span></button>
+        </footer>
+      </section>
+    </div>
+  );
+}
+
+function EvidenceDisclosure({ label, evidence }: { label: string; evidence: EvidenceCard[] }) {
+  if (evidence.length === 0) return null;
+  return (
+    <details className="research-details evidence-disclosure">
+      <summary>{label} · {evidence.length}</summary>
+      {evidence.map((card) => <EvidenceCardView key={card.id} card={card} />)}
+    </details>
+  );
+}
+
+function EvidenceCardView({ card }: { card: EvidenceCard }) {
+  return (
+    <article className="evidence-card">
+      <div><span>{card.sourceType === "zhihu" ? "知乎" : card.sourceType === "ai" ? "AI 推断" : card.sourceType}</span><small>{contentTypeLabel(card.contentType)} · {card.verificationStatus}</small></div>
+      <h3>{card.title}</h3>
+      <p>{card.summary}</p>
+      {card.supportingQuote && <blockquote>{card.supportingQuote}</blockquote>}
+      <dl className="evidence-context">
+        {card.applicableWhen.length > 0 && <div><dt>适用条件</dt><dd>{card.applicableWhen.join("；")}</dd></div>}
+        {card.adoptionReason && <div><dt>采用原因</dt><dd>{card.adoptionReason}</dd></div>}
+        {card.caveats.length > 0 && <div><dt>局限与例外</dt><dd>{card.caveats.join("；")}</dd></div>}
+      </dl>
+      {card.riskTags.length > 0 && <div className="risk-note">注意：{card.riskTags.join("；")}</div>}
+      {card.sourceUrl && <a href={card.sourceUrl} target="_blank" rel="noreferrer">{card.sourceTitle ?? "打开原始来源"} ↗</a>}
+    </article>
+  );
 }
 
 function RoadmapGraph({ workspace, selectedId, focusId, pending, onSelect, onReschedule }: { workspace: WorkspacePayload; selectedId: string | null; focusId: string | null; pending: PendingChange | null; onSelect: (id: string) => void; onReschedule: (node: PlanNode, weeks: number) => void }) {
@@ -437,10 +574,13 @@ function RoadmapGraph({ workspace, selectedId, focusId, pending, onSelect, onRes
   const suppressClick = useRef(false);
   const tasks = workspace.view.milestones.flatMap((group) => group.tasks);
   const milestones = workspace.view.milestones.map((group) => group.milestone);
-  const points = buildGraphPoints(tasks, milestones);
+  const isDense = tasks.length > 8;
+  const denseLayout = isDense ? buildDenseGraphLayout(tasks, milestones) : null;
+  const graphWidth = denseLayout?.width ?? canvasWidth;
+  const points = denseLayout?.points ?? buildGraphPoints(tasks, milestones);
   const pointMap = new Map(points.map((point) => [point.id, point]));
   const start = { id: "start", x: 70, y: 355 };
-  const goal = { id: "goal", x: 1130, y: 270 };
+  const goal = { id: "goal", x: graphWidth - 70, y: 270 };
   const mainPath = smoothPath([start, ...points, goal]);
   const milestoneSpots = workspace.view.milestones.map((group, index) => {
     const groupPoints = group.tasks.map((task) => pointMap.get(task.id)).filter((point): point is GraphPoint => Boolean(point));
@@ -452,26 +592,27 @@ function RoadmapGraph({ workspace, selectedId, focusId, pending, onSelect, onRes
       index,
     };
   });
+  useEffect(() => { setPan({ x: 0, y: 0 }); setPanning(null); }, [workspace.plan.projectId, workspace.plan.research?.selectedRouteId, isDense]);
 
   return (
     <main
       className={`graph-viewport ${panning ? "is-panning" : ""}`}
       aria-label="Roadmap 路线图"
       onPointerDown={(event) => beginCanvasPan(event, pan, setPanning)}
-      onPointerMove={(event) => moveCanvasPan(event, panning, setPan)}
+      onPointerMove={(event) => moveCanvasPan(event, panning, setPan, denseLayout ? { width: graphWidth, height: canvasHeight } : undefined)}
       onPointerUp={(event) => endCanvasPan(event, panning, setPanning)}
       onPointerCancel={() => setPanning(null)}
       onDoubleClick={(event) => { if (!(event.target as Element).closest("button")) setPan({ x: 0, y: 0 }); }}
     >
       <div className="ambient ambient-one" /><div className="ambient ambient-two" />
-      <div className="graph-stage" style={{ "--pan-x": `${pan.x}px`, "--pan-y": `${pan.y}px` } as CSSProperties}>
-        <svg className="route-svg" viewBox={`0 0 ${canvasWidth} ${canvasHeight}`} role="img" aria-label={workspace.plan.title}>
+      <div className={`graph-stage ${isDense ? "is-dense" : ""}`} style={{ "--pan-x": `${pan.x}px`, "--pan-y": `${pan.y}px`, ...(isDense ? { width: `${graphWidth}px`, height: `${canvasHeight}px` } : {}) } as CSSProperties}>
+        <svg className="route-svg" viewBox={`0 0 ${graphWidth} ${canvasHeight}`} role="img" aria-label={workspace.plan.title}>
           <defs>
             <linearGradient id="routeGradient" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stopColor="#f2b45a" /><stop offset="0.45" stopColor="#ff7e67" /><stop offset="1" stopColor="#8c7dff" /></linearGradient>
             <filter id="softGlow"><feGaussianBlur stdDeviation="5" result="blur" /><feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge></filter>
             <pattern id="dotGrid" width="28" height="28" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1.2" fill="rgba(255,255,255,.13)" /></pattern>
           </defs>
-          <rect width="1200" height="650" fill="url(#dotGrid)" />
+          <rect width={graphWidth} height={canvasHeight} fill="url(#dotGrid)" />
           {milestoneSpots.map((spot) => <g key={spot.milestone.id} className={`phase-cloud phase-cloud-${spot.index % 3}`}><ellipse cx={spot.x} cy={spot.y} rx={spot.rx} ry="205" /></g>)}
           <path className="route-shadow" d={mainPath} /><path className="route-path" d={mainPath} /><path className="route-spark-line" d={mainPath} />
           {workspace.plan.relations.filter((relation) => relation.type === "depends_on").map((relation) => {
@@ -487,7 +628,7 @@ function RoadmapGraph({ workspace, selectedId, focusId, pending, onSelect, onRes
         </svg>
 
         {milestoneSpots.map((spot) => (
-          <button key={spot.milestone.id} className={`phase-label phase-label-${spot.index % 3}`} style={{ "--x": `${(spot.x / canvasWidth) * 100}%` } as CSSProperties} onPointerDown={(event) => event.stopPropagation()} onClick={() => onSelect(spot.milestone.id)}>
+          <button key={spot.milestone.id} className={`phase-label phase-label-${spot.index % 3}`} style={{ "--x": `${(spot.x / graphWidth) * 100}%` } as CSSProperties} onPointerDown={(event) => event.stopPropagation()} onClick={() => onSelect(spot.milestone.id)}>
             <span>0{spot.index + 1}</span><strong>{spot.milestone.title}</strong>
           </button>
         ))}
@@ -500,8 +641,8 @@ function RoadmapGraph({ workspace, selectedId, focusId, pending, onSelect, onRes
             <button
               key={task.id}
               className={`route-node status-${task.status} ${selectedId === task.id ? "is-selected" : ""} ${focusId === task.id ? "is-focus" : ""} ${affected ? "is-affected" : ""} ${dragging?.id === task.id ? "is-dragging" : ""}`}
-              style={{ "--x": `${(point.x / canvasWidth) * 100}%`, "--y": `${(point.y / canvasHeight) * 100}%`, "--delay": `${index * -0.55}s`, "--drag-x": `${dragX}px` } as CSSProperties}
-              title="点击查看；水平拖动按周调整日期"
+              style={{ "--x": `${(point.x / graphWidth) * 100}%`, "--y": `${(point.y / canvasHeight) * 100}%`, "--delay": `${index * -0.55}s`, "--drag-x": `${dragX}px` } as CSSProperties}
+              title={`${task.title} · ${formatDateRange(task)}；点击查看，水平拖动按周调整日期`}
               onClick={(event) => { if (suppressClick.current) event.preventDefault(); else onSelect(task.id); }}
               onPointerDown={(event) => beginNodePointerDrag(event, task.id, setDragging)}
               onPointerMove={(event) => moveNodePointerDrag(event, dragging, setDragging)}
@@ -515,13 +656,14 @@ function RoadmapGraph({ workspace, selectedId, focusId, pending, onSelect, onRes
           );
         })}
       </div>
-      {(pan.x !== 0 || pan.y !== 0) && <button className="reset-canvas" onPointerDown={(event) => event.stopPropagation()} onClick={() => setPan({ x: 0, y: 0 })}>回到全图</button>}
+      {(pan.x !== 0 || pan.y !== 0) && <button className="reset-canvas" onPointerDown={(event) => event.stopPropagation()} onClick={() => setPan({ x: 0, y: 0 })}>{isDense ? "回到起点" : "回到全图"}</button>}
     </main>
   );
 }
 
 function Sidebar({ open, plan, projectId, history, focusTasks, pendingCount, busy, onClose, onAddTask, onNewProject, onSelectTask }: { open: boolean; plan: PlanState; projectId: string; history: PlanCommit[]; focusTasks: PlanNode[]; pendingCount: number; busy: boolean; onClose: () => void; onAddTask: () => void; onNewProject: () => void; onSelectTask: (id: string) => void }) {
   const tasks = plan.nodes.filter((node) => node.type === "task" && node.status !== "archived");
+  const reviewNodes = plan.nodes.filter((node) => (node.type === "checkpoint" || node.type === "assumption") && node.status !== "archived");
   const done = tasks.filter((task) => task.status === "done").length;
   return (
     <aside className={`side-drawer ${open ? "is-open" : ""}`} aria-hidden={!open}>
@@ -531,6 +673,18 @@ function Sidebar({ open, plan, projectId, history, focusTasks, pendingCount, bus
         <section className="progress-card"><div className="progress-ring" style={{ "--progress": `${tasks.length ? (done / tasks.length) * 360 : 0}deg` } as CSSProperties}><span>{done}/{tasks.length}</span></div><div><strong>{plan.weeklyHours} 小时</strong><small>每周探索时间</small></div></section>
         {pendingCount > 0 && <div className="pending-callout"><span>↯</span><div><strong>{pendingCount} 个变化待确认</strong><small>正式路线还没有被改变</small></div></div>}
         <section className="week-focus"><p className="section-kicker">接下来 7 天</p>{focusTasks.length === 0 ? <div className="focus-empty">这周没有必须抵达的路标。</div> : focusTasks.map((task, index) => <button key={task.id} onClick={() => onSelectTask(task.id)}><span>{index === 0 ? "下一站" : formatDateRange(task)}</span><strong>{task.title}</strong><small>{task.estimatedHours ?? "—"}h · {statusLabel(task.status)}</small></button>)}</section>
+        {reviewNodes.length > 0 && (
+          <details className="research-details review-nodes">
+            <summary>复盘与待确认假设 · {reviewNodes.length}</summary>
+            {reviewNodes.map((node) => (
+              <button key={node.id} onClick={() => onSelectTask(node.id)}>
+                <span>{nodeTypeLabel(node.type)} · {formatDateRange(node)}</span>
+                <strong>{node.title}</strong>
+                <small>{statusLabel(node.status)}</small>
+              </button>
+            ))}
+          </details>
+        )}
         <section className="export-panel"><p className="section-kicker">带走这张路线</p><div><a href={`/api/projects/${projectId}/export/json`} download>JSON</a><a href={`/api/projects/${projectId}/export/markdown`} download>Markdown</a><a href={`/api/projects/${projectId}/export/zip`} download>Plan Bundle</a></div></section>
         <section className="drawer-history"><p className="section-kicker">路线足迹</p>{history.slice(0, 5).map((commit) => <div className="history-step" key={commit.id}><span /><div><strong>v{commit.id}</strong><small>{commit.reason}</small></div></div>)}</section>
       </div>
@@ -544,16 +698,21 @@ function Inspector({ node, evidence, busy, onClose, onSave, onComplete, onReport
   useEffect(() => { setTitle(node?.title ?? ""); setStartDate(node?.startDate ?? ""); setEndDate(node?.endDate ?? ""); }, [node]);
   return (
     <aside className={`inspector-drawer ${node ? "is-open" : ""}`} aria-hidden={!node}>
-      {node && <><div className="drawer-head"><div><span className="node-mini-dot" /><strong>{node.type === "task" ? "路标详情" : "阶段详情"}</strong></div><button onClick={onClose}>×</button></div>
+      {node && <><div className="drawer-head"><div><span className="node-mini-dot" /><strong>{nodeTypeLabel(node.type)}详情</strong></div><button onClick={onClose}>×</button></div>
         <div className="inspector-scroll">
-          <div className="status-row"><span className={`status-chip status-${node.status}`}>{statusLabel(node.status)}</span><span>{node.estimatedHours ? `${node.estimatedHours}h` : "阶段"}</span></div>
+          <div className="status-row"><span className={`status-chip status-${node.status}`}>{statusLabel(node.status)}</span><span>{node.estimatedHours ? `${node.estimatedHours}h` : nodeTypeLabel(node.type)}</span></div>
           <label>名称<input value={title} onChange={(event) => setTitle(event.target.value)} /></label>
           <div className="date-row"><label>开始<input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} /></label><label>结束<input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} /></label></div>
-          <label>状态<select value={node.status} onChange={(event) => onSave({ status: event.target.value as PlanNode["status"] })}><option value="todo">待开始</option><option value="ready">可开始</option><option value="in_progress">进行中</option><option value="blocked">受阻</option><option value="done">已完成</option><option value="archived">已归档</option></select></label>
+          <label>状态<select value={node.status} onChange={(event) => onSave({ status: event.target.value as PlanNode["status"] })}><option value="draft">草稿</option><option value="todo">待开始</option><option value="ready">可开始</option><option value="in_progress">进行中</option><option value="blocked">受阻</option><option value="done">已完成</option><option value="archived">已归档</option></select></label>
           <div className="node-actions"><button className="save-node" disabled={busy || !title.trim()} onClick={() => onSave({ title: title.trim(), startDate, endDate })}>保存修改</button>{node.type === "task" && node.status !== "done" && <button className="complete-node" disabled={busy} onClick={onComplete}>✓ 抵达此站</button>}</div>
           {node.type === "task" && <div className="node-secondary-actions"><button disabled={busy} onClick={onReportChange}>↯ 这里有变化</button><button className="archive-node" disabled={busy} onClick={onArchive}>收起此路标</button></div>}
-          <section className="node-story"><p className="section-kicker">抵达证明</p><h3>{node.deliverable ?? "这个阶段的最终产出"}</h3><ul>{node.acceptanceCriteria?.map((item) => <li key={item}>{item}</li>) ?? <li>尚未补充完成标准</li>}</ul></section>
-          <section className="evidence-stack"><p className="section-kicker">这枚路标从哪里来</p>{evidence.length === 0 && <div className="empty-evidence">目前没有知乎依据。它需要被标记为用户事实、规则或 AI 推断。</div>}{evidence.map((item) => <article className="evidence-card" key={item.id}><div><span>{item.sourceType === "zhihu" ? "知乎" : item.sourceType}</span><small>{contentTypeLabel(item.contentType)} · {item.verificationStatus}</small></div><h3>{item.title}</h3><p>{item.summary}</p>{item.supportingQuote && <blockquote>{item.supportingQuote}</blockquote>}{item.riskTags.length > 0 && <div className="risk-note">注意：{item.riskTags.join("；")}</div>}{item.sourceUrl && <a href={item.sourceUrl} target="_blank" rel="noreferrer">打开原始回答 ↗</a>}</article>)}</section>
+          <section className="node-story"><p className="section-kicker">抵达证明</p><h3>{node.deliverable ?? "待补充可检查的产出"}</h3>{node.description && <p className="inference-note">{node.description}</p>}<ul>{node.acceptanceCriteria?.map((item) => <li key={item}>{item}</li>) ?? <li>尚未补充完成标准</li>}</ul></section>
+          <section className="evidence-stack">
+            <p className="section-kicker">这枚路标从哪里来</p>
+            {evidence.length === 0 && <div className="empty-evidence">目前没有知乎依据。它需要被标记为用户事实、规则或 AI 推断。</div>}
+            {evidence.some((card) => card.contentType === "ai_inference") && <p className="inference-note">这枚路标含 AI 推断；请检查任务安排、工时与依据是否适合你。</p>}
+            {evidence.map((card) => <EvidenceCardView key={card.id} card={card} />)}
+          </section>
         </div></>}
     </aside>
   );
@@ -580,6 +739,33 @@ function buildGraphPoints(tasks: PlanNode[], milestones: PlanNode[]): GraphPoint
     x: start && end ? positionDateInRange(task.startDate, start, end, 145, 1040) ?? 165 + fallbackSpan * index : 165 + fallbackSpan * index,
     y: yPattern[index % yPattern.length] ?? 330,
   }));
+}
+
+function buildDenseGraphLayout(tasks: PlanNode[], milestones: PlanNode[]): { width: number; points: GraphPoint[] } {
+  const dayOf = (date: string | undefined) => date ? Date.parse(date) / 86_400_000 : NaN;
+  const dates = [...tasks, ...milestones].flatMap((node) => [dayOf(node.startDate), dayOf(node.endDate)]).filter(Number.isFinite);
+  const start = dates.length ? Math.min(...dates) : 0;
+  const end = dates.length ? Math.max(start + 1, ...dates) : tasks.length;
+  const byDate = new Map<number, PlanNode[]>();
+  tasks.forEach((task, index) => {
+    const date = dayOf(task.startDate);
+    const day = Number.isFinite(date) ? date : start + (end - start) * index / Math.max(1, tasks.length - 1);
+    byDate.set(day, [...(byDate.get(day) ?? []), task]);
+  });
+  const days = [...byDate.keys()].sort((a, b) => a - b);
+  const gaps = days.slice(1).map((day, index) => day - days[index]!);
+  const columnsPerDate = Math.max(...[...byDate.values()].map((group) => Math.ceil(group.length / 4)));
+  const columnGap = 230;
+  const pixelsPerDay = columnsPerDate * columnGap / (gaps.length ? Math.min(...gaps) : end - start);
+  const width = Math.max(canvasWidth, Math.ceil(tasks.length / 4) * columnGap + 320, (end - start) * pixelsPerDay + 320 + (columnsPerDate - 1) * columnGap);
+  const laneY = [160, 270, 380, 490];
+  let taskIndex = 0;
+  const points = days.flatMap((day) => byDate.get(day)!.map((task, index) => ({
+    id: task.id,
+    x: 145 + (day - start) * pixelsPerDay + Math.floor(index / 4) * columnGap,
+    y: laneY[taskIndex++ % 4]!,
+  })));
+  return { width, points };
 }
 
 function smoothPath(points: Array<Pick<GraphPoint, "x" | "y">>): string {
@@ -619,11 +805,13 @@ function beginCanvasPan(event: ReactPointerEvent<HTMLElement>, pan: PanOffset, s
   setPanning({ pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, originX: pan.x, originY: pan.y });
 }
 
-function moveCanvasPan(event: ReactPointerEvent<HTMLElement>, panning: CanvasPanState | null, setPan: (value: PanOffset) => void): void {
+function moveCanvasPan(event: ReactPointerEvent<HTMLElement>, panning: CanvasPanState | null, setPan: (value: PanOffset) => void, canvas?: { width: number; height: number }): void {
   if (!panning || panning.pointerId !== event.pointerId) return;
+  const minX = canvas ? Math.min(0, event.currentTarget.clientWidth - canvas.width - 60) : -320;
+  const minY = canvas ? Math.min(-120, event.currentTarget.clientHeight - canvas.height - 100) : -120;
   setPan({
-    x: Math.max(-320, Math.min(320, panning.originX + event.clientX - panning.startX)),
-    y: Math.max(-120, Math.min(120, panning.originY + event.clientY - panning.startY)),
+    x: Math.max(minX, Math.min(canvas ? 60 : 320, panning.originX + event.clientX - panning.startX)),
+    y: Math.max(minY, Math.min(120, panning.originY + event.clientY - panning.startY)),
   });
 }
 
@@ -639,6 +827,7 @@ async function api<T = unknown>(path: string, init?: RequestInit): Promise<T> {
 }
 
 function statusLabel(status: PlanNode["status"]): string { return { draft: "草稿", todo: "等待探索", ready: "下一站", in_progress: "正在前往", blocked: "前方受阻", done: "已经抵达", archived: "已收起" }[status]; }
+function nodeTypeLabel(type: PlanNode["type"]): string { return { task: "路标", milestone: "里程碑", checkpoint: "复盘", assumption: "假设", decision: "决策" }[type]; }
 function contentTypeLabel(contentType: EvidenceCard["contentType"]): string { return { user_fact: "用户事实", advice: "建议", experience: "经验", opinion: "观点", factual_claim: "事实主张", rule: "规则", ai_inference: "AI 推断" }[contentType]; }
 function formatDateRange(node: PlanNode): string { return node.startDate && node.endDate ? `${node.startDate.slice(5)} → ${node.endDate.slice(5)}` : "待安排"; }
 function toMessage(error: unknown): string { return error instanceof Error ? error.message : "未知错误"; }

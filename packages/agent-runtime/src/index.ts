@@ -14,6 +14,7 @@ import type {
   ValidationResult,
 } from "@zhilu/contracts";
 import { PLAN_SCHEMA_VERSION } from "@zhilu/contracts";
+export { prepareRoadmapperInput, compileRoadmapperBaseline, validateRoadmapperPlan, RoadmapperValidationError, type RoadmapperInput } from "./roadmapper";
 
 export type WorkflowPhase = "interview" | "research" | "planning" | "updating";
 

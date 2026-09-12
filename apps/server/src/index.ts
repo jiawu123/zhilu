@@ -14,7 +14,10 @@ import type {
 import {
   ResearchRequestValidationError,
   assembleResearchRequests,
-  createLiveBaselineProposal,
+  compileRoadmapperBaseline,
+  prepareRoadmapperInput,
+  validateRoadmapperPlan,
+  RoadmapperValidationError,
   createMockBaselineProposal,
   createResearchReadyPlan,
   decideWorkflow,
@@ -34,6 +37,7 @@ import { PlanRepository } from "./repository";
 import { buildM2Context, M2ContextError } from "./m2-context";
 import { BoundaryError, validateResearchInput } from "./zhihu-boundary";
 import { createZhihuProvider, readZhihuProviderConfig, ZhihuProviderError, type ZhihuProvider } from "./zhihu-provider";
+import { createRoadmapperProvider, readRoadmapperConfig, RoadmapperProviderError, type RoadmapperProvider } from "./roadmapper-provider";
 
 const repoRoot = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const repository = new PlanRepository(
@@ -42,11 +46,12 @@ const repository = new PlanRepository(
 );
 const port = Number(process.env.PORT ?? 8787);
 
-interface LiveEvidenceOptions { liveEnabled?: boolean; zhihuProvider?: ZhihuProvider }
+interface LiveEvidenceOptions { liveEnabled?: boolean; zhihuProvider?: ZhihuProvider; roadmapperProvider?: RoadmapperProvider }
+interface LiveServices { enabled: boolean; provider: ZhihuProvider | undefined; roadmapper: RoadmapperProvider | undefined; busy: Set<string> }
 
 export function createZhiluServer(planRepository: PlanRepository, options: LiveEvidenceOptions = {}) {
-  const live = { enabled: options.liveEnabled ?? process.env.ZHIHU_LIVE_ENABLED === "true",
-    provider: options.zhihuProvider, busy: new Set<string>() };
+  const live: LiveServices = { enabled: options.liveEnabled ?? process.env.ZHIHU_LIVE_ENABLED === "true",
+    provider: options.zhihuProvider, roadmapper: options.roadmapperProvider, busy: new Set<string>() };
   return createServer(async (request, response) => {
     setCors(response);
     if (request.method === "OPTIONS") {
@@ -74,7 +79,7 @@ async function route(
   request: IncomingMessage,
   response: ServerResponse,
   planRepository: PlanRepository,
-  live: {enabled: boolean; provider: ZhihuProvider | undefined; busy: Set<string>},
+  live: LiveServices,
 ): Promise<void> {
   const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
   const pathname = url.pathname;
@@ -407,7 +412,7 @@ async function liveBaseline(
   response: ServerResponse,
   repository: PlanRepository,
   encodedProjectId: string,
-  live: { enabled: boolean; provider: ZhihuProvider | undefined; busy: Set<string> },
+  live: LiveServices,
 ): Promise<void> {
   let lockedId: string | undefined;
   try {
@@ -416,10 +421,13 @@ async function liveBaseline(
     if (!plan.evidence.some((item) => item.riskTags.includes("等待知乎研究"))) {
       throw new HttpError(409, "当前项目已经有 Baseline；新的知识缺口应从 Event 发起。");
     }
+    validateRoadmapperPlan(plan, new Date().toISOString());
     if (live.busy.has(projectId)) throw new HttpError(409, "当前项目已有研究正在执行。");
     live.busy.add(projectId);
     lockedId = projectId;
     live.provider ??= createZhihuProvider(readZhihuProviderConfig());
+    // 在检索产生调用成本之前确认 Roadmapper 配置可用。
+    live.roadmapper ??= createRoadmapperProvider(readRoadmapperConfig());
 
     const context = buildM2Context(plan);
     const planning = await live.provider.planForBaseline(context);
@@ -441,17 +449,23 @@ async function liveBaseline(
       results.push(await live.provider.researchOne({ ...context, request: researchRequest }));
     }
     const now = new Date().toISOString();
-    const proposal = createLiveBaselineProposal(plan, {
+    const research = {
       runId: uniqueId("research-live"),
       proposalId: uniqueId("baseline-live"),
       questions: planning.questions,
       requests,
       evidencePacks: results.map((result) => result.pack),
       now,
-    });
+    };
+    const modelInput = prepareRoadmapperInput(plan, research, uniqueId("roadmapper"));
+    const modelOutput = await live.roadmapper.generate(modelInput);
+    const proposal = compileRoadmapperBaseline(plan, research, modelInput, modelOutput);
     for (const preview of proposal.previews) {
       const validation = validatePlan(preview.plan);
       if (!validation.valid) throw new PlanEngineError(validation.issues);
+    }
+    if ((await repository.getExistingPlan(projectId)).version !== plan.version) {
+      throw new HttpError(409, "规划期间项目已被修改，请刷新后重新规划。");
     }
     const existing = await repository.getBaselineProposals(projectId);
     await repository.saveBaselineProposal(projectId, proposal);
@@ -465,7 +479,7 @@ async function liveBaseline(
 }
 
 async function liveEvidence(request: IncomingMessage, response: ServerResponse, repository: PlanRepository,
-  encodedProjectId: string, live: {enabled: boolean; provider: ZhihuProvider | undefined; busy: Set<string>}): Promise<void> {
+  encodedProjectId: string, live: LiveServices): Promise<void> {
   let lockedId: string | undefined;
   try {
     if (!live.enabled) throw new HttpError(503, "真实证据接口尚未启用。");
@@ -501,6 +515,8 @@ async function existingLivePlan(repository: PlanRepository, encodedProjectId: st
 
 function sendLiveError(response: ServerResponse, error: unknown): void {
   if (error instanceof HttpError) sendJson(response, error.status, { error: error.message });
+  else if (error instanceof RoadmapperValidationError) sendJson(response, 422, { error: error.message, code: "invalid_roadmap" });
+  else if (error instanceof RoadmapperProviderError) sendJson(response, error.status, { error: error.message, code: error.code });
   else if (error instanceof ResearchRequestValidationError) sendJson(response, 422, { error: error.message, issues: error.issues });
   else if (error instanceof M2ContextError) sendJson(response, 409, { error: error.message });
   else if (error instanceof BoundaryError) sendJson(response, error.code === "invalid_request" ? 400 : 502,
