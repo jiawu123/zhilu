@@ -366,15 +366,19 @@ Query Plan
 
 ### `ranker.py`
 
-负责对候选知乎结果进行筛选和排序。
+当前为 `m2-ranker-v4`，用于本地确定性排序和 `legacy` 路径。根据本次研究问题识别方法、验证、风险、资源、概念或经验需求，再选择权重；Python、API、JSON 等术语本身不再获得加分。点赞权重最多 3%，问题明确要求时效时才启用时间信号。
 
-排序时可以综合考虑：
+`rank_results(results, query, now_ts=None)` 与 `evidence_score(...)` 保留原接口；新增 `ranking_breakdown(...)` 可查看权重、原始词面覆盖率及最终折扣。仅对临时评分文本做处理，传给 compiler 的原文、CRLF、emoji、URL 和风险信息保持不变。
 
-* 与研究问题的相关性；
-* 内容质量；
-* 来源信息完整度；
-* 内容是否适合当前用户条件；
-* 风险和局限性。
+生产默认 `batch-v1` 继续走模型批量筛选，不使用这套固定权重；`v3` 复用共享问题结构信号，其 RRF 和多样性选择公式未改。这里的分数是启发式优先级，不能验证事实或判断完整用户约束是否满足。
+
+从仓库根目录执行跨领域离线对照（0 次搜索、0 次模型调用）：
+
+```powershell
+.\.venv\Scripts\python.exe -B .\packages\zhihu\scripts\evaluate_ranker.py
+```
+
+输出位于 `packages/zhihu/artifacts/ranker-cross-domain.json`，包含逐例解释和未满足项。新增 16 个案例只用于工程回归，真实质量仍为 `needs_human_review`。权重、实际验证结果、剩余限制和回退说明见 [RANKER_GENERALIZATION.md](docs/RANKER_GENERALIZATION.md)。
 
 ---
 

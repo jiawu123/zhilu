@@ -190,7 +190,7 @@ try {
 
 `ok`、`no_evidence`、`partial` 都可能返回200，必须检查 `result.status`；disabled为503，输入错误400，项目不存在404，未确认资料/繁忙409，上游执行失败502，整体超时504。风险仍未核实，不能把排序分数或两张卡当作质量保证。
 
-Python沿用已有 `packages/zhihu/.env` 或进程环境中的DeepSeek配置，以及本机知乎CLI授权；Node从启动环境获取解释器和包目录。脚本只设置非秘密参数，不写`.env`、不换服务商、不传密钥命令行。回退时重启并使用 `-Profile legacy`，默认即legacy。
+Python沿用已有 `packages/zhihu/.env` 或进程环境中的DeepSeek配置，以及本机知乎CLI授权；Node从启动环境获取解释器和包目录。脚本只设置非秘密参数，不写`.env`、不换服务商、不传密钥命令行。生产默认为 `batch-v1`；本地确定性排序可重启并显式使用 `-Profile legacy`，其 `ranker.py` 已更新为问题驱动的 V4。离线对照与旧版本回退见 [Ranker 泛化说明](../packages/zhihu/docs/RANKER_GENERALIZATION.md)。
 
 ## 4. 环境不完整时
 

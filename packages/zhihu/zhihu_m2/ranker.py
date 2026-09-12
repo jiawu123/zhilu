@@ -1,10 +1,10 @@
-"""M2 ranker V2.1: conservative promotion handling for search snippets.
+"""M2 ranker V4: question-led, domain-neutral local snippet priorities.
 
 Compatible with the ZhihuResult schema from this project. No API calls,
 third-party libraries, or credentials are used here.
 
-Only promotion detection/cleaning changes from V2. Weights, query-token
-matching, technical-specificity rules, recency and engagement stay the same.
+Used by legacy/local deterministic entry points; production batch-v1 keeps its
+model batch screening. No occupation or programming vocabulary earns a bonus.
 Scores are heuristic priorities, NOT calibrated probabilities or verification.
 ContentText is a search snippet, not guaranteed full article text. Preserve
 result.content_text and the source URL for later LLM review and attribution.
@@ -14,6 +14,8 @@ import re
 import time
 
 from zhihu_m2.models import ZhihuResult
+
+RANKER_VERSION = 'm2-ranker-v4'
 
 # “微信” by itself is a product name, not a request to contact a seller.
 CONTACT_TERMS = [
@@ -45,10 +47,25 @@ _WARNING_PATTERN = re.compile(
     flags=re.IGNORECASE,
 )
 
-SEQUENCE_TERMS = ["第一步", "第二步", "第三步", "首先", "然后", "接着", "最后", "step 1", "step1", "step 2", "step2", "step 3", "step3"]
-ACTION_TERMS = ["调用", "实现", "搭建", "配置", "测试", "调试", "debug", "部署", "评估", "evaluation", "验证", "编写", "运行", "接入", "处理", "设计"]
-DELIVERABLE_TERMS = ["api", "tool calling", "工具调用", "agent loop", "rag", "项目", "代码", "日志", "测试", "评估", "作品集", "协议", "状态"]
-SPECIFICITY_TERMS = ["api", "json", "http", "github", "python", "typescript", "javascript", "rag", "react", "llm", "langchain", "tool calling", "工具调用", "agent loop", "eventstream", "sse", "prompt", "embedding", "向量", "协议", "日志", "evaluation", "评估", "测试"]
+# Weights describe the requested evidence, not a profession or topic. Multiple
+# intents average these policies; freshness is explicitly requested, not assumed.
+_WEIGHT_POLICIES = {
+    'method': (.60, .25, .12),
+    'verification': (.60, .25, .12),
+    'risk': (.60, .25, .12),
+    'resource': (.65, .15, .17),
+    'concept': (.65, .20, .12),
+    'experience': (.60, .20, .17),
+    'unknown': (.70, .10, .17),
+}
+_FRESHNESS_REQUEST = re.compile(
+    r'最新|目前|当前|现在|今年|近期|近[一二三\d]+(?:年|月)|'
+    r'\b(?:latest|current|currently|recent|today|up[ -]to[ -]date)\b', re.I)
+_QUESTION_WORDS = re.compile(
+    r'如何|怎样|怎么|请问|有没有|有哪些|哪些|什么是|是什么|什么|一个|'
+    r'\b(?:how|what|which|where|when|why|can|could|should|would|do|does|'
+    r'is|are|was|were|the|a|an|to|of|for|and|or|in|on|with|i|we|you|my)\b', re.I)
+_COVERAGE_SATURATION = .5  # Beyond half the question terms, prefer useful structure.
 
 
 def _contains_any(text, terms):
@@ -154,14 +171,9 @@ def engagement_score(result: ZhihuResult) -> float:
 
 
 def actionability_score(result: ZhihuResult) -> float:
-    """V2 keyword heuristic applied to the conservative scoring view."""
-    text = clean_content(result)
-    if not text:
-        return 0.0
-    sequence_score = min(_count_unique_terms(text, SEQUENCE_TERMS) / 3, 1.0)
-    action_score = min(_count_unique_terms(text, ACTION_TERMS) / 5, 1.0)
-    deliverable_score = min(_count_unique_terms(text, DELIVERABLE_TERMS) / 5, 1.0)
-    return 0.35 * sequence_score + 0.40 * action_score + 0.25 * deliverable_score
+    """Concrete action/sequence cues shared with V3, without technical bonuses."""
+    from zhihu_m2.question_signals import surface_scores
+    return surface_scores(_paragraphs(clean_content(result)))['method']
 
 
 def _tokenize(text: str) -> set[str]:
@@ -200,15 +212,9 @@ def relevance_score(result: ZhihuResult, query: str) -> float:
 
 
 def specificity_score(result: ZhihuResult) -> float:
-    """Coding-domain surface detail; terminology saturation is not expertise."""
-    text = clean_content(result)
-    if not text:
-        return 0.0
-    technical_score = min(_count_unique_terms(text, SPECIFICITY_TERMS) / 6, 1.0)
-    number_hits = len(re.findall(r"\b\d+(?:\.\d+)?\b", text))
-    structure_hits = len(re.findall(r"(?:第[一二三四五六七八九十\d]+[步章节]|part\s*\d+|step\s*\d+)", text, flags=re.IGNORECASE))
-    detail_score = min((number_hits + structure_hits) / 6, 1.0)
-    return 0.75 * technical_score + 0.25 * detail_score
+    """Observable detail: contextual quantities, examples, conditions or scope."""
+    from zhihu_m2.question_signals import surface_scores
+    return surface_scores(_paragraphs(clean_content(result)))['detail']
 
 
 def recency_score(result: ZhihuResult, now_ts=None) -> float:
@@ -230,19 +236,74 @@ def recency_score(result: ZhihuResult, now_ts=None) -> float:
     return 0.40
 
 
+def _question_body(result: ZhihuResult, query: str) -> str:
+    """Ignore whole-unit echoed headings only in the temporary scoring view.
+
+    Never remove matching words within an answer or edit the source. This is a
+    narrow defense against search snippets that merely repeat their question.
+    """
+    def heading_key(text):
+        return re.sub(r'[^\w]', '', text.casefold())
+
+    # A declarative title can itself be a useful short answer; do not remove it.
+    headings = {heading_key(query)} - {''}
+    return '\n'.join(unit for unit in _paragraphs(clean_content(result))
+                     if heading_key(unit) not in headings)
+
+
+def ranking_breakdown(result: ZhihuResult, query: str, now_ts=None) -> dict:
+    """Explain local priority without inferring source truth or user attributes.
+
+    Body alignment and requested evidence structure gate auxiliary bonuses.
+    Lexical coverage saturates: parroting every question term is not stronger
+    support than a relevant explanation that uses different wording.
+    These are lexical/structural heuristics, not a semantic model or calibration.
+    """
+    from zhihu_m2.question_signals import detect_intents, surface_scores
+    for value in (result.vote_up_count, result.comment_count, result.edit_time):
+        if type(value) not in (int, float) or not math.isfinite(value):
+            raise ValueError('Ranking metadata must contain finite numbers, excluding bool.')
+    if now_ts is None:
+        now_ts = time.time()
+    if type(now_ts) not in (int, float) or not math.isfinite(now_ts):
+        raise ValueError('Ranking time must contain finite numbers, excluding bool.')
+    intents = detect_intents(query)
+    policies = [_WEIGHT_POLICIES[intent] for intent in intents]
+    weights = {key: math.fsum(p[i] for p in policies) / len(policies)
+               for i, key in enumerate(('relevance', 'task_fit', 'detail'))}
+    weights.update(recency=0.0, engagement=.03)
+    if _FRESHNESS_REQUEST.search(query):
+        weights['recency'] = .08
+        weights['relevance'] -= .08
+    cleaned = _question_body(result, query)
+    surface = surface_scores(_paragraphs(cleaned))
+    focus = _QUESTION_WORDS.sub(' ', query).strip()
+    query_tokens = _tokenize(focus)
+    body_alignment = len(query_tokens & _tokenize(cleaned)) / len(query_tokens) if query_tokens else 0.0
+    title_alignment = len(query_tokens & _tokenize(result.title)) / len(query_tokens) if query_tokens else 0.0
+    body_coverage = min(body_alignment / _COVERAGE_SATURATION, 1.0)
+    signals = {'relevance': .35 * title_alignment + .65 * body_coverage,
+               'task_fit': math.fsum(surface[intent] for intent in intents) / len(intents),
+               'detail': surface['detail'],
+               'recency': recency_score(result, now_ts=now_ts) if weights['recency'] and result.edit_time <= now_ts else .5,
+               'engagement': engagement_score(result), 'promotion': promotion_score(result),
+               'body_alignment': body_alignment}
+    base = math.fsum(weights[name] * signals[name] for name in weights)
+    gates = {'body': .20 + .80 * body_coverage,
+             'task_fit': 1.0 if intents == ('unknown',) else .35 + .65 * signals['task_fit'],
+             'promotion': 1 - .50 * signals['promotion']}
+    score = base * math.prod(gates.values()) if query_tokens else 0.0
+    return {'ranker_version': RANKER_VERSION, 'score_kind': 'heuristic_priority_not_fact_confidence',
+            'intents': list(intents), 'weights': weights, 'signals': signals, 'gates': gates,
+            'score': max(0.0, min(score, 1.0))}
+
+
 def evidence_score(result: ZhihuResult, query: str, now_ts=None) -> float:
-    """V2 weighted priority with a promotion penalty, not a truth score."""
-    base_score = (
-        0.30 * relevance_score(result, query)
-        + 0.25 * actionability_score(result)
-        + 0.20 * specificity_score(result)
-        + 0.15 * recency_score(result, now_ts=now_ts)
-        + 0.10 * engagement_score(result)
-    )
-    final_score = base_score * (1 - 0.50 * promotion_score(result))
-    return max(0.0, min(final_score, 1.0))
+    """Backward-compatible API; question-led weighted priority, never truth."""
+    return ranking_breakdown(result, query, now_ts=now_ts)['score']
 
 
 def rank_results(results: list[ZhihuResult], query: str, now_ts=None) -> list[ZhihuResult]:
     """Return a new list, descending by score; ties preserve input order."""
-    return sorted(results, key=lambda result: evidence_score(result, query, now_ts=now_ts), reverse=True)
+    frozen_now = time.time() if now_ts is None else now_ts
+    return sorted(results, key=lambda result: evidence_score(result, query, now_ts=frozen_now), reverse=True)
