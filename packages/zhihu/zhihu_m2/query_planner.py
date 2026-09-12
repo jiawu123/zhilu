@@ -9,6 +9,7 @@ import copy
 import hashlib
 import json
 import math
+import os
 import re
 import unicodedata
 from datetime import datetime, timezone
@@ -17,6 +18,8 @@ from typing import Any
 from uuid import uuid4
 
 from zhihu_m2 import llm_client
+from zhihu_m2.config import load_local_env
+from zhihu_m2.retrieval_options import RetrievalOptions, options_from_env
 
 PLANNER_VERSION = "m2-query-planner-v0.1.0"
 EVIDENCE_NEEDS = {"method", "verification", "risk", "concept", "resource", "experience"}
@@ -84,13 +87,36 @@ class PlannerValidationError(ValueError):
     """Model JSON does not meet the planner contract; not a lack of evidence."""
 
 
-def _system_prompt(frozen: dict) -> str:
+V3_PROMPT_APPENDIX = """\n【V3：互补查询，保持问题焦点】
+同题两条Query保持同一核心问题；优先让一条覆盖具体方法，另一条覆盖检验、失败、限制，
+或另一种用户会使用的自然说法。不要机械追加“踩坑”。不以工具名称或预想答案为起点
+寻求确认，不推断用户未提供的属性。以下仅为合成教学示例，不是推荐的实际答案：
+问题“怎样判断调用参数正确？”可用“调用参数 记录 比较方法”和“函数调用 参数预期 不一致 检查”。
+问题“有哪些练习资源？”可用“调用参数 练习资料 内容范围”和“函数调用 入门教程 示例说明”。
+不要把资源问题的第二条改成无关的方法问题；不要因例子增加用户没有要求的工具或技术栈。
+"""
+
+
+def _system_prompt(frozen: dict, *, retrieval_profile: str = "legacy") -> str:
+    RetrievalOptions(retrieval_profile)
+    prompt = SYSTEM_PROMPT
+    if retrieval_profile == "v3":
+        prompt += V3_PROMPT_APPENDIX
     if frozen.get("planning_profile") == BASELINE_PROFILE:
-        return SYSTEM_PROMPT + "\n【首次 Baseline 模式覆盖数量规则】\n" + (
+        return prompt + "\n【首次 Baseline 模式覆盖数量规则】\n" + (
             "输入还包含planning_profile。信息充分且status=ok时必须恰好3个有效研究问题，"
             "每题恰好2条独立Query，合计6条且跨题不重复。此处是精确数量，不是上限。"
             "信息不足仍返回needs_clarification，不凑问题。\n")
-    return SYSTEM_PROMPT
+    return prompt
+
+
+def build_planner_prompts(frozen_input: dict, *, retrieval_profile: str = "legacy") -> tuple[str, str]:
+    """Exact generate_json arguments; transport adds its standard JSON suffix.
+
+    Hash the transport's full messages for wire-level audit, not SYSTEM_PROMPT.
+    """
+    frozen = build_planner_input(**frozen_input)
+    return _system_prompt(frozen, retrieval_profile=retrieval_profile), _json(frozen)
 
 
 def _json(value: Any) -> str:
@@ -267,7 +293,10 @@ def plan_research(
     """
     frozen = build_planner_input(goal, user_context, max_questions=max_questions,
                                  queries_per_question=queries_per_question, planning_profile=planning_profile)
-    payload = llm_client.generate_json(_system_prompt(frozen), _json(frozen), max_tokens=2400)
+    load_local_env()
+    profile = options_from_env(os.environ).profile
+    system_prompt, user_prompt = build_planner_prompts(frozen, retrieval_profile=profile)
+    payload = llm_client.generate_json(system_prompt, user_prompt, max_tokens=2400)
     return validate_plan_response(payload, frozen)
 
 
@@ -336,12 +365,14 @@ def run_planner(
     request = _load_request(Path(input_file))
     frozen = build_planner_input(**request, max_questions=max_questions,
                                  queries_per_question=queries_per_question)
-    user_prompt = _json(frozen)
+    load_local_env()
+    profile = options_from_env(os.environ).profile
+    system_prompt, user_prompt = build_planner_prompts(frozen, retrieval_profile=profile)
     report = {
         "planner_version": PLANNER_VERSION, "model": llm_client.MODEL,
         "status": "dry_run", "stage": "preview", "run_kind": "query_plan_only",
         "input": frozen, "input_file": str(Path(input_file).resolve()),
-        "system_prompt_sha256": _hash(SYSTEM_PROMPT), "frozen_input_sha256": _hash(user_prompt),
+        "system_prompt_sha256": _hash(system_prompt), "frozen_input_sha256": _hash(user_prompt),
         "max_total_queries": max_questions * queries_per_question,
         "planner_calls_attempted": 0, "model_calls_upper_bound": 0,
         "new_zhihu_search": False, "queries_executed": False,
@@ -359,13 +390,13 @@ def run_planner(
                   output_dir=str(folder.resolve()))
     # All input/prompt writes must succeed BEFORE attempting the model call.
     _write(folder / "planner_input.json", frozen)
-    (folder / "system_prompt.txt").write_text(SYSTEM_PROMPT, encoding="utf-8")
+    (folder / "system_prompt.txt").write_text(system_prompt, encoding="utf-8")
     (folder / "user_prompt.txt").write_text(user_prompt, encoding="utf-8")
     _write(folder / "manifest.json", report)
     try:
         report.update(stage="model_call", planner_calls_attempted=1, model_calls_upper_bound=1)
         _write(folder / "manifest.json", report)
-        payload = llm_client.generate_json(SYSTEM_PROMPT, user_prompt, max_tokens=2400)
+        payload = llm_client.generate_json(system_prompt, user_prompt, max_tokens=2400)
         report["stage"] = "save_model_response"
         _write(folder / "model_response.json", payload)
         report["stage"] = "validate"

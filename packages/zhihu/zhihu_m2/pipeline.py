@@ -154,6 +154,13 @@ def plan(request: dict, *, dry_run: bool = False, max_questions: int = 3,
         raise EntryError("invalid_plan_output") from None
     except planner.llm_client.LLMError:
         raise EntryError("llm_error") from None
+    except ValueError as error:
+        # RetrievalOptions uses the existing typed configuration error. Do not
+        # promote arbitrary model/validation exceptions into configuration errors.
+        from zhihu_m2.research_runner import ResearchError
+        if isinstance(error, ResearchError) and error.code == "configuration_error":
+            raise EntryError("configuration_error") from None
+        raise
     if not isinstance(result, dict) or result.get("status") not in {
         "ready_for_review", "needs_clarification"
     }:

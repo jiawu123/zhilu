@@ -1,5 +1,68 @@
 # Zhihu Knowledge
 
+## Retrieval V3：本地选择与可重复评测
+
+默认 `ZHIHU_RETRIEVAL_PROFILE=legacy`。`v3` 保留同一来源的各 Query 原始片段，以原始结果名次计算 RRF，按问题需要选择一个原始 variant，再根据**已经产出卡片**的来源做软多样性选择；不会追加搜索或调用研究 Planner。分数只用于优先级，不是事实可信度。阶段 B 的额外 LLM 重排未实现。
+
+两种模式共用 `run_research`、compiler、Server Provider 和原 adapter；请求和 EvidencePack 不变。`planning_profile=baseline` 控制首次 Baseline 数量，`ZHIHU_RETRIEVAL_PROFILE` 控制本地检索/提示词策略，两者独立。配置无效会安全失败，HTTP body 不能选择 profile。Python 从进程环境或固定的本目录 `.env` 读取；Node 启动时继承环境，重启后才作用于新子进程。不得将此配置或密钥写进 `VITE_*`。
+
+```powershell
+Set-Location 'C:\Users\Kylee\Desktop\zhilu'
+$py = (Resolve-Path .\.venv\Scripts\python.exe).Path
+# 下一条可直接执行的离线对照：0 次搜索、0 次模型调用
+& $py -B .\packages\zhihu\scripts\evaluate_retrieval.py `
+  --case-file .\packages\zhihu\tests\fixtures\retrieval_v3\synthetic_cases.json `
+  --profiles legacy v3 --offline `
+  --output .\packages\zhihu\artifacts\retrieval-v3-synthetic.json
+if ($LASTEXITCODE -ne 0) { throw '离线评测失败' }
+```
+
+输出含 `legacy`、`v3_no_diversity`、`selection_simulation` 三组。最后一组只是排序模拟，不能冒充实际编译后接受卡片的选择。12 个合成案例仅是工程回归。真实数据必须按 `source_id@variant_key` 人工标注，未标注指标为 null、状态为 `needs_human_review`；共同已标注题目的比较见 `paired_summary`。运行证据与标注格式见 [RETRIEVAL_V3_EVALUATION.md](docs/RETRIEVAL_V3_EVALUATION.md)，实施与交接见 [RETRIEVAL_V3_STATUS.md](docs/RETRIEVAL_V3_STATUS.md)。
+
+普通回归不联网，pytest 禁用个人 dotenv/凭据并固定 legacy；测试中显式注入 v3：
+
+```powershell
+Push-Location .\packages\zhihu
+try {
+    & $py -B -m pytest -q
+    if ($LASTEXITCODE -ne 0) { throw 'Python 测试失败' }
+} finally { Pop-Location }
+.\node_modules\.bin\vitest.cmd run
+if ($LASTEXITCODE -ne 0) { throw 'TypeScript 测试失败' }
+# 使用已有 pnpm 10.30.2；不要因当前 PATH 指向其他版本而重装依赖
+pnpm.cmd typecheck
+pnpm.cmd build
+```
+
+显式真实评测以固定 12 题（8 开发、4 留出）采集一次候选池，两个 profile 复用快照。以下命令会使用现有凭据：同一个目录每阶段只能启动一次，锁和 ledger 阻止重跑或并行重置预算。错误不重试；不要删除 ledger/started 文件来绕过预算。目录不存在时可创建，禁止覆盖本次已运行结果：
+
+```powershell
+$run = '.\packages\zhihu\artifacts\retrieval-v3-new-run'
+if (Test-Path $run) { throw '此目录已存在，请先阅读既有结果，不要重复调用' }
+& $py -B .\packages\zhihu\scripts\run_retrieval_live_evaluation.py --live --phase capture --output-dir $run
+if ($LASTEXITCODE -ne 0) { throw '采集失败，查看安全错误码，不自动重试' }
+& $py -B .\packages\zhihu\scripts\evaluate_retrieval.py --case-file "$run\candidates.json" --profiles legacy v3 --offline --output "$run\ranking.json"
+& $py -B .\packages\zhihu\scripts\run_retrieval_live_evaluation.py --live --phase compiler --output-dir $run
+if ($LASTEXITCODE -ne 0) { throw '编译批次失败，停止并检查 ledger' }
+& $py -B .\packages\zhihu\scripts\run_retrieval_live_evaluation.py --live --phase planner --output-dir $run
+if ($LASTEXITCODE -ne 0) { throw 'Planner 批次失败，停止并检查 ledger' }
+```
+
+上限：采集 24 搜索（每题两 Query、每 Query count=5）；四个跨领域开发题的两个 profile 各最多 2 次编译/2 张卡，加三组合成提示词案例的双 profile 对照，合计最多 22 次编译（文档上限24）；Planner 四目标双 profile 最多8次，不执行其生成查询。实际发送的模型 messages 哈希在受控子进程内取得，不记录凭据或原始异常。`compiler-results.json` 中回放搜索计数是本地回放次数，真实付费/联网尝试以 ledger 为准。
+
+V3 Provider 验收复用下文既有 smoke，只需在启动它的终端明确设置 profile；单次另加最多2搜索/3编译。切回 legacy 同样重启 Server，不能在另一个发 HTTP 的终端改变量后误认为服务已切换：
+
+```powershell
+$env:ZHIHU_RETRIEVAL_PROFILE = 'v3'
+$env:ZHIHU_PYTHON_BIN = $py
+$env:ZHIHU_PYTHON_CWD = (Resolve-Path .\packages\zhihu).Path
+.\node_modules\.bin\tsx.cmd .\apps\server\scripts\smoke_zhihu_provider.ts --live
+# 回退：从这个终端重新启动 Server。无需撤销代码或改正式项目状态。
+$env:ZHIHU_RETRIEVAL_PROFILE = 'legacy'
+```
+
+现有 `POST /api/projects/:projectId/research/live/evidence`、`/research/mock`、Baseline/apply 接口保留。Jia 继续调用 `createZhihuProvider(config).researchOne(...)`，无需接新 adapter。真实证据接入、检索工程回归、人工质量提升、完整真实 Roadmap 是不同验收项；没有人审时不宣称质量门槛通过。
+
 ## P0 Server 真实证据接入
 
 已实现 `createZhihuProvider(config).researchOne({goal,user_context,request})`，通过真实 Python pipeline 搜索、排序、编译，再由 Server 原有 adapter 产生共享 EvidencePack。`planForBaseline()` 使用首次 Baseline 专用 profile；通用 Planner 保留原行为。研究不会修改正式 Plan、History 或 pending proposal。完整真实 Roadmap 综合仍待 Jia 接入。
@@ -994,10 +1057,10 @@ DEEPSEEK_API_KEY=
 PowerShell：
 
 ```powershell
-echo $env:DEEPSEEK_API_KEY
+[bool](-not [string]::IsNullOrWhiteSpace($env:DEEPSEEK_API_KEY))
 ```
 
-不要把该命令的真实输出截图或发送到公开聊天。
+此检查只显示是否配置，不显示密钥。不要打印完整环境或 Authorization。
 
 ---
 
