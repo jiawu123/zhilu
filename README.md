@@ -33,7 +33,7 @@ Jia / Core 第一版已经跑通：
 Demo Fixture → Plan Engine → 本地 API → Roadmap → Event → pending Diff → Commit
 ```
 
-当前支持创建任意目标项目、6 个核心问题与 1 个条件化追问、User Context Card / Goal Contract 确认、Markdown/TXT 背景导入、本周焦点、节点编辑/改期/完成/新增/归档、节点级与时间约束事件、依据检查、确定性影响定位、Patch 审批、本地持久化、History，以及 JSON、Markdown、`.planbundle.zip` 导出。确认目标后先生成“研究准备版”；随后可用明确标注的 Mock Research 跑通 `Research Question → EvidencePack → 两条 Route → Roadmapper Draft → 用户确认 Baseline`。M2 现已提供独立的单请求真实证据 Provider 和默认关闭的 `/research/live/evidence` 接口；真实证据驱动的路线综合仍未完成。Mock 卡片不会伪装成知乎来源。
+当前支持创建任意目标项目、6 个核心问题与 1 个条件化追问、User Context Card / Goal Contract 确认、Markdown/TXT 背景导入、本周焦点、节点编辑/改期/完成/新增/归档、节点级与时间约束事件、依据检查、确定性影响定位、Patch 审批、本地持久化、History，以及 JSON、Markdown、`.planbundle.zip` 导出。确认目标后先生成“研究准备版”；随后可以运行 Just-in-time 知乎研究，依次完成 `Query Planner → 多个 ResearchRequest → EvidencePack → 两条确定性 Route 草案 → 用户确认 Baseline`。真实研究默认关闭，需要本机配置知乎 CLI、Python 与模型；Mock 仍作为无配置演示入口，且不会伪装成知乎来源。模型驱动的完整 Roadmapper 仍待接入。
 
 M2 配置与 PowerShell 命令见 [知乎模块说明](packages/zhihu/README.md#p0-server-真实证据接入)，实际验证记录见 [P0 状态](packages/zhihu/docs/P0_INTEGRATION_STATUS.md)，调用签名见 [Jia 交接](packages/zhihu/docs/P0_JIA_HANDOFF.md)。
 

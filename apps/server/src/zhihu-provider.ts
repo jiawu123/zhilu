@@ -185,5 +185,22 @@ async function terminateTree(child: ChildProcessWithoutNullStreams): Promise<boo
     }
   }
   try { child.kill("SIGKILL"); } catch { /* already exited */ }
-  return success;
+  return await waitForTermination(child, 2_000) && success;
+}
+
+function waitForTermination(child: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+  return new Promise((resolveWait) => {
+    let finished = false;
+    const finish = (result: boolean) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      child.off("exit", onExit);
+      resolveWait(result);
+    };
+    const onExit = () => finish(true);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    child.once("exit", onExit);
+  });
 }

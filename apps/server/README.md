@@ -2,7 +2,12 @@
 
 本地 API、Plan Bundle 文件存储和 P0 模块组装入口。
 
-现已提供默认关闭的 `POST /api/projects/:projectId/research/live/evidence`。它执行一个 ResearchRequest，返回 `{ok:true,result:{runId,status,pack,issues,metrics}}`，不创建 BaselineProposal、不写 Plan/History/pending。原 `/research/mock` 与 `/baseline/apply` 保留。
+现已提供两个默认关闭的真实研究入口：
+
+- `POST /api/projects/:projectId/research/live/evidence` 执行一个 ResearchRequest，只返回 EvidencePack；
+- `POST /api/projects/:projectId/research/live/baseline` 运行 Query Planner、多个 ResearchRequest，并把真实 EvidencePack 组装成待确认 BaselineProposal。
+
+两个入口都不会直接修改正式 Plan。只有原有 `/baseline/apply` 在用户选择路线后写入 Plan 与 Commit；`/research/mock` 继续作为无配置演示入口。
 
 Server 调用 `createZhihuProvider(readZhihuProviderConfig())`；配置来自 Node 的启动环境，需要绝对路径 `ZHIHU_PYTHON_BIN` / `ZHIHU_PYTHON_CWD`。`ZHIHU_LIVE_ENABLED` 必须显式为 `true` 才启用接口，默认等待上限 630000 ms。Node 不自动加载 Python `.env`；Python 使用自身现有 dotenv loader。不要将 Server 配置或凭据放进前端请求。
 

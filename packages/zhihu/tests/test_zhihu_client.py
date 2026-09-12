@@ -42,14 +42,17 @@ def test_extract_items():
     assert items[0]["Title"] == "Test Answer"
 
 
-def test_get_cli_path():
+def test_get_cli_path(monkeypatch, tmp_path):
     """
-    The Zhihu CLI executable should exist on this computer.
+    An explicit CLI path should be resolved without depending on the host OS.
     """
+    executable = tmp_path / "zhihu-cli.exe"
+    executable.write_text("offline fixture", encoding="utf-8")
+    monkeypatch.setenv("ZHIHU_CLI_PATH", str(executable))
 
     cli_path = zhihu_client.get_cli_path()
 
-    assert cli_path.exists()
+    assert cli_path == executable
     assert cli_path.name == "zhihu-cli.exe"
 
 def test_search_zhihu(monkeypatch):

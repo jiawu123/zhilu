@@ -11,7 +11,15 @@ import type {
   PlanNodeUpdate,
   PlanState,
 } from "@zhilu/contracts";
-import { createMockBaselineProposal, createResearchReadyPlan, decideWorkflow, validateProjectCreationInput } from "@zhilu/agent-runtime";
+import {
+  ResearchRequestValidationError,
+  assembleResearchRequests,
+  createLiveBaselineProposal,
+  createMockBaselineProposal,
+  createResearchReadyPlan,
+  decideWorkflow,
+  validateProjectCreationInput,
+} from "@zhilu/agent-runtime";
 import {
   PlanEngineError,
   applyBaselineProposal,
@@ -70,6 +78,12 @@ async function route(
 ): Promise<void> {
   const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
   const pathname = url.pathname;
+
+  const liveBaselineMatch = pathname.match(/^\/api\/projects\/([^/]+)\/research\/live\/baseline$/);
+  if (request.method === "POST" && liveBaselineMatch) {
+    await liveBaseline(response, planRepository, requiredMatch(liveBaselineMatch, 1), live);
+    return;
+  }
 
   const liveMatch = pathname.match(/^\/api\/projects\/([^/]+)\/research\/live\/evidence$/);
   if (request.method === "POST" && liveMatch) {
@@ -165,7 +179,7 @@ async function route(
       id: next.currentCommitId,
       createdAt: now,
       actor: "user",
-      reason: `用户确认 Mock Research 路线：${route?.title ?? routeId}`,
+      reason: `用户确认${proposal.researchRun.mode === "live" ? "知乎研究" : " Mock Research"}路线：${route?.title ?? routeId}`,
     });
     await planRepository.savePlan(next);
     await planRepository.saveCommit(projectId, commit);
@@ -389,20 +403,73 @@ async function commitPatch(
   return next;
 }
 
+async function liveBaseline(
+  response: ServerResponse,
+  repository: PlanRepository,
+  encodedProjectId: string,
+  live: { enabled: boolean; provider: ZhihuProvider | undefined; busy: Set<string> },
+): Promise<void> {
+  let lockedId: string | undefined;
+  try {
+    if (!live.enabled) throw new HttpError(503, "真实研究尚未启用，请先配置知乎 CLI 与模型。");
+    const { projectId, plan } = await existingLivePlan(repository, encodedProjectId);
+    if (!plan.evidence.some((item) => item.riskTags.includes("等待知乎研究"))) {
+      throw new HttpError(409, "当前项目已经有 Baseline；新的知识缺口应从 Event 发起。");
+    }
+    if (live.busy.has(projectId)) throw new HttpError(409, "当前项目已有研究正在执行。");
+    live.busy.add(projectId);
+    lockedId = projectId;
+    live.provider ??= createZhihuProvider(readZhihuProviderConfig());
+
+    const context = buildM2Context(plan);
+    const planning = await live.provider.planForBaseline(context);
+    if (planning.status === "needs_clarification") {
+      throw new HttpError(409, `研究前还需要确认：${planning.clarificationQuestions.join("；")}`);
+    }
+    const requests = assembleResearchRequests({
+      questions: planning.questions,
+      relevantUserConditions: [
+        plan.userContext!.currentSituation,
+        `每周可投入 ${plan.weeklyHours} 小时`,
+        ...plan.userContext!.constraints,
+      ],
+      evidenceLimitPerQuestion: 4,
+      idFactory: (index) => `rq-live-${index + 1}-${crypto.randomUUID().slice(0, 6)}`,
+    });
+    const results = [];
+    for (const researchRequest of requests) {
+      results.push(await live.provider.researchOne({ ...context, request: researchRequest }));
+    }
+    const now = new Date().toISOString();
+    const proposal = createLiveBaselineProposal(plan, {
+      runId: uniqueId("research-live"),
+      proposalId: uniqueId("baseline-live"),
+      questions: planning.questions,
+      requests,
+      evidencePacks: results.map((result) => result.pack),
+      now,
+    });
+    for (const preview of proposal.previews) {
+      const validation = validatePlan(preview.plan);
+      if (!validation.valid) throw new PlanEngineError(validation.issues);
+    }
+    const existing = await repository.getBaselineProposals(projectId);
+    await repository.saveBaselineProposal(projectId, proposal);
+    for (const stale of existing) await repository.removeBaselineProposal(projectId, stale.id);
+    sendJson(response, 202, proposal);
+  } catch (error) {
+    sendLiveError(response, error);
+  } finally {
+    if (lockedId !== undefined) live.busy.delete(lockedId);
+  }
+}
+
 async function liveEvidence(request: IncomingMessage, response: ServerResponse, repository: PlanRepository,
   encodedProjectId: string, live: {enabled: boolean; provider: ZhihuProvider | undefined; busy: Set<string>}): Promise<void> {
   let lockedId: string | undefined;
   try {
     if (!live.enabled) throw new HttpError(503, "真实证据接口尚未启用。");
-    let projectId: string;
-    try { projectId = decodeURIComponent(encodedProjectId); } catch { throw new HttpError(400, "项目 ID 无效。"); }
-    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(projectId)) throw new HttpError(400, "项目 ID 无效。");
-    let plan: PlanState;
-    try { plan = await repository.getExistingPlan(projectId); }
-    catch (error) {
-      if (error instanceof Error && "code" in error && error.code === "ENOENT") throw new HttpError(404, "项目不存在。");
-      throw error;
-    }
+    const { projectId, plan } = await existingLivePlan(repository, encodedProjectId);
     const context = buildM2Context(plan);
     const body = await readLiveBody(request);
     if (!body || typeof body !== "object" || Array.isArray(body)
@@ -414,16 +481,33 @@ async function liveEvidence(request: IncomingMessage, response: ServerResponse, 
     const result = await live.provider.researchOne(input);
     sendJson(response, 200, {ok: true, result});
   } catch (error) {
-    if (error instanceof HttpError) sendJson(response, error.status, {error: error.message});
-    else if (error instanceof M2ContextError) sendJson(response, 409, {error: error.message});
-    else if (error instanceof BoundaryError) sendJson(response, error.code === "invalid_request" ? 400 : 502,
-      {error: error.code === "invalid_request" ? "研究请求不满足输入约束。" : "研究返回未通过校验。"});
-    else if (error instanceof ZhihuProviderError) sendJson(response, error.status, {error: error.message, code: error.code,
-      ...(error.cleanupError === "cleanup_failed" ? {cleanupError: "cleanup_failed"} : {})});
-    else sendJson(response, 502, {error: "研究执行失败；未回退 Mock。"});
+    sendLiveError(response, error);
   } finally {
     if (lockedId !== undefined) live.busy.delete(lockedId);
   }
+}
+
+async function existingLivePlan(repository: PlanRepository, encodedProjectId: string): Promise<{ projectId: string; plan: PlanState }> {
+  let projectId: string;
+  try { projectId = decodeURIComponent(encodedProjectId); } catch { throw new HttpError(400, "项目 ID 无效。"); }
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(projectId)) throw new HttpError(400, "项目 ID 无效。");
+  try {
+    return { projectId, plan: await repository.getExistingPlan(projectId) };
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") throw new HttpError(404, "项目不存在。");
+    throw error;
+  }
+}
+
+function sendLiveError(response: ServerResponse, error: unknown): void {
+  if (error instanceof HttpError) sendJson(response, error.status, { error: error.message });
+  else if (error instanceof ResearchRequestValidationError) sendJson(response, 422, { error: error.message, issues: error.issues });
+  else if (error instanceof M2ContextError) sendJson(response, 409, { error: error.message });
+  else if (error instanceof BoundaryError) sendJson(response, error.code === "invalid_request" ? 400 : 502,
+    { error: error.code === "invalid_request" ? "研究请求不满足输入约束。" : "研究返回未通过校验。" });
+  else if (error instanceof ZhihuProviderError) sendJson(response, error.status, { error: error.message, code: error.code,
+    ...(error.cleanupError === "cleanup_failed" ? { cleanupError: "cleanup_failed" } : {}) });
+  else sendJson(response, 502, { error: "研究执行失败；未回退 Mock。" });
 }
 
 function readLiveBody(request: IncomingMessage): Promise<unknown> {

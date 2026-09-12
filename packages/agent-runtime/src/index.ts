@@ -259,6 +259,72 @@ export interface MockResearchInput {
   now: string;
 }
 
+export interface LiveResearchInput {
+  runId: string;
+  proposalId: string;
+  questions: ResearchQuestionDraft[];
+  requests: ResearchRequest[];
+  evidencePacks: EvidencePack[];
+  now: string;
+}
+
+/**
+ * 把真实 Research Provider 返回的 EvidencePack 组装成待确认 Baseline。
+ * P0 先使用可解释的确定性路线草案；它不会冒充模型生成，也不会直接写正式 Plan。
+ */
+export function createLiveBaselineProposal(plan: PlanState, input: LiveResearchInput): BaselineProposal {
+  if (!plan.userContext?.confirmed || !plan.goalContract?.confirmed) {
+    throw new ResearchRequestValidationError([
+      { code: "RESEARCH_CONTEXT_REQUIRED", message: "运行研究前需要已确认的 User Context Card 与 Goal Contract" },
+    ]);
+  }
+  const questionValidation = validateResearchQuestionDrafts(input.questions);
+  if (!questionValidation.valid) throw new ResearchRequestValidationError(questionValidation.issues);
+  if (input.requests.length !== input.questions.length || input.evidencePacks.length !== input.requests.length) {
+    throw new ResearchRequestValidationError([
+      { code: "RESEARCH_RESULT_MISMATCH", message: "Research Question、Request 与 EvidencePack 数量必须一致" },
+    ]);
+  }
+  for (const [index, request] of input.requests.entries()) {
+    if (input.evidencePacks[index]?.requestId !== request.id) {
+      throw new ResearchRequestValidationError([
+        { code: "RESEARCH_REQUEST_MISMATCH", message: "EvidencePack 必须对应原 ResearchRequest", path: `evidencePacks.${index}.requestId` },
+      ]);
+    }
+  }
+  const evidence = deduplicateEvidence(input.evidencePacks.flatMap((pack) => pack.evidence));
+  if (evidence.length < 2) {
+    throw new ResearchRequestValidationError([
+      { code: "INSUFFICIENT_LIVE_EVIDENCE", message: "至少需要两张真实 Evidence Card 才能比较路线" },
+    ]);
+  }
+  const routes = buildLiveRoutes(plan, evidence);
+  const researchRun: ResearchRunResult = {
+    id: input.runId,
+    mode: "live",
+    generatedAt: input.now,
+    questions: structuredClone(input.questions),
+    requests: structuredClone(input.requests),
+    evidencePacks: structuredClone(input.evidencePacks),
+    routeCandidates: routes,
+  };
+  const success = plan.goalContract.successCriteria[0]?.trim() ?? "完成可检查成果";
+  const prefersFoundation = /零基础|初学|刚开始|没有.{0,8}(经验|基础|项目)|尚未/iu.test(plan.userContext.currentSituation);
+  const recommendedRouteId = prefersFoundation ? "route-live-foundation" : "route-live-outcome";
+  return {
+    id: input.proposalId,
+    projectId: plan.projectId,
+    baseVersion: plan.version,
+    createdAt: input.now,
+    recommendedRouteId,
+    researchRun,
+    previews: routes.map((route) => ({
+      routeId: route.id,
+      plan: buildRoutePreview(plan, researchRun, route, evidence, success, input.now),
+    })),
+  };
+}
+
 /**
  * 在真实知乎执行器尚未接入时，用于验证 Controller → EvidencePack → Roadmapper 的产品闭环。
  * 所有卡片都明确标为 AI 推断，不提供虚构 URL，也不能冒充知乎证据。
@@ -372,11 +438,73 @@ function buildMockRoutes(evidence: EvidenceCard[]): RouteCandidate[] {
   ];
 }
 
+function buildLiveRoutes(plan: PlanState, evidence: EvidenceCard[]): RouteCandidate[] {
+  const outcomePattern = /实践|项目|成果|反馈|验证|测试|发布|演练|动手|作品|应用/iu;
+  let outcomeEvidence = evidence.filter((item) => outcomePattern.test(`${item.title} ${item.summary} ${item.applicableWhen.join(" ")}`));
+  let foundationEvidence = evidence.filter((item) => !outcomeEvidence.includes(item));
+  if (outcomeEvidence.length === 0 || foundationEvidence.length === 0) {
+    const split = Math.max(1, Math.ceil(evidence.length / 2));
+    outcomeEvidence = evidence.slice(0, split);
+    foundationEvidence = evidence.slice(split);
+    if (foundationEvidence.length === 0) foundationEvidence = evidence.slice(-1);
+  }
+  const p0CoverageRisk = evidence.length < 6 ? ["当前证据少于 P0 目标的 6 张，需要继续补充研究"] : [];
+  return [
+    liveRoute(
+      "route-live-outcome",
+      "先用成果验证",
+      `尽早把“${plan.goalContract?.successCriteria[0] ?? plan.goal}”变成可检查成果，再根据真实反馈补齐能力。`,
+      outcomeEvidence,
+      p0CoverageRisk,
+    ),
+    liveRoute(
+      "route-live-foundation",
+      "先降低关键风险",
+      `先处理最可能阻碍“${plan.goalContract?.goal ?? plan.goal}”的基础能力与限制，再进入完整成果。`,
+      foundationEvidence,
+      p0CoverageRisk,
+    ),
+  ];
+}
+
+function liveRoute(id: string, title: string, summary: string, evidence: EvidenceCard[], extraRisks: string[]): RouteCandidate {
+  return {
+    id,
+    title,
+    summary,
+    applicableWhen: uniqueStrings(evidence.flatMap((item) => item.applicableWhen)).slice(0, 3),
+    evidenceIds: evidence.map((item) => item.id),
+    risks: uniqueStrings([
+      ...evidence.flatMap((item) => item.caveats),
+      "知乎证据目前仍是未独立验证的研究输入",
+      ...extraRisks,
+    ]).slice(0, 4),
+  };
+}
+
+function deduplicateEvidence(evidence: EvidenceCard[]): EvidenceCard[] {
+  const byId = new Map<string, EvidenceCard>();
+  for (const card of evidence) {
+    const existing = byId.get(card.id);
+    if (existing && JSON.stringify(existing) !== JSON.stringify(card)) {
+      throw new ResearchRequestValidationError([
+        { code: "EVIDENCE_ID_CONFLICT", message: `Evidence ID 冲突：${card.id}` },
+      ]);
+    }
+    if (!existing) byId.set(card.id, structuredClone(card));
+  }
+  return [...byId.values()];
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
 function buildRoutePreview(
   plan: PlanState,
   run: ResearchRunResult,
   route: RouteCandidate,
-  mockEvidence: EvidenceCard[],
+  researchEvidence: EvidenceCard[],
   success: string,
   now: string,
 ): PlanState {
@@ -386,7 +514,7 @@ function buildRoutePreview(
   const second = dateAtFraction(start, end, 0.72);
   const baseEvidence = plan.evidence.filter((item) => item.sourceType === "user");
   const evidenceIds = route.evidenceIds;
-  const outcomeFirst = route.id === "route-outcome";
+  const outcomeFirst = route.id === "route-outcome" || route.id === "route-live-outcome";
   const nodes: PlanNode[] = [
     starterMilestone("m-baseline", outcomeFirst ? "做出第一个可见成果" : "补齐最关键的基本功", "in_progress", start, first, evidenceIds),
     starterTask("t-baseline", outcomeFirst ? `定义最小成果：${success.slice(0, 28)}` : "识别并练习最影响终点的基础动作", "ready", "m-baseline", start, first, Math.max(2, Math.round(plan.weeklyHours * 0.35)), outcomeFirst ? "一份可以展示和获取反馈的最小成果" : "一组带记录的基础练习与自测结果", ["产出可以被检查", "记录至少一个暴露出的能力缺口"], evidenceIds),
@@ -404,7 +532,7 @@ function buildRoutePreview(
       { id: "r-feedback-after-baseline", type: "depends_on", sourceId: "t-feedback", targetId: "t-baseline" },
       { id: "r-arrival-after-feedback", type: "depends_on", sourceId: "t-arrival", targetId: "t-feedback" },
     ],
-    evidence: [...baseEvidence, ...mockEvidence],
+    evidence: [...baseEvidence, ...researchEvidence],
     research: {
       mode: run.mode,
       runId: run.id,

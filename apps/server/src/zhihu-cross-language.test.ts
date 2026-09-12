@@ -8,7 +8,7 @@ import { parseResearchResponse } from "./zhihu-boundary.js";
 it("accepts real Python compiler output across UTF-8 and codepoint offsets", () => {
   const root = fileURLToPath(new URL("../../../", import.meta.url));
   const local = resolve(root, process.platform === "win32" ? ".venv/Scripts/python.exe" : ".venv/bin/python");
-  const python = process.env.ZHIHU_TEST_PYTHON_BIN || (existsSync(local) ? local : "python");
+  const python = process.env.ZHIHU_TEST_PYTHON_BIN || (existsSync(local) ? local : process.platform === "win32" ? "python" : "python3");
   const stdout = execFileSync(python, ["-X", "utf8", "tests/fixtures/compiler_boundary_offline.py"], {
     cwd: resolve(root, "packages/zhihu"), encoding: "utf8", timeout: 15_000,
     env: { ...process.env, PYTHONPATH: resolve(root, "packages/zhihu"), PYTHON_DOTENV_DISABLED: "1", PYTHONDONTWRITEBYTECODE: "1" },

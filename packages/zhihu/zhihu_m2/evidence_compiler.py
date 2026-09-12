@@ -7,6 +7,8 @@ or verification. It is preserved, never executed or silently discarded.
 Importing this module makes no request. Running it makes one live LLM request
 using a fixed excerpt previously provided by the user, not a new Zhihu search.
 """
+from __future__ import annotations
+
 import hashlib
 import json
 from datetime import datetime

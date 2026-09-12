@@ -1,5 +1,7 @@
 # M2 Python 入口 v0.1：规划接通版
 
+> 历史说明：本文记录 `1b148bb` 时的入口状态。当前版本已接通 `--action research`；请以 `P0_JIA_HANDOFF.md` 和 `P0_INTEGRATION_STATUS.md` 为准。
+
 ## 本次范围
 
 这是补入空 `zhihu_m2/pipeline.py` 的第一步，不是完整 M2 实现。

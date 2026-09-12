@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import fixture from "../../../examples/agent-engineer/plan-state.json";
 import eventFixture from "../../../examples/agent-engineer/weekly-hours-event.json";
-import type { CreateProjectInput, PlanEvent, PlanState, ResearchQuestionDraft } from "@zhilu/contracts";
-import { assembleResearchRequests, createMockBaselineProposal, createResearchReadyPlan, decideWorkflow, validateProjectCreationInput, validateResearchQuestionDrafts } from "./index";
+import type { CreateProjectInput, EvidenceCard, EvidencePack, PlanEvent, PlanState, ResearchQuestionDraft } from "@zhilu/contracts";
+import { assembleResearchRequests, createLiveBaselineProposal, createMockBaselineProposal, createResearchReadyPlan, decideWorkflow, validateProjectCreationInput, validateResearchQuestionDrafts } from "./index";
 
 describe("Workflow Controller", () => {
   it("starts with interview before confirmed inputs", () => {
@@ -148,4 +148,74 @@ describe("Project interview output", () => {
     expect(evidence.every((item) => item.riskTags.includes("Mock 数据"))).toBe(true);
     expect(proposal.previews.every((preview) => preview.plan.version === 2)).toBe(true);
   });
+
+  it("builds a pending live Baseline from matching EvidencePacks without changing the current plan", () => {
+    const plan = createResearchReadyPlan(input, "project-test", "2026-09-11T08:00:00.000Z");
+    const questions: ResearchQuestionDraft[] = [
+      { question: "怎样用真实项目验证能力？", rationale: "需要可检查成果", searchQueries: ["真实项目 验证能力", "项目 反馈 复盘", "项目 常见错误"] },
+      { question: "哪些基础能力最容易成为阻碍？", rationale: "需要控制风险", searchQueries: ["基础能力 学习路线", "初学者 能力短板", "基础练习 方法"] },
+    ];
+    const requests = assembleResearchRequests({
+      questions,
+      relevantUserConditions: [input.userContext.currentSituation],
+      evidenceLimitPerQuestion: 4,
+      idFactory: (index) => `rq-live-${index + 1}`,
+    });
+    const evidencePacks: EvidencePack[] = requests.map((request, index) => ({
+      requestId: request.id,
+      evidence: [liveEvidence(`e-live-${index + 1}`, index === 0 ? "尽早做项目并收集反馈" : "先练习关键基础能力")],
+      routeCandidates: [],
+      unresolvedQuestions: [],
+    }));
+    const proposal = createLiveBaselineProposal(plan, {
+      runId: "research-live",
+      proposalId: "baseline-live",
+      questions,
+      requests,
+      evidencePacks,
+      now: "2026-09-11T09:00:00.000Z",
+    });
+
+    expect(proposal.researchRun.mode).toBe("live");
+    expect(proposal.researchRun.routeCandidates).toHaveLength(2);
+    expect(proposal.previews.every((preview) => preview.plan.research?.mode === "live")).toBe(true);
+    expect(proposal.previews.flatMap((preview) => preview.plan.evidence).some((item) => item.sourceType === "zhihu")).toBe(true);
+    expect(plan.version).toBe(1);
+    expect(plan.evidence.some((item) => item.sourceType === "zhihu")).toBe(false);
+  });
+
+  it("does not invent two live routes from fewer than two Evidence Cards", () => {
+    const plan = createResearchReadyPlan(input, "project-test", "2026-09-11T08:00:00.000Z");
+    const questions: ResearchQuestionDraft[] = [
+      { question: "怎样验证目标？", rationale: "需要证据", searchQueries: ["验证目标 方法", "目标 实践", "目标 风险"] },
+      { question: "怎样规划路线？", rationale: "需要路线", searchQueries: ["规划路线 方法", "路线 复盘", "路线 经验"] },
+    ];
+    const requests = assembleResearchRequests({ questions, relevantUserConditions: [], evidenceLimitPerQuestion: 4, idFactory: (index) => `rq-${index}` });
+    expect(() => createLiveBaselineProposal(plan, {
+      runId: "research-live",
+      proposalId: "baseline-live",
+      questions,
+      requests,
+      evidencePacks: requests.map((request, index) => ({ requestId: request.id, evidence: index === 0 ? [liveEvidence("only-one", "一张证据")] : [], routeCandidates: [], unresolvedQuestions: [] })),
+      now: "2026-09-11T09:00:00.000Z",
+    })).toThrow("至少需要两张真实 Evidence Card");
+  });
 });
+
+function liveEvidence(id: string, title: string): EvidenceCard {
+  return {
+    id,
+    title,
+    summary: `${title}，并记录适用条件与风险。`,
+    sourceType: "zhihu",
+    contentType: "experience",
+    verificationStatus: "unverified",
+    sourceTitle: `知乎来源 ${id}`,
+    sourceUrl: `https://www.zhihu.com/question/1/answer/${encodeURIComponent(id)}`,
+    supportingQuote: "应根据实际反馈调整下一步。",
+    applicableWhen: ["目标与当前条件匹配时"],
+    caveats: ["来自单篇知乎经验"],
+    riskTags: ["not_independently_verified"],
+    adoptionReason: "用于比较真实研究路线",
+  };
+}

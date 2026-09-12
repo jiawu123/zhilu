@@ -270,6 +270,20 @@ export function App() {
     }
   };
 
+  const runLiveResearch = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const proposal = await api<BaselineProposal>(`/api/projects/${activeProjectId}/research/live/baseline`, { method: "POST" });
+      setBaselineProposal(proposal);
+      setSelectedRouteId(proposal.recommendedRouteId);
+    } catch (requestError) {
+      setError(toMessage(requestError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const applyBaseline = async () => {
     if (!baselineProposal || !selectedRouteId) return;
     setBusy(true);
@@ -372,8 +386,10 @@ export function App() {
           proposal={baselineProposal}
           selectedRouteId={selectedRouteId}
           busy={busy}
+          error={error}
           onClose={() => setShowResearch(false)}
-          onRun={() => void runMockResearch()}
+          onRunLive={() => void runLiveResearch()}
+          onRunMock={() => void runMockResearch()}
           onSelectRoute={setSelectedRouteId}
           onApply={() => void applyBaseline()}
         />
@@ -382,15 +398,36 @@ export function App() {
   );
 }
 
-function ResearchStudio({ proposal, selectedRouteId, busy, onClose, onRun, onSelectRoute, onApply }: { proposal: BaselineProposal | null; selectedRouteId: string | null; busy: boolean; onClose: () => void; onRun: () => void; onSelectRoute: (routeId: string) => void; onApply: () => void }) {
+function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose, onRunLive, onRunMock, onSelectRoute, onApply }: {
+  proposal: BaselineProposal | null;
+  selectedRouteId: string | null;
+  busy: boolean;
+  error: string | null;
+  onClose: () => void;
+  onRunLive: () => void;
+  onRunMock: () => void;
+  onSelectRoute: (routeId: string) => void;
+  onApply: () => void;
+}) {
   if (!proposal) {
-    return <div className="research-backdrop"><section className="research-intro" role="dialog" aria-modal="true" aria-labelledby="research-title"><button className="research-close" onClick={onClose}>×</button><div className="research-constellation"><span>问</span><i /><i /><i /></div><p className="section-kicker">Research Subagent · Mock mode</p><h2 id="research-title">先让证据回来，<br />再决定走哪条路。</h2><p>Query Planner 会根据你的目标与限制生成研究问题；Controller 只负责校验和调度。当前尚未合并真实知乎执行器，这次会用清楚标记的 Mock Evidence 跑通产品闭环。</p><div className="research-steps"><span><b>01</b>拆出研究问题</span><span><b>02</b>比较两条路线</span><span><b>03</b>你确认后写入图</span></div><div className="mock-warning">不会生成虚构知乎链接；所有结果都标记为未验证 AI 推断。</div><button className="research-primary" disabled={busy} onClick={onRun}>{busy ? "正在让问题穿过研究层…" : "运行 Mock Research"}<span>→</span></button></section></div>;
+    return <div className="research-backdrop"><section className="research-intro" role="dialog" aria-modal="true" aria-labelledby="research-title">
+      <button className="research-close" onClick={onClose}>×</button>
+      <div className="research-constellation"><span>问</span><i /><i /><i /></div>
+      <p className="section-kicker">Research Subagent · Just in time</p>
+      <h2 id="research-title">先让证据回来，<br />再决定走哪条路。</h2>
+      <p>系统会先拆出研究问题，再实时检索少量知乎结果并压缩为 Evidence Cards。研究结果只生成待确认路线，不会直接改动当前计划。</p>
+      <div className="research-steps"><span><b>01</b>拆出研究问题</span><span><b>02</b>检索并压缩证据</span><span><b>03</b>你确认后写入图</span></div>
+      {error && <div className="research-error">{error}</div>}
+      <button className="research-primary" disabled={busy} onClick={onRunLive}>{busy ? "正在检索知乎并整理证据…" : "运行真实知乎研究"}<span>→</span></button>
+      <button className="research-secondary" disabled={busy} onClick={onRunMock}>本机尚未配置？使用 Mock 演示</button>
+    </section></div>;
   }
+  const isLive = proposal.researchRun.mode === "live";
   const route = proposal.researchRun.routeCandidates.find((item) => item.id === selectedRouteId) ?? proposal.researchRun.routeCandidates[0];
   const preview = proposal.previews.find((item) => item.routeId === route?.id)?.plan;
   const evidenceCount = proposal.researchRun.evidencePacks.reduce((sum, pack) => sum + pack.evidence.length, 0);
   const queryCount = proposal.researchRun.questions.reduce((sum, question) => sum + question.searchQueries.length, 0);
-  return <div className="research-backdrop"><section className="route-lab" role="dialog" aria-modal="true" aria-labelledby="route-lab-title"><button className="research-close" onClick={onClose}>×</button><header><div><p className="section-kicker">Roadmapper Draft · 尚未写入</p><h2 id="route-lab-title">哪条路更像你的路？</h2></div><div className="research-metrics"><span><b>{proposal.researchRun.questions.length}</b>问题</span><span><b>{queryCount}</b>Queries</span><span><b>{evidenceCount}</b>Mock Cards</span></div></header><div className="route-lab-grid"><section className="question-rail"><p className="section-kicker">研究问了什么</p>{proposal.researchRun.questions.map((question, index) => <article key={question.question}><span>0{index + 1}</span><p>{question.question}</p><small>{question.rationale}</small></article>)}<div className="mock-stamp">MOCK / UNVERIFIED</div></section><section className="route-choice"><p className="section-kicker">选择路线</p>{proposal.researchRun.routeCandidates.map((candidate) => <button key={candidate.id} className={candidate.id === route?.id ? "is-selected" : ""} onClick={() => onSelectRoute(candidate.id)}><span className="route-radio" /><div><small>{candidate.id === proposal.recommendedRouteId ? "推荐起点" : "另一种节奏"}</small><h3>{candidate.title}</h3><p>{candidate.summary}</p><em>适合：{candidate.applicableWhen.join(" · ")}</em></div></button>)}</section><section className="preview-rail"><p className="section-kicker">图会变成这样</p>{preview?.nodes.filter((node) => node.type === "task").map((node, index) => <article key={node.id}><span>{index + 1}</span><div><strong>{node.title}</strong><small>{node.deliverable}</small></div></article>)}<div className="preview-note">应用后生成 v{preview?.currentCommitId}。原研究准备版仍保留在版本历史中。</div></section></div><footer><div><span className="route-proof-dot" /><small>这是机制演示，不是已验证的知乎研究结论。</small></div><button className="research-primary" disabled={busy || !selectedRouteId} onClick={onApply}>{busy ? "正在写入路线…" : `选择“${route?.title ?? "这条路线"}”并点亮图`}<span>→</span></button></footer></section></div>;
+  return <div className="research-backdrop"><section className="route-lab" role="dialog" aria-modal="true" aria-labelledby="route-lab-title"><button className="research-close" onClick={onClose}>×</button><header><div><p className="section-kicker">Roadmapper Draft · 尚未写入</p><h2 id="route-lab-title">哪条路更像你的路？</h2></div><div className="research-metrics"><span><b>{proposal.researchRun.questions.length}</b>问题</span><span><b>{queryCount}</b>Queries</span><span><b>{evidenceCount}</b>{isLive ? "知乎 Cards" : "Mock Cards"}</span></div></header><div className="route-lab-grid"><section className="question-rail"><p className="section-kicker">研究问了什么</p>{proposal.researchRun.questions.map((question, index) => <article key={question.question}><span>0{index + 1}</span><p>{question.question}</p><small>{question.rationale}</small></article>)}<div className="mock-stamp">{isLive ? "LIVE ZHIHU / UNVERIFIED" : "MOCK / UNVERIFIED"}</div></section><section className="route-choice"><p className="section-kicker">选择路线</p>{proposal.researchRun.routeCandidates.map((candidate) => <button key={candidate.id} className={candidate.id === route?.id ? "is-selected" : ""} onClick={() => onSelectRoute(candidate.id)}><span className="route-radio" /><div><small>{candidate.id === proposal.recommendedRouteId ? "推荐起点" : "另一种节奏"}</small><h3>{candidate.title}</h3><p>{candidate.summary}</p><em>适合：{candidate.applicableWhen.join(" · ")}</em></div></button>)}</section><section className="preview-rail"><p className="section-kicker">图会变成这样</p>{preview?.nodes.filter((node) => node.type === "task").map((node, index) => <article key={node.id}><span>{index + 1}</span><div><strong>{node.title}</strong><small>{node.deliverable}</small></div></article>)}<div className="preview-note">应用后生成 v{preview?.currentCommitId}。原研究准备版仍保留在版本历史中。</div></section></div><footer><div><span className="route-proof-dot" /><small>{isLive ? "路线使用真实知乎来源，但内容仍需用户判断适用性。" : "这是机制演示，不是已验证的知乎研究结论。"}</small></div><button className="research-primary" disabled={busy || !selectedRouteId} onClick={onApply}>{busy ? "正在写入路线…" : `选择“${route?.title ?? "这条路线"}”并点亮图`}<span>→</span></button></footer></section></div>;
 }
 
 function RoadmapGraph({ workspace, selectedId, focusId, pending, onSelect, onReschedule }: { workspace: WorkspacePayload; selectedId: string | null; focusId: string | null; pending: PendingChange | null; onSelect: (id: string) => void; onReschedule: (node: PlanNode, weeks: number) => void }) {
