@@ -23,6 +23,9 @@ import {
   validatePlan,
 } from "@zhilu/plan-engine";
 import { PlanRepository } from "./repository";
+import { buildM2Context, M2ContextError } from "./m2-context";
+import { BoundaryError, validateResearchInput } from "./zhihu-boundary";
+import { createZhihuProvider, readZhihuProviderConfig, ZhihuProviderError, type ZhihuProvider } from "./zhihu-provider";
 
 const repoRoot = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const repository = new PlanRepository(
@@ -31,7 +34,11 @@ const repository = new PlanRepository(
 );
 const port = Number(process.env.PORT ?? 8787);
 
-export function createZhiluServer(planRepository: PlanRepository) {
+interface LiveEvidenceOptions { liveEnabled?: boolean; zhihuProvider?: ZhihuProvider }
+
+export function createZhiluServer(planRepository: PlanRepository, options: LiveEvidenceOptions = {}) {
+  const live = { enabled: options.liveEnabled ?? process.env.ZHIHU_LIVE_ENABLED === "true",
+    provider: options.zhihuProvider, busy: new Set<string>() };
   return createServer(async (request, response) => {
     setCors(response);
     if (request.method === "OPTIONS") {
@@ -40,7 +47,7 @@ export function createZhiluServer(planRepository: PlanRepository) {
     }
 
     try {
-      await route(request, response, planRepository);
+      await route(request, response, planRepository, live);
     } catch (error) {
       handleError(response, error);
     }
@@ -59,9 +66,16 @@ async function route(
   request: IncomingMessage,
   response: ServerResponse,
   planRepository: PlanRepository,
+  live: {enabled: boolean; provider: ZhihuProvider | undefined; busy: Set<string>},
 ): Promise<void> {
   const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
   const pathname = url.pathname;
+
+  const liveMatch = pathname.match(/^\/api\/projects\/([^/]+)\/research\/live\/evidence$/);
+  if (request.method === "POST" && liveMatch) {
+    await liveEvidence(request, response, planRepository, requiredMatch(liveMatch, 1), live);
+    return;
+  }
 
   if (request.method === "GET" && pathname === "/api/health") {
     sendJson(response, 200, { ok: true });
@@ -373,6 +387,64 @@ async function commitPatch(
   await planRepository.savePlan(next);
   await planRepository.saveCommit(next.projectId, commit);
   return next;
+}
+
+async function liveEvidence(request: IncomingMessage, response: ServerResponse, repository: PlanRepository,
+  encodedProjectId: string, live: {enabled: boolean; provider: ZhihuProvider | undefined; busy: Set<string>}): Promise<void> {
+  let lockedId: string | undefined;
+  try {
+    if (!live.enabled) throw new HttpError(503, "真实证据接口尚未启用。");
+    let projectId: string;
+    try { projectId = decodeURIComponent(encodedProjectId); } catch { throw new HttpError(400, "项目 ID 无效。"); }
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(projectId)) throw new HttpError(400, "项目 ID 无效。");
+    let plan: PlanState;
+    try { plan = await repository.getExistingPlan(projectId); }
+    catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") throw new HttpError(404, "项目不存在。");
+      throw error;
+    }
+    const context = buildM2Context(plan);
+    const body = await readLiveBody(request);
+    if (!body || typeof body !== "object" || Array.isArray(body)
+      || Object.keys(body).length !== 1 || !Object.hasOwn(body, "request")) throw new HttpError(400, "请求只能包含 request。");
+    const input = validateResearchInput({...context, request: (body as {request: unknown}).request});
+    if (live.busy.has(projectId)) throw new HttpError(409, "当前项目已有研究正在执行。");
+    live.busy.add(projectId); lockedId = projectId;
+    live.provider ??= createZhihuProvider(readZhihuProviderConfig());
+    const result = await live.provider.researchOne(input);
+    sendJson(response, 200, {ok: true, result});
+  } catch (error) {
+    if (error instanceof HttpError) sendJson(response, error.status, {error: error.message});
+    else if (error instanceof M2ContextError) sendJson(response, 409, {error: error.message});
+    else if (error instanceof BoundaryError) sendJson(response, error.code === "invalid_request" ? 400 : 502,
+      {error: error.code === "invalid_request" ? "研究请求不满足输入约束。" : "研究返回未通过校验。"});
+    else if (error instanceof ZhihuProviderError) sendJson(response, error.status, {error: error.message, code: error.code,
+      ...(error.cleanupError === "cleanup_failed" ? {cleanupError: "cleanup_failed"} : {})});
+    else sendJson(response, 502, {error: "研究执行失败；未回退 Mock。"});
+  } finally {
+    if (lockedId !== undefined) live.busy.delete(lockedId);
+  }
+}
+
+function readLiveBody(request: IncomingMessage): Promise<unknown> {
+  return new Promise((resolveBody, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0; let rejected = false;
+    request.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > 64000) {
+        chunks.length = 0;
+        if (!rejected) reject(new HttpError(400, "请求体超过 64000 字节。"));
+        rejected = true;
+      } else if (!rejected) chunks.push(chunk);
+    });
+    request.on("end", () => {
+      if (rejected) return;
+      try { resolveBody(JSON.parse(new TextDecoder("utf-8", {fatal: true}).decode(Buffer.concat(chunks)))); }
+      catch { reject(new HttpError(400, "请求体不是有效 UTF-8 JSON。")); }
+    });
+    request.on("error", () => reject(new HttpError(400, "无法读取请求体。")));
+  });
 }
 
 async function readBody<T>(request: IncomingMessage): Promise<T> {

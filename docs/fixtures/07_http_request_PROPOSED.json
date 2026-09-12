@@ -1,0 +1,15 @@
+{
+  "request": {
+    "id": "rq-integration-001",
+    "question": "初学者怎样为 Agent 项目编写基本测试？",
+    "searchQueries": [
+      "Agent 项目 初学者 自动化测试",
+      "Python Agent 项目 验收 调试"
+    ],
+    "relevantUserConditions": [
+      "Python 初学者",
+      "每周可投入10小时"
+    ],
+    "evidenceLimit": 4
+  }
+}

@@ -187,14 +187,14 @@ def test_keyboard_interrupt_is_nonzero(monkeypatch, capsys, planner_backend):
     assert rc == 130 and body["error"]["code"] == "interrupted"
 
 
-def test_research_is_explicitly_not_connected(monkeypatch, capsys):
+def test_research_invalid_request_never_calls_planner(monkeypatch, capsys):
     def forbidden():
         pytest.fail("research must not import/call the planner")
     monkeypatch.setattr(pipeline, "_load_planner", forbidden)
     rc, body, _ = invoke(monkeypatch, capsys, argv=["--action", "research"])
-    assert rc == 3 and not body["ok"]
+    assert rc == 2 and not body["ok"]
     assert body["data"] is None
-    assert body["error"]["code"] == "research_not_connected"
+    assert body["error"]["code"] == "invalid_request"
     assert body["metrics"]["planner_calls_attempted"] == 0
 
 
@@ -268,8 +268,8 @@ def test_real_subprocess_stdin_protocol_has_no_external_calls():
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=root, env=env, timeout=10,
     )
     body = json.loads(completed.stdout.decode("utf-8"))
-    assert completed.returncode == 3
-    assert body["error"]["code"] == "research_not_connected"
+    assert completed.returncode == 2
+    assert body["error"]["code"] == "invalid_request"
     assert body["data"] is None
 
 
@@ -301,3 +301,114 @@ def test_help_is_available_without_planner(monkeypatch, capsys):
     assert pipeline.main(["--help"]) == 0
     streams = capsys.readouterr()
     assert "--action" in streams.out
+
+
+@pytest.mark.parametrize("options", [["--dry-run"], ["--max-questions", "3"],
+    ["--queries-per-question", "2"], ["--planning-profile", "jia-p0-baseline"]])
+def test_research_rejects_plan_flags(monkeypatch, capsys, options):
+    rc, body, _ = invoke(monkeypatch, capsys, argv=["--action", "research"] + options)
+    assert rc == 2 and body["error"]["code"] == "invalid_arguments"
+
+
+def test_pipeline_baseline_rejects_short_plan(monkeypatch, capsys, planner_backend):
+    rc, body, _ = invoke(monkeypatch, capsys,
+        argv=["--action", "plan", "--planning-profile", "jia-p0-baseline"])
+    assert rc == 1 and body["error"]["code"] == "invalid_plan_output"
+    assert len(planner_backend.calls) == 1
+
+
+def test_pipeline_baseline_clarification_zero_search(monkeypatch, capsys, planner_backend):
+    planner_backend.response = {"status": "needs_clarification", "reason": "缺少主题",
+        "research_questions": [], "clarification_questions": ["研究什么？"]}
+    rc, body, _ = invoke(monkeypatch, capsys,
+        argv=["--action", "plan", "--planning-profile", "jia-p0-baseline"])
+    assert rc == 0 and body["data"]["status"] == "needs_clarification"
+    assert body["metrics"]["search_calls_attempted"] == 0
+
+
+@pytest.fixture
+def research_backend(monkeypatch):
+    class ResearchError(ValueError):
+        def __init__(self, code, exit_code=1):
+            self.code, self.exit_code = code, exit_code
+            super().__init__("PRIVATE SECRET")
+    state = types.SimpleNamespace(calls=[], error=None)
+    def execute(payload, *, metrics):
+        state.calls.append(payload)
+        metrics.update(search_calls_attempted=2, compiler_calls_attempted=1,
+                       candidate_count=3, evidence_count=0)
+        print("ordinary research diagnostic")
+        if state.error:
+            raise state.error
+        return {"requestId": "rq-test", "status": "no_evidence", "compilerOutputs": [],
+                "routeCandidates": [], "unresolvedQuestions": ["没有适用证据"], "issues": []}
+    backend = types.SimpleNamespace(ResearchError=ResearchError, run_research=execute)
+    monkeypatch.setattr(pipeline, "_load_research_runner", lambda: backend)
+    state.error_type = ResearchError
+    return state
+
+
+def test_research_protocol_metrics_and_output_file(monkeypatch, capsys, research_backend, tmp_path):
+    target = tmp_path / "研究.json"
+    source = tmp_path / "请求.json"
+    source.write_text(json.dumps(REQUEST, ensure_ascii=False), encoding="utf-8")
+    rc, body, err = invoke(monkeypatch, capsys, argv=["--action", "research",
+        "--input", str(source), "--output", str(target)])
+    assert rc == 0 and body["ok"]
+    assert body["data"]["status"] == "no_evidence"
+    assert body["metrics"]["search_calls_attempted"] == 2
+    assert body["metrics"]["compiler_calls_attempted"] == 1
+    assert body["metrics"]["planner_calls_attempted"] == 0
+    assert "ordinary research diagnostic" in err
+    assert json.loads(target.read_text(encoding="utf-8")) == body
+
+
+@pytest.mark.parametrize("code", ["invalid_request", "input_too_large", "dependency_unavailable",
+    "authentication_failed", "configuration_error", "rate_or_quota_limit", "research_failed",
+    "compilation_failed", "research_timeout", "execution_error", "evidence_id_conflict", "PRIVATE_UNKNOWN"])
+def test_research_errors_are_allowlisted(monkeypatch, capsys, research_backend, code):
+    research_backend.error = research_backend.error_type(code, 2 if code in {"invalid_request", "input_too_large"} else 1)
+    rc, body, err = invoke(monkeypatch, capsys, argv=["--action", "research"])
+    assert rc != 0 and not body["ok"] and body["data"] is None
+    assert body["error"]["code"] == ("execution_error" if code == "PRIVATE_UNKNOWN" else code)
+    assert "PRIVATE" not in json.dumps(body) + err
+    assert len(research_backend.calls) == 1
+
+
+@pytest.mark.parametrize("error,code,rc", [(RuntimeError("PRIVATE"), "execution_error", 1),
+    (KeyboardInterrupt(), "interrupted", 130), (SystemExit(0), "execution_error", 1)])
+def test_research_unknown_errors_and_interrupts(monkeypatch, capsys, research_backend, error, code, rc):
+    research_backend.error = error
+    actual, body, err = invoke(monkeypatch, capsys, argv=["--action", "research"])
+    assert actual == rc and body["error"]["code"] == code
+    assert "PRIVATE" not in json.dumps(body) + err
+
+
+def test_research_late_output_failure_preserves_old_file_but_reports_failure(monkeypatch, capsys, research_backend, tmp_path):
+    target = tmp_path / "old.json"
+    target.write_text("old result", encoding="utf-8")
+    def unavailable(*args, **kwargs):
+        raise OSError("PRIVATE")
+    monkeypatch.setattr(Path, "replace", unavailable)
+    rc, body, err = invoke(monkeypatch, capsys, argv=["--action", "research", "--output", str(target)])
+    assert rc == 1 and body["error"]["code"] == "output_io_error"
+    assert "may have occurred" in body["error"]["message"]
+    assert target.read_text(encoding="utf-8") == "old result"
+    assert len(research_backend.calls) == 1
+
+
+@pytest.mark.parametrize("raw,code", [('{"request":{},"request":{}}', "invalid_json"),
+    ('{"request":{"x":Infinity}}', "invalid_json"), (" " * 64001, "input_too_large")],
+    ids=["duplicate-key", "non-finite", "over-size"])
+def test_research_bad_json_no_runner_call(monkeypatch, capsys, research_backend, raw, code):
+    rc, body, _ = invoke(monkeypatch, capsys, argv=["--action", "research"], raw=raw)
+    assert rc == 2 and body["error"]["code"] == code
+    assert not research_backend.calls
+
+
+def test_help_does_not_load_research(monkeypatch, capsys):
+    def forbidden():
+        pytest.fail("help cannot initialize research")
+    monkeypatch.setattr(pipeline, "_load_research_runner", forbidden)
+    assert pipeline.main(["--help"]) == 0
+    assert "--planning-profile" in capsys.readouterr().out

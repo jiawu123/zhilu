@@ -418,3 +418,55 @@ def test_negative_control_structural_checks_do_not_prove_topic_relevance():
     assert result["status"] == "ready_for_review"
     assert result["semantic_quality_checked"] is False
     assert result["human_approved"] is False
+
+
+def baseline_model_plan():
+    payload = model_plan()
+    payload["research_questions"].append({
+        "research_question": "Agent 初学项目有哪些常见风险和限制？", "evidence_need": "risk",
+        "why_needed": "了解实现边界。", "queries": ["Agent 初学 风险", "智能体 项目 限制"],
+    })
+    return payload
+
+
+@pytest.mark.parametrize("mutation", ["two_questions", "one_query", "duplicate"])
+def test_baseline_rejects_incomplete_or_duplicate_without_retry(fake_model, mutation):
+    payload = baseline_model_plan()
+    if mutation == "two_questions":
+        payload["research_questions"].pop()
+    elif mutation == "one_query":
+        payload["research_questions"][0]["queries"].pop()
+    else:
+        payload["research_questions"][2]["queries"][0] = payload["research_questions"][0]["queries"][0]
+    fake_model["response"] = payload
+    with pytest.raises(qp.PlannerValidationError):
+        qp.plan_research(GOAL, CONTEXT, planning_profile="jia-p0-baseline")
+    assert len(fake_model["calls"]) == 1
+
+
+def test_baseline_exact_counts_and_prompt(fake_model):
+    fake_model["response"] = baseline_model_plan()
+    result = qp.plan_research(GOAL, CONTEXT, planning_profile="jia-p0-baseline")
+    assert result["planned_query_count"] == 6
+    assert result["human_approved"] is result["coverage_verified"] is False
+    prompt, sent, _ = fake_model["calls"][0]
+    assert "恰好3个" in prompt and "恰好2条" in prompt
+    assert sent["planning_profile"] == "jia-p0-baseline"
+
+
+def test_baseline_preserves_clarification(fake_model):
+    fake_model["response"] = {"status": "needs_clarification", "reason": "缺少对象",
+        "research_questions": [], "clarification_questions": ["研究什么？"]}
+    result = qp.plan_research(GOAL, {}, planning_profile="jia-p0-baseline")
+    assert result["status"] == "needs_clarification"
+    assert result["planned_query_count"] == 0
+    assert len(fake_model["calls"]) == 1
+
+
+@pytest.mark.parametrize("options", [{"planning_profile": "unknown"},
+    {"planning_profile": "jia-p0-baseline", "max_questions": 2},
+    {"planning_profile": "jia-p0-baseline", "queries_per_question": 1}])
+def test_profile_options_validate_before_model(fake_model, options):
+    with pytest.raises(ValueError):
+        qp.plan_research(GOAL, CONTEXT, **options)
+    assert not fake_model["calls"]

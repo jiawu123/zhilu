@@ -1,0 +1,16 @@
+{
+  "compiler_version": "m2-evidence-v0.1.1",
+  "status": "no_evidence",
+  "reason": "离线样例：该摘要没有回答本次研究问题。",
+  "source": {
+    "id": "zhihu:Answer:123",
+    "provider": "zhihu",
+    "title": "离线格式测试来源（非真实检索）",
+    "url": "https://www.zhihu.com/question/1/answer/2",
+    "author": "离线测试作者",
+    "snippet": "🧪 离线构造的测试材料，并非实际知乎内容。\r\n先给核心函数编写测试，再检查异常输入和错误处理。",
+    "retrievedAt": null,
+    "source_scope": "search_snippet"
+  },
+  "evidence_cards": []
+}

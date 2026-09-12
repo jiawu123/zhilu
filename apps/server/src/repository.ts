@@ -16,6 +16,12 @@ export class PlanRepository {
     private readonly fixturePath: string,
   ) {}
 
+  /** Read only: live research must never initialize the demo or write commits. */
+  async getExistingPlan(projectId: string): Promise<PlanState> {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(projectId)) throw new Error("Invalid project identifier.");
+    return JSON.parse(await readFile(this.planPath(projectId), "utf8")) as PlanState;
+  }
+
   async getPlan(projectId: string): Promise<PlanState> {
     const path = this.planPath(projectId);
     try {

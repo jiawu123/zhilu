@@ -22,6 +22,7 @@ PLANNER_VERSION = "m2-query-planner-v0.1.0"
 EVIDENCE_NEEDS = {"method", "verification", "risk", "concept", "resource", "experience"}
 QUESTION_FIELDS = {"research_question", "evidence_need", "why_needed", "queries"}
 TOP_FIELDS = {"status", "reason", "research_questions", "clarification_questions"}
+BASELINE_PROFILE = "jia-p0-baseline"
 
 SYSTEM_PROMPT = """你是知乎 M2 的检索问题规划器，只返回最终 JSON 对象。
 你只规划“要研究什么、怎样检索”，不回答问题，不生成 Roadmap，不声称搜索过知乎。
@@ -83,6 +84,15 @@ class PlannerValidationError(ValueError):
     """Model JSON does not meet the planner contract; not a lack of evidence."""
 
 
+def _system_prompt(frozen: dict) -> str:
+    if frozen.get("planning_profile") == BASELINE_PROFILE:
+        return SYSTEM_PROMPT + "\n【首次 Baseline 模式覆盖数量规则】\n" + (
+            "输入还包含planning_profile。信息充分且status=ok时必须恰好3个有效研究问题，"
+            "每题恰好2条独立Query，合计6条且跨题不重复。此处是精确数量，不是上限。"
+            "信息不足仍返回needs_clarification，不凑问题。\n")
+    return SYSTEM_PROMPT
+
+
 def _json(value: Any) -> str:
     # Same canonical serialization as existing batch_evidence question IDs.
     return json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
@@ -126,6 +136,7 @@ def _plain_json(value: Any, depth: int = 0) -> None:
 
 def build_planner_input(
     goal: str, user_context: dict, *, max_questions: int = 3, queries_per_question: int = 2,
+    planning_profile: str | None = None,
 ) -> dict:
     """Validate and copy input; does not call a model or infer missing context."""
     _text(goal, "goal", 2000)
@@ -138,8 +149,15 @@ def build_planner_input(
                                ("queries_per_question", queries_per_question, 2)):
         if type(value) is not int or not 1 <= value <= upper:
             raise ValueError(f"{name} must be an integer from 1 to {upper}.")
-    return {"goal": goal, "user_context": copy.deepcopy(user_context),
-            "max_questions": max_questions, "queries_per_question": queries_per_question}
+    if planning_profile not in (None, BASELINE_PROFILE):
+        raise ValueError("Unsupported planning profile.")
+    if planning_profile == BASELINE_PROFILE and (max_questions, queries_per_question) != (3, 2):
+        raise ValueError("Baseline profile requires limits 3 and 2.")
+    frozen = {"goal": goal, "user_context": copy.deepcopy(user_context),
+              "max_questions": max_questions, "queries_per_question": queries_per_question}
+    if planning_profile is not None:
+        frozen["planning_profile"] = planning_profile
+    return frozen
 
 
 def _comparison_key(text: str) -> str:
@@ -159,6 +177,8 @@ def _validate(payload: Any, frozen: dict) -> dict:
     if not isinstance(proposed, list) or not isinstance(clarifications, list):
         raise ValueError("Questions and clarifications must be lists.")
     if status == "ok":
+        if frozen.get("planning_profile") == BASELINE_PROFILE and len(proposed) != 3:
+            raise ValueError("Baseline requires exactly 3 research questions.")
         if not 1 <= len(proposed) <= frozen["max_questions"] or clarifications:
             raise ValueError("ok requires 1..max_questions questions and no clarifications.")
     elif proposed or not 1 <= len(clarifications) <= 3:
@@ -189,6 +209,8 @@ def _validate(payload: Any, frozen: dict) -> dict:
         queries = item["queries"]
         if not isinstance(queries, list) or not 1 <= len(queries) <= frozen["queries_per_question"]:
             raise ValueError("Each question needs 1..queries_per_question search strings.")
+        if frozen.get("planning_profile") == BASELINE_PROFILE and len(queries) != 2:
+            raise ValueError("Baseline requires exactly 2 queries per question.")
         checked_queries = []
         for query in queries:
             query = _text(query, "query", 120).strip()
@@ -236,6 +258,7 @@ def validate_plan_response(payload: Any, frozen_input: dict) -> dict:
 
 def plan_research(
     goal: str, user_context: dict, *, max_questions: int = 3, queries_per_question: int = 2,
+    planning_profile: str | None = None,
 ) -> dict:
     """Make ONE model call and return a pending-review plan. No search or retry.
 
@@ -243,8 +266,8 @@ def plan_research(
     No files are written by this function; run_planner provides saved run logs.
     """
     frozen = build_planner_input(goal, user_context, max_questions=max_questions,
-                                 queries_per_question=queries_per_question)
-    payload = llm_client.generate_json(SYSTEM_PROMPT, _json(frozen), max_tokens=2400)
+                                 queries_per_question=queries_per_question, planning_profile=planning_profile)
+    payload = llm_client.generate_json(_system_prompt(frozen), _json(frozen), max_tokens=2400)
     return validate_plan_response(payload, frozen)
 
 

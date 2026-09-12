@@ -1,8 +1,8 @@
-"""JSON entry point for M2: live query planning, not a complete research pipeline.
+"""JSON entry point for M2 planning and single-request evidence research.
 
 Protocol draft: m2-entry-v0.1 (not a shared contracts schema).
 plan: exactly {"goal": str, "user_context": object}; one model call by default.
-research: explicitly unavailable; returns research_not_connected, exit code 3.
+research: exactly {goal, user_context, request}; never replans the goal.
 stdin/stdout: one UTF-8 JSON document per process. Diagnostic output uses stderr.
 --input/--output are optional local file conveniences, not request fields.
 """
@@ -26,13 +26,19 @@ ERROR_MESSAGES = {
     "invalid_json": "Provide one UTF-8 JSON object, without duplicate keys or non-finite numbers.",
     "input_too_large": "Input must not exceed 64000 UTF-8 bytes.",
     "input_io_error": "Cannot read input; check the file or send JSON to stdin and close it.",
-    "invalid_request": "plan requires exactly goal and user_context, valid under the existing planner rules.",
-    "dependency_unavailable": "Cannot import query_planner or its dependencies; check the active Python environment.",
+    "invalid_request": "Request fields must satisfy the selected action's input contract and bounds.",
+    "dependency_unavailable": "Cannot load an execution dependency; check the active Python environment.",
     "invalid_plan_output": "The model output failed the existing planner validation.",
     "llm_error": "The model call failed. Check local credentials, endpoint and connectivity. No retry was made.",
-    "research_not_connected": "ResearchRequest to EvidencePack is not connected in this entry version.",
+    "authentication_failed": "Upstream authentication failed; check local authorization before retrying.",
+    "configuration_error": "Research configuration is invalid or unavailable.",
+    "rate_or_quota_limit": "An upstream rate or quota limit stopped research; no automatic retry was made.",
+    "research_failed": "All attempted searches failed; this is not a no-evidence result.",
+    "compilation_failed": "All attempted evidence compilations failed; this is not a no-evidence result.",
+    "research_timeout": "The research deadline expired; completed work may already have incurred calls.",
+    "evidence_id_conflict": "Different evidence content used the same ID; the result was rejected.",
     "execution_error": "Execution failed. Raw exception details were omitted to protect private data.",
-    "output_io_error": "Cannot create or write the output file. The model may have run; do not retry blindly.",
+    "output_io_error": "Cannot create or write the output file. Upstream calls may have occurred; do not retry blindly or use an old output as this run's result.",
     "interrupted": "Execution was interrupted; upstream receipt or billing may be unknown.",
 }
 
@@ -53,9 +59,14 @@ class _Parser(argparse.ArgumentParser):
 
 
 def _load_planner():
-    # Import lazily: --help and research_not_connected need no LLM dependencies.
+    # Import lazily: --help needs no LLM dependencies.
     from zhihu_m2 import query_planner
     return query_planner
+
+
+def _load_research_runner():
+    from zhihu_m2 import research_runner
+    return research_runner
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict:
@@ -110,7 +121,8 @@ def _read_request(input_file: Path | None) -> dict:
 
 
 def plan(request: dict, *, dry_run: bool = False, max_questions: int = 3,
-         queries_per_question: int = 2, metrics: dict | None = None) -> dict:
+         queries_per_question: int = 2, planning_profile: str | None = None,
+         metrics: dict | None = None) -> dict:
     """Reuse current planner. Never search, approve questions, or emit evidence.
 
     Returned question_id values remain the existing planner's internal IDs.
@@ -126,6 +138,7 @@ def plan(request: dict, *, dry_run: bool = False, max_questions: int = 3,
         frozen = planner.build_planner_input(
             request["goal"], request["user_context"],
             max_questions=max_questions, queries_per_question=queries_per_question,
+            planning_profile=planning_profile,
         )
     except (ValueError, TypeError, RecursionError):
         raise EntryError("invalid_request", 2) from None
@@ -148,13 +161,17 @@ def plan(request: dict, *, dry_run: bool = False, max_questions: int = 3,
     return result
 
 
-def research(request: dict) -> dict:
-    """Fail explicitly until the real ResearchRequest adapter is implemented.
-
-    Do not call the broad goal planner again, return dummy cards, or represent
-    an unimplemented path as successful no_evidence.
-    """
-    raise EntryError("research_not_connected", 3)
+def research(request: dict, *, metrics: dict | None = None) -> dict:
+    """Execute one request through the runner, preserving raw compiler outputs."""
+    try:
+        runner = _load_research_runner()
+    except ImportError:
+        raise EntryError("dependency_unavailable") from None
+    try:
+        return runner.run_research(request, metrics=metrics)
+    except runner.ResearchError as error:
+        code = error.code if error.code in ERROR_MESSAGES else "execution_error"
+        raise EntryError(code, 2 if code in {"invalid_request", "input_too_large"} else 1) from None
 
 
 def _arguments(argv: list[str] | None) -> argparse.Namespace:
@@ -163,9 +180,18 @@ def _arguments(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--input", type=Path, help="UTF-8 JSON file; otherwise read stdin to EOF")
     parser.add_argument("--output", type=Path, help="Also save the final response as UTF-8 JSON")
     parser.add_argument("--dry-run", action="store_true", help="plan input preview only; no model call")
-    parser.add_argument("--max-questions", type=int, choices=(1, 2, 3), default=3)
-    parser.add_argument("--queries-per-question", type=int, choices=(1, 2), default=2)
-    return parser.parse_args(argv)
+    parser.add_argument("--max-questions", type=int, choices=(1, 2, 3))
+    parser.add_argument("--queries-per-question", type=int, choices=(1, 2))
+    parser.add_argument("--planning-profile", choices=("jia-p0-baseline",))
+    args = parser.parse_args(argv)
+    if args.action == "research" and (args.dry_run or args.max_questions is not None
+            or args.queries_per_question is not None or args.planning_profile is not None):
+        raise EntryError("invalid_arguments", 2)
+    args.max_questions = args.max_questions if args.max_questions is not None else 3
+    args.queries_per_question = args.queries_per_question if args.queries_per_question is not None else 2
+    if args.planning_profile and (args.max_questions, args.queries_per_question) != (3, 2):
+        raise EntryError("invalid_arguments", 2)
+    return args
 
 
 def _prepare_output(args: argparse.Namespace) -> Path | None:
@@ -194,13 +220,15 @@ def main(argv: list[str] | None = None) -> int:
     """One request per process; output exactly one JSON response except --help.
 
     Success (including a request for clarification) exits 0. Exit 1 is a runtime
-    error, 2 invalid input/arguments, 3 unavailable research, 130 interruption.
+    error, 2 invalid input/arguments, 130 interruption.
     No network retries or authentication setup are performed here.
     """
     response = {
         "protocol_version": PROTOCOL_VERSION, "run_id": "entry_" + uuid4().hex,
         "action": None, "ok": False, "data": None, "error": None,
         "metrics": {"planner_calls_attempted": 0, "new_zhihu_search": False,
+                    "search_calls_attempted": 0, "compiler_calls_attempted": 0,
+                    "candidate_count": 0, "evidence_count": 0,
                     "automatic_retries": False},
     }
     args, temporary, exit_code = None, None, 0
@@ -218,9 +246,10 @@ def main(argv: list[str] | None = None) -> int:
             request = _read_request(args.input)
             if args.action == "plan":
                 data = plan(request, dry_run=args.dry_run, max_questions=args.max_questions,
-                            queries_per_question=args.queries_per_question, metrics=response["metrics"])
+                            queries_per_question=args.queries_per_question,
+                            planning_profile=args.planning_profile, metrics=response["metrics"])
             else:
-                data = research(request)
+                data = research(request, metrics=response["metrics"])
             # Check serialization before declaring success.
             json.dumps(data, ensure_ascii=False, allow_nan=False).encode("utf-8")
         response.update(ok=True, data=data)

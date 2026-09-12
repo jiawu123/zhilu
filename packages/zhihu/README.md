@@ -1,5 +1,103 @@
 # Zhihu Knowledge
 
+## P0 Server 真实证据接入
+
+已实现 `createZhihuProvider(config).researchOne({goal,user_context,request})`，通过真实 Python pipeline 搜索、排序、编译，再由 Server 原有 adapter 产生共享 EvidencePack。`planForBaseline()` 使用首次 Baseline 专用 profile；通用 Planner 保留原行为。研究不会修改正式 Plan、History 或 pending proposal。完整真实 Roadmap 综合仍待 Jia 接入。
+
+接口为 `POST /api/projects/:projectId/research/live/evidence`，默认关闭，body 只能包含 `request`；目标和背景从 Server 已确认项目读取。状态和完整样例见 [P0_JIA_HANDOFF.md](docs/P0_JIA_HANDOFF.md)，本次真实调用和测试证据见 [P0_INTEGRATION_STATUS.md](docs/P0_INTEGRATION_STATUS.md)。
+
+### Windows PowerShell：当前工作区直接运行
+
+以下命令从仓库根目录执行，不依赖激活状态。这里是普通包布局，没有 `src/` 或 editable install。
+
+```powershell
+$repo = (Get-Location).Path
+$python = (Resolve-Path .venv/Scripts/python.exe).Path
+& $python -B -c "import sys; print(sys.executable)"
+Push-Location packages/zhihu
+& $python -B -c "import zhihu_m2; print(zhihu_m2.__file__)"
+& $python -B -m pytest -q
+& $python -X utf8 -u -m zhihu_m2.pipeline --help
+Pop-Location
+.\node_modules\.bin\vitest.cmd run
+.\node_modules\.bin\tsc.cmd --noEmit -p apps/server/tsconfig.json
+```
+
+新机器需先安装 Python、Node（本轮 Node 24）、pnpm 10.30.2，再执行 `pnpm install --frozen-lockfile`。Python 依赖现有入口为 `requirements-dotenv.txt`，HTTP 与测试使用 httpx/pytest：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r packages/zhihu/requirements-dotenv.txt httpx pytest
+pnpm install --frozen-lockfile
+pnpm test
+pnpm typecheck
+pnpm build
+```
+
+普通 pytest 默认禁用个人 dotenv 并清除测试进程中的模型/知乎凭据。跨语言测试也禁用 dotenv；真实服务均由离线替身替代。
+
+### Python 与 Node 分别配置
+
+Python 继续调用现有 `config.load_local_env()`，固定读取 `packages/zhihu/.env`，进程环境优先，支持 UTF-8 BOM，不插值；导入模块不会加载密钥。不要覆盖已有 `.env`：仅在文件不存在时复制本目录 `.env.example`。继续使用 `llm_client` 当前的 `deepseek-v4-pro` 和源码现有 endpoint，没有改模型或服务商。
+
+知乎 CLI 使用现有 `get_cli_path()` 和本机已保存授权；`.env` 不等于完成 keychain 授权。若确需初始化，现有 `python -m zhihu_m2.setup_zhihu_auth` 会先检查本机 CLI 是否支持 `--secret-stdin`，只在支持时通过 stdin 写入。不要将密钥贴进终端参数、请求 JSON 或 `VITE_*`。本次成功联调复用了已有授权，没有重写授权。
+
+Node 不会自动加载 Python `.env`，也不会自动加载 `apps/server/.env.example`。本机启动使用 PowerShell 环境变量；若用 Node 24 的 `--env-file`，必须明确指向自己创建的 Server 配置文件。下面只设置非秘密配置：
+
+```powershell
+# 从仓库根目录启动，默认只监听 127.0.0.1:8787
+$env:ZHIHU_PYTHON_BIN = (Resolve-Path .venv/Scripts/python.exe).Path
+$env:ZHIHU_PYTHON_CWD = (Resolve-Path packages/zhihu).Path
+$env:ZHIHU_LIVE_ENABLED = 'true'
+$env:ZHIHU_TIMEOUT_MS = '630000'
+.\node_modules\.bin\tsx.cmd apps/server/src/index.ts
+```
+
+在另一个终端发送请求。将 `$projectId` 设为已经通过项目创建接口确认的项目 ID，不能用 body 覆盖 goal/context；此调用只取证据：
+
+```powershell
+$projectId = '你的已确认项目ID'
+$body = Get-Content -Raw -Encoding UTF8 docs/fixtures/07_http_request_PROPOSED.json
+$response = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8787/api/projects/$projectId/research/live/evidence" `
+  -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($body))
+$response.result.status
+$response.result.metrics
+```
+
+成功、无证据、部分失败都返回 200，必须读取 `result.status`。关闭为 503，坏输入 400，项目不存在 404，未确认背景/繁忙 409，上游失败 502，整体超时 504。错误不会回退 Mock。
+
+### 受控真实 smoke 与 Python 单独调试
+
+以下显式命令调用真实 Provider，一次最多 1 请求、2 搜索、3 编译、0 Planner，最终最多 2 张卡片；运行会使用现有凭据。只运行一次并检查结果，不因无证据反复重试。结果写入被忽略的唯一 artifacts 文件，终端仅显示状态/计数。**不带 `--live` 时只显示帮助，不联网。**
+
+```powershell
+$env:ZHIHU_PYTHON_BIN = (Resolve-Path .venv/Scripts/python.exe).Path
+$env:ZHIHU_PYTHON_CWD = (Resolve-Path packages/zhihu).Path
+.\node_modules\.bin\tsx.cmd apps/server/scripts/smoke_zhihu_provider.ts --live
+# 等价：pnpm --filter @zhilu/server smoke:zhihu --live
+```
+
+Python 单独调试采用文档新包装，且不会调用 Planner：
+
+```powershell
+Push-Location packages/zhihu
+& ..\..\.venv\Scripts\python.exe -X utf8 -u -m zhihu_m2.pipeline --action research `
+  --input .\examples\entry_research_request.json --output .\artifacts\entry_research_smoke.json
+if ($LASTEXITCODE -ne 0) { Pop-Location; throw '研究失败；不要把旧 artifacts 当成本轮输出，也不要盲目重试。' }
+$result = Get-Content -Raw -Encoding UTF8 .\artifacts\entry_research_smoke.json | ConvertFrom-Json
+$result.ok
+$result.data.status
+$result.data.requestId
+$result.metrics
+Pop-Location
+```
+
+普通预算：每 Query 搜索 5 条、最多 8 次 compiler；Python 默认600秒总预算，搜索单次最多90秒，生产编译在独立可终止进程内运行，最多等待本请求剩余wall-clock时间，超时后终止并回收（最多额外2秒清理等待）。LLM内部仍沿用60秒网络timeout，Node630秒作为外层截止。Python可配置 `ZHIHU_SEARCH_LIMIT_PER_QUERY`（1–10）、`ZHIHU_COMPILER_MAX_CALLS`（1–50）、`ZHIHU_RESEARCH_DEADLINE_SECONDS`（>0且≤600）；这些只来自Server环境或本地Python配置，不接受HTTP扩大。编译请求/返回走私有IPC，不放命令参数或磁盘。Windows进程树清理已测试，其他平台未实际验证。
+
+卡片上限是 `evidenceLimit`（1–12，拒绝 bool），不是搜索数量或最低产量。freshness 无法由当前底层强制过滤时返回 partial 和 `freshness_not_enforced`，不宣称已落实时效。
+
+下面保留模块原有背景和开发说明；当前接入签名以本节及交接文档为准。
+
 # Zhilu — 知乎知识模块
 
 `packages/zhihu` 是 Zhilu 项目中的知乎知识模块，负责从用户的研究需求出发，检索知乎内容、筛选和整理证据，并最终向主 Agent 提供结构化的 `EvidencePack`。

@@ -1,0 +1,41 @@
+{
+  "compiler_version": "m2-evidence-v0.1.1",
+  "status": "ok",
+  "reason": "仅用于离线契约测试。",
+  "source": {
+    "id": "zhihu:Answer:123",
+    "provider": "zhihu",
+    "title": "离线格式测试来源（非真实检索）",
+    "url": "https://www.zhihu.com/question/1/answer/2",
+    "author": "离线测试作者",
+    "snippet": "🧪 离线构造的测试材料，并非实际知乎内容。\r\n先给核心函数编写测试，再检查异常输入和错误处理。",
+    "retrievedAt": null,
+    "source_scope": "search_snippet"
+  },
+  "evidence_cards": [
+    {
+      "id": "ev_4d165d38dbaed7fd",
+      "source_id": "zhihu:Answer:123",
+      "source_url": "https://www.zhihu.com/question/1/answer/2",
+      "source_title": "离线格式测试来源（非真实检索）",
+      "source_scope": "search_snippet",
+      "claim": "离线样例建议先测试核心函数，并检查异常输入。",
+      "claim_type": "advice",
+      "supporting_quote": "先给核心函数编写测试，再检查异常输入和错误处理。",
+      "quote_start": 23,
+      "quote_end": 47,
+      "citation_status": "exact_match",
+      "verification_status": "unverified",
+      "applies_when": "用于离线验证软件接口，不是给用户的真实知乎证据。",
+      "applicability_basis": "ai_inference",
+      "caveats": [
+        "本条为测试构造内容，不来自知乎检索。"
+      ],
+      "risk_flags": [
+        "search_snippet_only",
+        "not_independently_verified",
+        "semantic_support_not_checked"
+      ]
+    }
+  ]
+}
