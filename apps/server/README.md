@@ -1,6 +1,10 @@
 # Server
 
+2026-09-12：M2 默认 Planner 已切为 `m2-initial`（首轮总计2–3 Query），研究默认 `batch-v1`，新增覆盖与缓存。`createZhihuProvider()` 还提供显式 `planSupplemental()`。Controller 接新 draft 时须传 `queryPolicy:"initial"`，Mock 兼容默认未改。完整函数、状态与回退见 [新分工交接](../../docs/M2_FOLLOWUP_STATUS_2026-09-12.md)。
+
 本地 API、Plan Bundle 文件存储和 P0 模块组装入口。
+
+本地一键测试：从仓库根目录运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-backend.ps1`。默认离线，包含 Python/Server 回归、类型检查和完整 HTTP 流程；不会使用已有项目数据。启动服务器、逐接口完整请求及显式真实联调见 [本地后端完整测试](../../docs/LOCAL_BACKEND_TESTING.md)。
 
 现已提供两个默认关闭的真实研究入口：
 

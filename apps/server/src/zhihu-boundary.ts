@@ -5,7 +5,9 @@ import { adaptZhihuCompilerOutput } from "./zhihu-adapter.js";
 export interface M2ResearchInput { goal: string; user_context: Record<string, unknown>; request: ResearchRequest }
 export interface ResearchIssue { code: string; stage: "search" | "normalize" | "rank" | "compile" | "coverage"; queryIndex?: number; sourceId?: string }
 export interface ResearchProviderResult { runId: string; status: "ok" | "no_evidence" | "partial"; pack: EvidencePack; issues: ResearchIssue[]; metrics: Record<string, number> }
-export interface BaselinePlanningResult { status: "ready_for_review" | "needs_clarification"; questions: ResearchQuestionDraft[]; clarificationQuestions: string[] }
+export interface BaselinePlanningResult { status: "ready_for_review" | "needs_clarification"; questions: ResearchQuestionDraft[]; clarificationQuestions: string[]; runId?: string; metrics?: Record<string, number> }
+export interface M2SupplementalInput { goal: string; user_context: Record<string, unknown>; gaps: NonNullable<EvidencePack["coverage"]>["gaps"]; executed_queries: string[]; remaining_query_budget: number }
+export interface SupplementalPlanningResult { status: "ready_for_review" | "stop"; questions: ResearchQuestionDraft[]; stopReason: "coverage_sufficient" | "query_budget_exhausted" | "no_useful_queries" | null; gaps: M2SupplementalInput["gaps"]; plannerCallsAttempted: number }
 export class BoundaryError extends Error {
   constructor(public readonly code: "invalid_request" | "invalid_response" | "upstream_failed", public readonly upstreamCode?: string, public readonly metrics?: Record<string, number>) {
     super(code === "invalid_request" ? "Invalid research input." : "Invalid or unsuccessful M2 response.");
@@ -85,7 +87,7 @@ function envelope(value: unknown, action: string) {
     check(e.data === null); const error = object(e.error); keys(error, ["code", "message"]); const code = text(error.code, 100); text(error.message, 2000);
     check(UPSTREAM_CODES.has(code));
     const safeMetrics: Record<string, number> = {};
-    for (const key of ["planner_calls_attempted", "search_calls_attempted", "compiler_calls_attempted", "candidate_count", "evidence_count"]) {
+    for (const key of ["planner_calls_attempted", "search_calls_attempted", "compiler_calls_attempted", "candidate_count", "evidence_count", "batch_model_calls_attempted", "model_calls_attempted", "cache_hit", "cache_write_success", "saved_search_calls", "saved_model_calls", "search_duration_ms", "batch_duration_ms", "total_duration_ms", "cache_read_duration_ms"]) {
       if (Object.hasOwn(metrics, key)) safeMetrics[key] = integer(metrics[key], 0, Number.MAX_SAFE_INTEGER);
     }
     throw new BoundaryError("upstream_failed", code, safeMetrics);
@@ -119,13 +121,12 @@ function validateCompiler(value: unknown): ZhihuEvidenceCompilerOutput {
   }
   return o as unknown as ZhihuEvidenceCompilerOutput;
 }
-const ISSUE_STAGES: Record<string, ResearchIssue["stage"]> = { search_timeout: "search", search_network_error: "search", search_upstream_error: "search", search_invalid_response: "search", source_invalid: "normalize", rank_failed: "rank", compiler_failed: "compile", compiler_invalid_output: "compile", compiler_budget_exhausted: "coverage", freshness_not_enforced: "coverage" };
+const ISSUE_STAGES: Record<string, ResearchIssue["stage"]> = { search_timeout: "search", search_network_error: "search", search_upstream_error: "search", search_invalid_response: "search", source_invalid: "normalize", rank_failed: "rank", compiler_failed: "compile", compiler_invalid_output: "compile", compiler_budget_exhausted: "coverage", freshness_not_enforced: "coverage", candidate_batch_truncated: "coverage" };
 export function parseResearchResponse(value: unknown, request: ResearchRequest): ResearchProviderResult {
   const checkedRequest = validateResearchRequest(request);
   const { data, runId, metrics } = envelope(value, "research");
-  keys(data, ["requestId", "status", "compilerOutputs", "routeCandidates", "unresolvedQuestions", "issues"]);
+  keys(data, ["requestId", "status", "compilerOutputs", "routeCandidates", "unresolvedQuestions", "issues"], ["coverage"]);
   check(data.requestId === checkedRequest.id && ["ok", "no_evidence", "partial"].includes(data.status as string));
-  check(list(data.routeCandidates, 0).length === 0);
   const unresolvedQuestions = strings(data.unresolvedQuestions, 100, 2000);
   const issues: ResearchIssue[] = list(data.issues, 200).map(value => {
     const i = object(value); keys(i, ["code", "stage"], ["queryIndex", "sourceId"]);
@@ -146,20 +147,98 @@ export function parseResearchResponse(value: unknown, request: ResearchRequest):
   check(data.status !== "no_evidence" || evidence.length === 0);
   check(data.status !== "ok" || evidence.length > 0);
   check(data.status === "partial" ? issues.length > 0 : issues.length === 0);
-  return { runId, status: data.status as ResearchProviderResult["status"], pack: { requestId: checkedRequest.id, evidence, routeCandidates: [], unresolvedQuestions }, issues, metrics };
+  const routeIds = new Set<string>();
+  const routeCandidates: EvidencePack["routeCandidates"] = list(data.routeCandidates, 8).map(value => {
+    const route = object(value); keys(route, ["id", "title", "summary", "applicableWhen", "evidenceIds", "risks"]);
+    const id = text(route.id, 200); check(!routeIds.has(id)); routeIds.add(id);
+    const evidenceIds = strings(route.evidenceIds, 8, 200); const risks = strings(route.risks, 12, 600);
+    const applicableWhen = strings(route.applicableWhen, 8, 1000);
+    check(evidenceIds.length > 0 && new Set(evidenceIds).size === evidenceIds.length && evidenceIds.every(id => seen.has(id)));
+    check(applicableWhen.length > 0 && risks.includes("model_inferred_needs_human_review"));
+    return { id, title: text(route.title, 300), summary: text(route.summary, 1000), applicableWhen, evidenceIds, risks };
+  });
+  const pack: EvidencePack = { requestId: checkedRequest.id, evidence, routeCandidates, unresolvedQuestions };
+  if (Object.hasOwn(data, "coverage")) {
+    const c = object(data.coverage); keys(c, ["status", "evidenceCount", "targetMin", "targetMax", "hasCaveat", "gaps", "reviewStatus"]);
+    check(c.status === "sufficient" || c.status === "insufficient");
+    check(integer(c.evidenceCount, 0, 8) === evidence.length && c.targetMin === 6 && c.targetMax === 8);
+    check(typeof c.hasCaveat === "boolean" && c.hasCaveat === evidence.some(card => card.caveats.length > 0));
+    check(c.reviewStatus === "needs_human_review");
+    const gaps = list(c.gaps, 12).map(value => {
+      const gap = object(value); keys(gap, ["kind", "reason"]);
+      check(["route", "conditions", "counterevidence", "evidence_count"].includes(gap.kind as string));
+      return { kind: gap.kind as NonNullable<EvidencePack["coverage"]>["gaps"][number]["kind"], reason: text(gap.reason, 2000) };
+    });
+    check(c.status === "sufficient" ? evidence.length >= 6 && c.hasCaveat && gaps.length === 0 && routeCandidates.length > 0 : gaps.length > 0);
+    const urls = new Map<string, number>(); const authors = new Map<string, number>(); const sources = new Map<string, number>();
+    for (const card of evidence) {
+      check(typeof card.sourceUrl === "string");
+      const count = (urls.get(card.sourceUrl) ?? 0) + 1; urls.set(card.sourceUrl, count); check(count <= 2);
+      // source IDs are checked against originals before adaptation above.
+      if (card.author?.trim()) { const key = card.author.trim().toLowerCase().replace(/ß/g, "ss").replace(/ς/g, "σ"); const n = (authors.get(key) ?? 0) + 1; authors.set(key, n); check(n <= 3); }
+    }
+    for (const raw of list(data.compilerOutputs, 100)) {
+      const o = object(raw); const s = object(o.source); const n = list(o.evidence_cards, 1).length;
+      const id = text(s.id, 300); sources.set(id, (sources.get(id) ?? 0) + n); check(sources.get(id)! <= 2);
+    }
+    pack.coverage = { status: c.status, evidenceCount: evidence.length, targetMin: 6, targetMax: 8, hasCaveat: c.hasCaveat, gaps, reviewStatus: "needs_human_review" };
+  } else check(routeCandidates.length === 0);
+  return { runId, status: data.status as ResearchProviderResult["status"], pack, issues, metrics };
 }
-export function parsePlanningResponse(value: unknown): BaselinePlanningResult {
-  const { data } = envelope(value, "plan");
+export function parsePlanningResponse(value: unknown, profile: "jia-p0-baseline" | "m2-initial" | "m2-supplemental" = "jia-p0-baseline"): BaselinePlanningResult {
+  const { data, runId, metrics } = envelope(value, "plan");
+  const metadata = profile === "jia-p0-baseline" ? {} : { runId, metrics };
   for (const flag of ["human_approved", "semantic_quality_checked", "coverage_verified", "queries_executed", "new_zhihu_search", "evidence_compilation_performed"]) if (Object.hasOwn(data, flag)) check(data[flag] === false);
   check(data.status === "ready_for_review" || data.status === "needs_clarification");
   text(data.reason, 1000, data.status === "ready_for_review");
   const raw = list(data.research_questions, 3); const clarificationQuestions = strings(data.clarification_questions, 3, 300);
-  if (data.status === "needs_clarification") { check(raw.length === 0 && clarificationQuestions.length > 0); return { status: "needs_clarification", questions: [], clarificationQuestions }; }
+  if (data.status === "needs_clarification") { check(raw.length === 0 && clarificationQuestions.length > 0); return { status: "needs_clarification", questions: [], clarificationQuestions, ...metadata }; }
   check(clarificationQuestions.length === 0);
   const questions = raw.map(value => { const q = object(value); return { question: text(q.research_question, 300), searchQueries: queries(q.queries), rationale: text(q.why_needed, 600) }; });
   const allQueries = questions.flatMap(question => question.searchQueries.map(normalized));
   check(new Set(allQueries).size === allQueries.length);
   check(new Set(questions.map(question => normalized(question.question))).size === questions.length);
-  check(validateResearchQuestionDrafts(questions).valid);
-  return { status: "ready_for_review", questions, clarificationQuestions };
+  check(["jia-p0-baseline", "m2-initial", "m2-supplemental"].includes(profile));
+  check(validateResearchQuestionDrafts(questions, profile === "m2-initial" ? "initial" : profile === "m2-supplemental" ? "supplemental" : "legacy").valid);
+  return { status: "ready_for_review", questions, clarificationQuestions, ...metadata };
+}
+
+export function validateSupplementalInput(value: unknown): M2SupplementalInput {
+  try {
+    const input = object(value); keys(input, ["goal", "user_context", "gaps", "executed_queries", "remaining_query_budget"]);
+    const common = validateResearchInput({ goal: input.goal, user_context: input.user_context, request: { id: "validation-only", question: "输入校验", searchQueries: ["输入校验"], relevantUserConditions: [], evidenceLimit: 1 } });
+    const gaps = list(input.gaps, 12).map(value => {
+      const gap = object(value); keys(gap, ["kind", "reason"]);
+      check(["route", "conditions", "counterevidence", "evidence_count"].includes(gap.kind as string));
+      return { kind: gap.kind as M2SupplementalInput["gaps"][number]["kind"], reason: text(gap.reason, 600).trim() };
+    });
+    const executed = strings(input.executed_queries, 100, 120).map(q => queries([q])[0]!.trim());
+    check(new Set(executed.map(normalized)).size === executed.length);
+    check(Buffer.byteLength(pythonJson(input), "utf8") <= 64000);
+    return { goal: common.goal, user_context: common.user_context, gaps, executed_queries: executed, remaining_query_budget: integer(input.remaining_query_budget, 0, Number.MAX_SAFE_INTEGER) };
+  } catch { throw new BoundaryError("invalid_request"); }
+}
+
+export function parseSupplementalResponse(value: unknown, input: M2SupplementalInput): SupplementalPlanningResult {
+  input = validateSupplementalInput(input);
+  const { data } = envelope(value, "supplement");
+  check(data.planning_stage === "supplemental" && data.input_scope === "goal_context_and_gap_summary");
+  check(data.remaining_query_budget === input.remaining_query_budget && data.executed_query_count === input.executed_queries.length);
+  check(JSON.stringify(data.gaps) === JSON.stringify(input.gaps));
+  const plannerCallsAttempted = integer(data.planner_calls_attempted, 0, 1);
+  const shouldCall = input.gaps.length > 0 && input.remaining_query_budget > 0;
+  check(plannerCallsAttempted === Number(shouldCall));
+  for (const flag of ["human_approved", "semantic_quality_checked", "coverage_verified", "queries_executed", "new_zhihu_search", "evidence_compilation_performed"]) if (Object.hasOwn(data, flag)) check(data[flag] === false);
+  if (data.status === "stop") {
+    text(data.reason, 1000); check(list(data.research_questions, 0).length === 0 && list(data.clarification_questions, 0).length === 0);
+    const stopReason = input.gaps.length === 0 ? "coverage_sufficient" : input.remaining_query_budget === 0 ? "query_budget_exhausted" : "no_useful_queries";
+    check(data.stop_reason === stopReason);
+    return { status: "stop", questions: [], stopReason, gaps: input.gaps, plannerCallsAttempted };
+  }
+  check(shouldCall && data.status === "ready_for_review" && data.stop_reason === null);
+  const proposal = parsePlanningResponse({ ...object(value), action: "plan" }, "m2-supplemental");
+  const next = proposal.questions.flatMap(q => q.searchQueries);
+  check(next.length <= Math.min(3, input.remaining_query_budget));
+  const executed = new Set(input.executed_queries.map(normalized)); check(next.every(q => !executed.has(normalized(q))));
+  return { status: "ready_for_review", questions: proposal.questions, stopReason: null, gaps: input.gaps, plannerCallsAttempted };
 }

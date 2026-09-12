@@ -1,0 +1,70 @@
+{
+  "fixture_kind": "synthetic_prompt_review",
+  "description": "供单独的有预算真实模型对照使用；普通测试不调用模型。所有片段和URL均为合成，不得抓取URL或称为真实检索结果。预期仅为测试设计，不是已完成的人审标签。",
+  "profiles": ["legacy", "v3"],
+  "cases": [
+    {
+      "case_id": "prompt-method-resource-only",
+      "pair_id": "same-resource-snippet",
+      "goal": "学习检查函数调用参数",
+      "user_context": {},
+      "research_question": "如何判断调用参数正确？",
+      "source": {
+        "content_type": "Article",
+        "content_id": "synthetic-prompt-pair",
+        "title": "合成练习库介绍",
+        "content_text": "纸鸢练习库支持测试，是回归测试首选，五分钟上手，含调用参数示例。",
+        "url": "https://zhuanlan.zhihu.com/p/synthetic-prompt-pair",
+        "author_name": "合成作者"
+      },
+      "expected_behavior": "no_evidence；只有资源自述，没有判断参数正确的动作或判据。",
+      "review_status": "needs_human_review",
+      "actual_model_output": null,
+      "direct_answer": null,
+      "support_label": null,
+      "reviewer": null
+    },
+    {
+      "case_id": "prompt-resource-same-snippet",
+      "pair_id": "same-resource-snippet",
+      "goal": "寻找函数调用参数练习资源",
+      "user_context": {},
+      "research_question": "有什么资源可查看调用参数示例？",
+      "source": {
+        "content_type": "Article",
+        "content_id": "synthetic-prompt-pair",
+        "title": "合成练习库介绍",
+        "content_text": "纸鸢练习库支持测试，是回归测试首选，五分钟上手，含调用参数示例。",
+        "url": "https://zhuanlan.zhihu.com/p/synthetic-prompt-pair",
+        "author_name": "合成作者"
+      },
+      "expected_behavior": "可归因转述作者声称练习库包含调用参数示例，factual_claim；不得认可首选或承诺五分钟掌握。",
+      "review_status": "needs_human_review",
+      "actual_model_output": null,
+      "direct_answer": null,
+      "support_label": null,
+      "reviewer": null
+    },
+    {
+      "case_id": "prompt-method-short-action",
+      "pair_id": null,
+      "goal": "学习检查函数调用参数",
+      "user_context": {},
+      "research_question": "如何判断调用参数正确？",
+      "source": {
+        "content_type": "Article",
+        "content_id": "synthetic-prompt-short",
+        "title": "合成参数比较方法",
+        "content_text": "记录本次调用的实际参数，再与预先写下的期望参数逐项比较。",
+        "url": "https://zhuanlan.zhihu.com/p/synthetic-prompt-short",
+        "author_name": "合成作者"
+      },
+      "expected_behavior": "可形成带作者归因的advice；短片段不能仅因短而弃答，不得扩写为保证两周学会。",
+      "review_status": "needs_human_review",
+      "actual_model_output": null,
+      "direct_answer": null,
+      "support_label": null,
+      "reviewer": null
+    }
+  ]
+}

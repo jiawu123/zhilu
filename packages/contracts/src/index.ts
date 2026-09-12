@@ -280,6 +280,18 @@ export interface EvidencePack {
   evidence: EvidenceCard[];
   routeCandidates: RouteCandidate[];
   unresolvedQuestions: string[];
+  /** M2 结构覆盖报告；不等同于已验证分歧、事实或可执行路线。 */
+  coverage?: ResearchCoverage;
+}
+
+export interface ResearchCoverage {
+  status: "sufficient" | "insufficient";
+  evidenceCount: number;
+  targetMin: 6;
+  targetMax: 8;
+  hasCaveat: boolean;
+  gaps: Array<{ kind: "route" | "conditions" | "counterevidence" | "evidence_count"; reason: string }>;
+  reviewStatus: "needs_human_review";
 }
 
 export interface RouteCandidate {

@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 
 from zhihu_m2 import llm_client
 from zhihu_m2.models import ZhihuResult
+from zhihu_m2.retrieval_options import RetrievalOptions
 
 COMPILER_VERSION = "m2-evidence-v0.1.2"
 CLAIM_TYPES = {"advice", "experience", "opinion", "factual_claim"}
@@ -92,6 +93,19 @@ caveats 为最多6项的列表，每项是不超过600字符的非空字符串�
 没有足够的直接依据时：
 {"status":"no_evidence","reason":"说明缺少当前问题所需的哪类依据","evidence_cards":[]}
 只输出最终 JSON。
+"""
+
+
+V3_PROMPT_APPENDIX = """\n【V3：同一资料按问题类型成对判断】
+先判断question需要方法、检验、风险、经历、概念还是资源。
+假想片段：“纸鸢练习库支持测试，是回归测试首选，五分钟上手，含调用参数示例。”
+问题A：“如何判断调用参数正确？”仅“支持测试/回归测试首选/五分钟上手”只是资源作者声称，
+没有直接动作或判据，返回no_evidence，不能补写参数比较步骤，更不能保证用户五分钟掌握。
+问题B：“有什么资源可查看调用参数示例？”同一片段可以归因转述“作者称纸鸢练习库含调用参数示例”，
+使用factual_claim；不把“首选”当作已验证优劣，不按工具名称黑名单过滤。
+对比短片段：“记录本次调用的实际参数，再与预先写下的期望参数逐项比较。”
+它能直接回答问题A，可以形成advice证据。不靠长度、点赞或术语数量决定采纳。
+上述均为合成教学例，不是实际来源；本次引文只能来自输入snippet。
 """
 
 
@@ -248,20 +262,20 @@ def validate_evidence_response(
     return output
 
 
-def compile_evidence(
+def build_compiler_prompts(
     result: ZhihuResult,
     *,
     goal: str,
     user_context: dict[str, Any],
     research_question: str,
     retrieved_at: str | None = None,
-) -> dict[str, Any]:
-    """Make at most ONE LLM call and accept zero or one checked card.
+    retrieval_profile: str = "legacy",
+) -> tuple[str, str]:
+    """Validated exact generate_json arguments, without any model call.
 
-    Input validation runs before any paid call. Raw content is NOT cleaned by
-    ranker.py. Model/transport/validation errors propagate; there is no retry,
-    repair loop, tool execution, or conversion of errors into 'no_evidence'.
+    Transport adds its standard JSON suffix; audit full wire messages for hashes.
     """
+    RetrievalOptions(retrieval_profile)
     source = _source_record(result, retrieved_at)
     _text(goal, "goal", 2000)
     _text(research_question, "research_question", 2000)
@@ -286,8 +300,30 @@ def compile_evidence(
         },
     }, ensure_ascii=False, allow_nan=False)
 
+    system_prompt = SYSTEM_PROMPT + (V3_PROMPT_APPENDIX if retrieval_profile == "v3" else "")
+    return system_prompt, user_prompt
+
+
+def compile_evidence(
+    result: ZhihuResult,
+    *,
+    goal: str,
+    user_context: dict[str, Any],
+    research_question: str,
+    retrieved_at: str | None = None,
+    retrieval_profile: str = "legacy",
+) -> dict[str, Any]:
+    """Make at most one LLM call; preserve raw input and propagate errors.
+
+    No retry, repair, tool execution or conversion of errors into no_evidence.
+    The profile is trusted caller configuration, never inferred from source text.
+    """
+    system_prompt, user_prompt = build_compiler_prompts(
+        result, goal=goal, user_context=user_context, research_question=research_question,
+        retrieved_at=retrieved_at, retrieval_profile=retrieval_profile,
+    )
     payload = llm_client.generate_json(
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=system_prompt,
         user_prompt=user_prompt,
         max_tokens=1600,
     )

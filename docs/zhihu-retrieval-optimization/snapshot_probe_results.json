@@ -1,0 +1,36 @@
+{
+  "kind": "snapshot_diagnostic_not_quality_benchmark",
+  "synthetic": true,
+  "network_calls": 0,
+  "model_calls": 0,
+  "notes": [
+    "只运行上传源码中的确定性评分函数；不是优化后的结果。",
+    "术语偏重是代码结构和本例数值现象，不代表对真实相关性已做标注评估。"
+  ],
+  "cases": {
+    "coding_jargon": {
+      "text": "Python JSON HTTP GitHub API RAG prompt embedding 日志 协议",
+      "specificity_score": 0.75,
+      "actionability_score": 0.2,
+      "relevance_to_agent_testing": 0.11785714285714285
+    },
+    "noncoding_check": {
+      "text": "把木桌放在平整地面上，逐条检查连接处是否松动；对角轻推桌面，记录哪些连接处晃动，再重新紧固。",
+      "specificity_score": 0.0,
+      "actionability_score": 0.0,
+      "relevance_to_agent_testing": 0.18214285714285713
+    },
+    "actual_agent_method": {
+      "text": "把模型调用替换成固定返回值，记录工具调用的参数；把实际输出与预先写好的期望结果逐项比较。",
+      "specificity_score": 0.125,
+      "actionability_score": 0.13,
+      "relevance_to_agent_testing": 0.11785714285714285
+    },
+    "resource_promotion": {
+      "text": "最流行的 Agent 测试框架，五分钟上手，测试用例、断言、自动化对比全都有，回归测试首选。",
+      "specificity_score": 0.125,
+      "actionability_score": 0.13,
+      "relevance_to_agent_testing": 0.15
+    }
+  }
+}

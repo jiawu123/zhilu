@@ -1,0 +1,214 @@
+{
+  "dataset_kind": "synthetic_engineering_regression",
+  "review_status": "needs_human_review",
+  "cases": [
+    {
+      "id": "coding_method_zh",
+      "domain": "programming",
+      "question": "零基础如何用 Python 完成一个能处理错误的记账程序？",
+      "preferred": {
+        "title": "Python 记账程序的练习方法",
+        "content_text": "零基础先把一笔收入和支出写入文件，再读取文件汇总余额。每完成一种操作，用正常金额、空输入和负数各试一次；遇到无效金额应保留原记录并提示重新输入。能解释失败原因后，再增加分类统计。"
+      },
+      "distractor": {
+        "title": "Python 记账程序的练习方法",
+        "content_text": "零基础如何用 Python 完成一个能处理错误的记账程序？Python API JSON HTTP GitHub TypeScript RAG React LLM LangChain，技术名词都要了解，学会这些就是程序高手。"
+      }
+    },
+    {
+      "id": "coding_concept_en",
+      "domain": "programming",
+      "question": "What is the difference between a list and a set when removing duplicate email addresses?",
+      "preferred": {
+        "title": "A list and a set for email addresses",
+        "content_text": "A list keeps repeated email addresses and their original order. A set stores each distinct address once, so repeated entries disappear, but it does not provide a meaningful delivery order. For example, two copies of the same address become one member; normalize capitalization only if your application's address rules allow it."
+      },
+      "distractor": {
+        "title": "A list and a set for email addresses",
+        "content_text": "To learn the difference between a list and a set when removing duplicate email addresses, step 1 configure Python, step 2 run HTTP API tests, and step 3 deploy JSON logs to GitHub. A strong development environment helps every project."
+      }
+    },
+    {
+      "id": "writing_method_zh",
+      "domain": "writing",
+      "question": "每天只有二十分钟，怎样练习短篇小说的场景描写？",
+      "preferred": {
+        "title": "二十分钟练习短篇小说的场景描写",
+        "content_text": "前五分钟观察一个具体地点，记下声音、气味和人物正在做的事；接着用十分钟写一段两百字场景，只保留主角能感知的信息。最后五分钟删去抽象形容词，比较修改前后是否更容易看见人物的动作。每天保存一组修改对照。"
+      },
+      "distractor": {
+        "title": "二十分钟练习短篇小说的场景描写",
+        "content_text": "每天只有二十分钟，怎样练习短篇小说的场景描写？写作需要灵感和热爱，想成为小说家就要坚持。搭建 API、配置 Python、测试 JSON 并部署项目也能带来新的创作灵感。"
+      }
+    },
+    {
+      "id": "writing_resources_en",
+      "domain": "writing",
+      "question": "Which free resources help a beginner revise dialogue in short fiction?",
+      "preferred": {
+        "title": "Free resources for revising short fiction dialogue",
+        "content_text": "Use a public library's short fiction collection to compare how published scenes alternate speech and action. A free writing group can provide a reader who marks where a speaker becomes unclear. Choose resources with complete scenes and revision feedback; isolated lists of dialogue tips give beginners less context."
+      },
+      "distractor": {
+        "title": "Free resources for revising short fiction dialogue",
+        "content_text": "A beginner should revise dialogue in short fiction every day. First write a sentence, then write another sentence, and finally read the paragraph aloud. Practice regularly and keep a positive attitude toward improvement."
+      }
+    },
+    {
+      "id": "speaking_method_zh",
+      "domain": "public_speaking",
+      "question": "新手怎样练习三分钟演讲，减少口头禅？",
+      "preferred": {
+        "title": "三分钟演讲练习与口头禅",
+        "content_text": "录下一次完整的三分钟演讲，回听时标记每次“然后”和“就是”出现的位置。下一轮只练习出现最多的那一段，用短暂停顿替代填充词。比较两轮每分钟的填充词次数，同时请听众指出停顿是否影响理解，避免为了清零而说得生硬。"
+      },
+      "distractor": {
+        "title": "三分钟演讲练习与口头禅",
+        "content_text": "新手怎样练习三分钟演讲，减少口头禅？掌握演讲技巧，增强自信，坚持练习，就会成为优秀演讲者。设计 API、实现 Python 项目、运行测试和记录日志可以全面提升个人能力。"
+      }
+    },
+    {
+      "id": "speaking_risk_en",
+      "domain": "public_speaking",
+      "question": "What are the limitations of memorizing an entire presentation word for word?",
+      "preferred": {
+        "title": "Memorizing a presentation word for word",
+        "content_text": "Memorizing an entire presentation can make a missed sentence interrupt the speaker's train of thought. If an audience asks a question mid-talk, returning to a memorized script may be difficult. Rehearsing from section headings offers an alternative, although exact wording may still matter for a short quotation."
+      },
+      "distractor": {
+        "title": "Memorizing a presentation word for word",
+        "content_text": "First memorize the introduction, then memorize every section of the presentation, and finally repeat the entire presentation word for word. Spend 20 minutes in the morning and 20 minutes in the evening. Repetition develops confidence on stage."
+      }
+    },
+    {
+      "id": "product_validation_zh",
+      "domain": "product_validation",
+      "question": "没有开发预算，如何验证社区借用工具的需求？",
+      "preferred": {
+        "title": "低预算验证社区借用工具的需求",
+        "content_text": "先询问五位居民最近一次需要借用工具的经历，记录工具种类、等待时间和最后的解决办法。再用纸质登记表安排一次人工借还，观察实际预约和归还是否发生。如果大家只口头支持却不愿预约，先调整使用条件，不急着开发平台。"
+      },
+      "distractor": {
+        "title": "低预算验证社区借用工具的需求",
+        "content_text": "没有开发预算，如何验证社区借用工具的需求？首先搭建 React 页面，然后实现 HTTP API，接着设计 JSON 协议并配置数据库，最后部署 Python 服务。完整的技术项目是商业成功的重要基础。"
+      }
+    },
+    {
+      "id": "product_counterexample_en",
+      "domain": "product_validation",
+      "question": "Why can positive survey responses overestimate demand for a paid neighborhood service?",
+      "preferred": {
+        "title": "Positive survey responses and paid neighborhood services",
+        "content_text": "Respondents may praise a neighborhood service to be polite without intending to pay. A survey saying 'I would use it' leaves price and timing unspecified. Compare those responses with actual bookings at a clearly stated price; a small number of bookings is counterevidence to a broad demand claim, though an inconvenient schedule can also suppress bookings."
+      },
+      "distractor": {
+        "title": "Positive survey responses and paid neighborhood services",
+        "content_text": "Collect 100 positive survey responses for the paid neighborhood service. First count the responses, then calculate the percentage, and finally make a chart. Positive responses show that people like the idea and give the team confidence to launch."
+      }
+    },
+    {
+      "id": "language_method_zh",
+      "domain": "language_learning",
+      "question": "如何练习英语听力，解决听得见单词却听不懂句子的问题？",
+      "preferred": {
+        "title": "英语听力：从单词到句子",
+        "content_text": "选一段有逐字稿的一分钟对话，先不看稿听两遍，写下整句的大意。对照逐字稿找出漏听的连读和重音，再逐句跟读并重听原音。第二天用同主题的新对话检查能否理解句子，避免只记住同一段录音。"
+      },
+      "distractor": {
+        "title": "英语听力：从单词到句子",
+        "content_text": "如何练习英语听力，解决听得见单词却听不懂句子的问题？背更多单词非常重要。每天记住 50 个单词，坚持 30 天，再坚持 90 天，单词量扩大后就会自然听懂任何句子。"
+      }
+    },
+    {
+      "id": "language_resources_en",
+      "domain": "language_learning",
+      "question": "What resources should an intermediate Spanish learner choose for listening practice with transcripts?",
+      "preferred": {
+        "title": "Spanish listening resources with transcripts",
+        "content_text": "An intermediate learner can choose graded Spanish podcasts that publish a transcript for each episode. Prefer short episodes with natural conversation and a transcript matching the recording, so missed phrases can be checked. Public radio interviews offer more challenging material, but summaries alone cannot replace transcripts for detailed listening practice."
+      },
+      "distractor": {
+        "title": "Spanish listening resources with transcripts",
+        "content_text": "An intermediate Spanish learner should schedule listening practice with transcripts. First listen for 10 minutes, then listen for 20 minutes, and finally practice for 30 minutes. More listening time is a useful part of a language routine."
+      }
+    },
+    {
+      "id": "time_budget_zh",
+      "domain": "time_budget",
+      "question": "轮班工作每周只有两小时，如何安排绘画练习？",
+      "preferred": {
+        "title": "轮班工作者的每周绘画练习",
+        "content_text": "把每周两小时拆成四次半小时，随当周班表选择空档。每次只练一个小对象，前二十分钟画形体，后十分钟对照实物记录一个偏差。若临时加班，保留一次复习即可，下周根据记录继续，不通过熬夜补足次数。"
+      },
+      "distractor": {
+        "title": "轮班工作者的每周绘画练习",
+        "content_text": "轮班工作每周只有两小时，如何安排绘画练习？首先每天练习三小时线条，然后每天练习两小时色彩，最后每天画一幅完整作品。只有大幅增加时间投入才能进步，坚持就会成功。"
+      }
+    },
+    {
+      "id": "time_budget_en",
+      "domain": "time_budget",
+      "question": "How can I review course notes during a commute without a laptop?",
+      "preferred": {
+        "title": "Reviewing course notes during a commute",
+        "content_text": "Prepare a few question cards before leaving home. During the commute, answer each question from memory and mark uncertain answers on paper; check those against the course notes after arriving. This works without a laptop, but crowded or noisy journeys may make short recognition questions more practical than long written explanations."
+      },
+      "distractor": {
+        "title": "Reviewing course notes during a commute",
+        "content_text": "To review course notes during a commute without a laptop, step 1 configure a Python notebook, step 2 run a local API, and step 3 write automated tests. A laptop with enough memory makes this workflow convenient and supports a complete study project."
+      }
+    },
+    {
+      "id": "photography_method_zh",
+      "domain": "photography",
+      "question": "用手机拍室内人像，怎样减少脸上的硬阴影？",
+      "preferred": {
+        "title": "手机室内人像与脸部阴影",
+        "content_text": "让人物靠近窗户并稍微侧身，比较正对窗户和侧对窗户时脸上的阴影。窗边阳光直射时拉上白色薄帘，使光线更柔和。保持手机和人物位置相同，分别拍照对照；如果背景过亮，再调整人物朝向而不是直接拉高曝光。"
+      },
+      "distractor": {
+        "title": "手机室内人像与脸部阴影",
+        "content_text": "用手机拍室内人像，怎样减少脸上的硬阴影？购买更昂贵的手机很重要。拍摄 100 张照片，挑选 10 张，再发布 3 张，保持输出作品集就能不断提升人像摄影水平。"
+      }
+    },
+    {
+      "id": "photography_concept_en",
+      "domain": "photography",
+      "question": "Why does a slower shutter speed make moving cyclists look blurred?",
+      "preferred": {
+        "title": "Slower shutter speed and blurred cyclists",
+        "content_text": "A slower shutter speed leaves the sensor exposed while the cyclist changes position. Light from the moving cyclist is therefore recorded across several positions, producing a streak instead of a sharp outline. A stationary background can remain clear if the camera is steady; camera movement can blur both the cyclist and the background."
+      },
+      "distractor": {
+        "title": "Slower shutter speed and blurred cyclists",
+        "content_text": "To photograph moving cyclists with a slower shutter speed, first select a location, then take 10 photographs, and finally export 3 images. Configure a Python script to evaluate the images and save JSON logs. A repeatable workflow is helpful for every photographer."
+      }
+    },
+    {
+      "id": "photography_risk_zh",
+      "domain": "photography",
+      "question": "夜景照片提高感光度有什么代价，什么时候需要三脚架？",
+      "preferred": {
+        "title": "夜景感光度与三脚架的取舍",
+        "content_text": "提高感光度可以配合更短的曝光时间，减少手持抖动，但暗部噪点通常更明显。拍静止建筑时可用三脚架延长曝光并降低感光度；拍走动的人时，三脚架只能稳住相机，不能消除人物移动造成的模糊。"
+      },
+      "distractor": {
+        "title": "夜景感光度与三脚架的取舍",
+        "content_text": "夜景照片提高感光度有什么代价，什么时候需要三脚架？首先提高感光度，然后架好三脚架，最后按下快门。每天拍摄 20 张夜景照片并整理成作品集，反复练习就会掌握夜景摄影。"
+      }
+    },
+    {
+      "id": "writing_counterexample_zh",
+      "domain": "writing",
+      "question": "写作新手追求每天高字数可能有哪些问题？",
+      "preferred": {
+        "title": "每天高字数是否适合写作新手",
+        "content_text": "如果新手只记录每日字数，可能会重复同一种句式来完成指标，却没有发现叙事视角混乱的问题。把一部分时间留给重写，并请读者指出看不懂的位置，能提供另一种进步信号。赶初稿时高字数目标仍可能有用，但不宜代替修改。"
+      },
+      "distractor": {
+        "title": "每天高字数是否适合写作新手",
+        "content_text": "写作新手追求每天高字数可能有哪些问题？第一步设定 3000 字目标，第二步记录每日字数，第三步每月增加 1000 字。连续坚持 100 天，字数就会证明你的努力，很多人都喜欢这个方法。"
+      }
+    }
+  ]
+}

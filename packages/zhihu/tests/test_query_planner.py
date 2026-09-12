@@ -36,6 +36,8 @@ def read(path):
 
 @pytest.fixture(autouse=True)
 def no_network(monkeypatch):
+    monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
+    monkeypatch.delenv("ZHIHU_RETRIEVAL_PROFILE", raising=False)
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     def forbidden(*args, **kwargs):
         raise AssertionError("Unexpected real HTTP request in an offline test")

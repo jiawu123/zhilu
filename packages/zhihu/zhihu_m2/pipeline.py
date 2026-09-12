@@ -152,8 +152,16 @@ def plan(request: dict, *, dry_run: bool = False, max_questions: int = 3,
         result = planner.plan_research(**frozen)
     except planner.PlannerValidationError:
         raise EntryError("invalid_plan_output") from None
-    except planner.llm_client.LLMError:
-        raise EntryError("llm_error") from None
+    except planner.llm_client.LLMError as error:
+        from zhihu_m2.research_runner import _llm_fatal
+        raise EntryError(_llm_fatal(error) or "llm_error") from None
+    except ValueError as error:
+        # RetrievalOptions uses the existing typed configuration error. Do not
+        # promote arbitrary model/validation exceptions into configuration errors.
+        from zhihu_m2.research_runner import ResearchError
+        if isinstance(error, ResearchError) and error.code == "configuration_error":
+            raise EntryError("configuration_error") from None
+        raise
     if not isinstance(result, dict) or result.get("status") not in {
         "ready_for_review", "needs_clarification"
     }:
@@ -174,17 +182,36 @@ def research(request: dict, *, metrics: dict | None = None) -> dict:
         raise EntryError(code, 2 if code in {"invalid_request", "input_too_large"} else 1) from None
 
 
+def supplement(request: dict, *, metrics: dict | None = None) -> dict:
+    """Explicit Controller request only; never triggered by research itself."""
+    if type(request) is not dict or set(request) != {'goal', 'user_context', 'gaps', 'executed_queries', 'remaining_query_budget'}:
+        raise EntryError('invalid_request', 2)
+    try:
+        planner = _load_planner()
+    except ImportError:
+        raise EntryError('dependency_unavailable') from None
+    try:
+        return planner.plan_supplemental(**request, metrics=metrics)
+    except planner.PlannerValidationError:
+        raise EntryError('invalid_plan_output') from None
+    except planner.llm_client.LLMError as error:
+        from zhihu_m2.research_runner import _llm_fatal
+        raise EntryError(_llm_fatal(error) or 'llm_error') from None
+    except (ValueError, TypeError, RecursionError):
+        raise EntryError('invalid_request', 2) from None
+
+
 def _arguments(argv: list[str] | None) -> argparse.Namespace:
     parser = _Parser(description=__doc__, allow_abbrev=False)
-    parser.add_argument("--action", required=True, choices=("plan", "research"))
+    parser.add_argument("--action", required=True, choices=("plan", "research", "supplement"))
     parser.add_argument("--input", type=Path, help="UTF-8 JSON file; otherwise read stdin to EOF")
     parser.add_argument("--output", type=Path, help="Also save the final response as UTF-8 JSON")
     parser.add_argument("--dry-run", action="store_true", help="plan input preview only; no model call")
     parser.add_argument("--max-questions", type=int, choices=(1, 2, 3))
     parser.add_argument("--queries-per-question", type=int, choices=(1, 2))
-    parser.add_argument("--planning-profile", choices=("jia-p0-baseline",))
+    parser.add_argument("--planning-profile", choices=("jia-p0-baseline", "m2-initial"))
     args = parser.parse_args(argv)
-    if args.action == "research" and (args.dry_run or args.max_questions is not None
+    if args.action != "plan" and (args.dry_run or args.max_questions is not None
             or args.queries_per_question is not None or args.planning_profile is not None):
         raise EntryError("invalid_arguments", 2)
     args.max_questions = args.max_questions if args.max_questions is not None else 3
@@ -248,6 +275,8 @@ def main(argv: list[str] | None = None) -> int:
                 data = plan(request, dry_run=args.dry_run, max_questions=args.max_questions,
                             queries_per_question=args.queries_per_question,
                             planning_profile=args.planning_profile, metrics=response["metrics"])
+            elif args.action == 'supplement':
+                data = supplement(request, metrics=response['metrics'])
             else:
                 data = research(request, metrics=response["metrics"])
             # Check serialization before declaring success.
@@ -285,7 +314,9 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps({"event": "pipeline_finished", "run_id": response["run_id"],
                       "action": response["action"], "ok": response["ok"],
                       "error_code": response["error"]["code"] if response["error"] else None,
-                      "planner_calls_attempted": response["metrics"]["planner_calls_attempted"]}),
+                      **{key: response['metrics'].get(key, 0) for key in (
+                          'planner_calls_attempted', 'search_calls_attempted',
+                          'compiler_calls_attempted', 'batch_model_calls_attempted')}}),
           file=sys.stderr, flush=True)
     try:
         sys.stdout.write(text)

@@ -90,6 +90,31 @@ def test_live_plan_calls_existing_planner_once(monkeypatch, capsys, planner_back
     assert len(planner_backend.calls) == 1
 
 
+def test_unknown_retrieval_profile_is_safe_configuration_error_before_llm(monkeypatch, capsys, planner_backend):
+    monkeypatch.setenv("ZHIHU_RETRIEVAL_PROFILE", "PRIVATE-invalid-profile")
+    rc, body, stderr = invoke(monkeypatch, capsys)
+    assert planner_backend.calls == []
+    assert rc == 1 and body["error"]["code"] == "configuration_error"
+    assert body["data"] is None and body["ok"] is False
+    assert "PRIVATE" not in json.dumps(body) + stderr
+
+
+def test_arbitrary_value_error_is_not_misclassified_as_configuration(monkeypatch, capsys, planner_backend):
+    planner_backend.error = ValueError("PRIVATE arbitrary value")
+    rc, body, stderr = invoke(monkeypatch, capsys)
+    assert rc == 1 and body["error"]["code"] == "execution_error"
+    assert "PRIVATE" not in json.dumps(body) + stderr
+
+
+def test_offline_conftest_overrides_external_profile_for_child_processes():
+    script = "import os, runpy; runpy.run_path('tests/conftest.py'); print(os.environ['ZHIHU_RETRIEVAL_PROFILE'])"
+    result = subprocess.run([sys.executable, "-B", "-c", script], cwd=Path(__file__).parents[1],
+                            env={**os.environ, "ZHIHU_RETRIEVAL_PROFILE": "external-v3-or-invalid"},
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0
+    assert result.stdout.strip() == "legacy"
+
+
 def test_dry_run_is_explicit_and_makes_no_model_call(monkeypatch, capsys, planner_backend):
     rc, body, _ = invoke(monkeypatch, capsys, argv=["--action", "plan", "--dry-run"])
     assert rc == 0 and body["data"]["status"] == "dry_run"

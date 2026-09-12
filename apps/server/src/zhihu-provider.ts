@@ -1,13 +1,19 @@
 import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptionsWithoutStdio } from "node:child_process";
 import { isAbsolute, join } from "node:path";
 import {
-  BoundaryError, parsePlanningResponse, parseResearchResponse, validateResearchInput,
+  BoundaryError, parsePlanningResponse, parseResearchResponse, parseSupplementalResponse,
+  validateResearchInput, validateSupplementalInput,
   type BaselinePlanningResult, type M2ResearchInput, type ResearchProviderResult,
+  type M2SupplementalInput, type SupplementalPlanningResult,
 } from "./zhihu-boundary";
 
 export interface ZhihuProvider {
   planForBaseline(input: { goal: string; user_context: Record<string, unknown> }): Promise<BaselinePlanningResult>;
   researchOne(input: M2ResearchInput): Promise<ResearchProviderResult>;
+}
+/** Jia explicitly requests gap planning; researchOne never schedules another round. */
+export interface M2Provider extends ZhihuProvider {
+  planSupplemental(input: M2SupplementalInput): Promise<SupplementalPlanningResult>;
 }
 export interface ZhihuProviderConfig {
   pythonBin: string;
@@ -15,6 +21,7 @@ export interface ZhihuProviderConfig {
   timeoutMs?: number;
   maxStdoutBytes?: number;
   maxStderrBytes?: number;
+  planningProfile?: "m2-initial" | "jia-p0-baseline";
   /** Trusted Server environment only. Never populated from an HTTP body. */
   env?: NodeJS.ProcessEnv;
 }
@@ -47,30 +54,62 @@ function integer(value: number, maximum: number): number {
   if (!Number.isSafeInteger(value) || value < 1 || value > maximum) throw new ZhihuProviderError("invalid_configuration");
   return value;
 }
+function planningProfile(value: unknown): "m2-initial" | "jia-p0-baseline" {
+  if (value !== "m2-initial" && value !== "jia-p0-baseline") throw new ZhihuProviderError("invalid_configuration");
+  return value;
+}
+const failureCodes = new Set(["invalid_arguments", "invalid_json", "input_too_large", "input_io_error",
+  "invalid_request", "dependency_unavailable", "invalid_plan_output", "llm_error", "execution_error",
+  "output_io_error", "interrupted", "research_failed", "compilation_failed", "configuration_error",
+  "authentication_failed", "rate_or_quota_limit", "evidence_id_conflict", "research_timeout"]);
+const diagnosticCounters = ["planner_calls_attempted", "search_calls_attempted", "compiler_calls_attempted",
+  "batch_model_calls_attempted", "model_calls_attempted", "candidate_count", "evidence_count",
+  "cache_hit", "saved_search_calls", "saved_model_calls", "search_duration_ms", "batch_duration_ms", "total_duration_ms"];
+interface PipelineFailure { upstreamCode: string; metrics: Record<string, number> }
+/** Only safe primitives survive a diagnostic line. Never retain upstream logs or run IDs. */
+function parsePipelineFailure(line: Buffer, action: string): PipelineFailure | undefined {
+  try {
+    const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(line));
+    if (!value || typeof value !== "object" || Array.isArray(value)) return;
+    const record = value as Record<string, unknown>;
+    if (record.event !== "pipeline_finished" || record.action !== action || record.ok !== false ||
+        typeof record.error_code !== "string" || !failureCodes.has(record.error_code)) return;
+    const metrics: Record<string, number> = {};
+    for (const key of diagnosticCounters) {
+      if (!Object.hasOwn(record, key)) continue;
+      const count = record[key];
+      if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) return;
+      metrics[key] = count;
+    }
+    return { upstreamCode: record.error_code, metrics };
+  } catch { return; }
+}
 /** Node reads its launch environment. Python independently loads packages/zhihu/.env. */
 export function readZhihuProviderConfig(env: NodeJS.ProcessEnv = process.env): ZhihuProviderConfig {
   const pythonBin = env.ZHIHU_PYTHON_BIN ?? "";
   const pythonCwd = env.ZHIHU_PYTHON_CWD ?? "";
   if (!isAbsolute(pythonBin) || !isAbsolute(pythonCwd)) throw new ZhihuProviderError("invalid_configuration");
   const timeoutMs = integer(Number(env.ZHIHU_TIMEOUT_MS ?? 630000), 630000);
-  return { pythonBin, pythonCwd, timeoutMs };
+  return { pythonBin, pythonCwd, timeoutMs, planningProfile: planningProfile(env.ZHIHU_PLANNING_PROFILE ?? "m2-initial") };
 }
 
-export function createZhihuProvider(config: ZhihuProviderConfig, dependencies: ProcessDependencies = {}): ZhihuProvider {
+export function createZhihuProvider(config: ZhihuProviderConfig, dependencies: ProcessDependencies = {}): M2Provider {
   if (!isAbsolute(config.pythonBin) || !isAbsolute(config.pythonCwd)) throw new ZhihuProviderError("invalid_configuration");
   const timeout = integer(config.timeoutMs ?? 630000, 630000);
   const stdoutLimit = integer(config.maxStdoutBytes ?? 2 * 1024 * 1024, 2 * 1024 * 1024);
   const stderrLimit = integer(config.maxStderrBytes ?? 64 * 1024, 64 * 1024);
   const start = dependencies.spawn ?? ((exe, args, options) => spawn(exe, args, { ...options, stdio: "pipe" }));
   // Freeze configuration for a request; never modify process.env or forward paths in JSON.
-  const childEnv = { ...process.env, ...config.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1", PYTHONDONTWRITEBYTECODE: "1" };
+  const childEnv: NodeJS.ProcessEnv = { ...process.env, ...config.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1", PYTHONDONTWRITEBYTECODE: "1" };
+  const profile = planningProfile(config.planningProfile ?? childEnv.ZHIHU_PLANNING_PROFILE ?? "m2-initial");
+  childEnv.ZHIHU_PLANNING_PROFILE = profile;
 
-  async function execute(action: "plan" | "research", input: unknown): Promise<{ value: unknown; exitCode: number }> {
+  async function execute(action: "plan" | "research" | "supplement", input: unknown): Promise<{ value: unknown; exitCode: number }> {
     let body: string;
     try { body = JSON.stringify(input); } catch { throw new BoundaryError("invalid_request"); }
     if (Buffer.byteLength(body, "utf8") > 64000) throw new BoundaryError("invalid_request");
     const args = ["-X", "utf8", "-u", "-m", "zhihu_m2.pipeline", "--action", action];
-    if (action === "plan") args.push("--planning-profile", "jia-p0-baseline");
+    if (action === "plan") args.push("--planning-profile", profile);
     return new Promise((resolve, reject) => {
       let child: ChildProcessWithoutNullStreams;
       try {
@@ -80,6 +119,10 @@ export function createZhihuProvider(config: ZhihuProviderConfig, dependencies: P
       const chunks: Buffer[] = [];
       let stdoutBytes = 0;
       let stderrBytes = 0;
+      let stderrLine: Buffer = Buffer.alloc(0);
+      let discardStderrLine = false;
+      let diagnostic: PipelineFailure | undefined;
+      let diagnosticsSeen = 0;
       let settled = false;
       const timer = setTimeout(() => { void finish(new ZhihuProviderError("timeout"), true); }, timeout);
       const onStdout = (chunk: Buffer) => {
@@ -88,22 +131,50 @@ export function createZhihuProvider(config: ZhihuProviderConfig, dependencies: P
         chunks.push(Buffer.from(chunk));
       };
       const onStderr = (chunk: Buffer) => {
-        // Count and discard logs; upstream logs are untrusted and may contain credentials.
+        // Framing is byte-based so split UTF-8 is not rewritten. Oversize lines
+        // are discarded until newline; the existing total output cap still applies.
         stderrBytes += chunk.length;
-        if (stderrBytes > stderrLimit) void finish(new ZhihuProviderError("output_limit"), true);
+        if (stderrBytes > stderrLimit) { void finish(new ZhihuProviderError("output_limit"), true); return; }
+        let offset = 0;
+        while (offset < chunk.length) {
+          const newline = chunk.indexOf(10, offset);
+          const end = newline < 0 ? chunk.length : newline;
+          if (!discardStderrLine) {
+            if (stderrLine.length + end - offset > 4096) {
+              stderrLine = Buffer.alloc(0); discardStderrLine = true;
+            } else stderrLine = Buffer.concat([stderrLine, chunk.subarray(offset, end)]);
+          }
+          if (newline < 0) break;
+          if (!discardStderrLine) {
+            const parsed = parsePipelineFailure(stderrLine, action);
+            if (parsed) {
+              diagnosticsSeen++;
+              // Multiple claimed final events are ambiguous, even if individually valid.
+              diagnostic = diagnosticsSeen === 1 ? parsed : undefined;
+            }
+          }
+          stderrLine = Buffer.alloc(0); discardStderrLine = false;
+          offset = newline + 1;
+        }
+      };
+      const processFailure = () => {
+        const safe = stdoutBytes === 0 ? diagnostic : undefined;
+        const failure = new ZhihuProviderError(safe?.upstreamCode === "research_timeout" ? "timeout" : "process_failed");
+        if (safe) { failure.upstreamCode = safe.upstreamCode; failure.metrics = safe.metrics; }
+        return failure;
       };
       const onError = () => { void finish(new ZhihuProviderError("startup_failed"), true); };
       const onStdinError = () => { void finish(new ZhihuProviderError("stdin_failed"), true); };
       const onClose = (code: number | null, signal: NodeJS.Signals | null) => {
         if (settled) return;
         if (signal !== null || code === null) {
-          void finish(new ZhihuProviderError("process_failed"));
+          void finish(processFailure());
           return;
         }
         try {
           const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
           void finish(undefined, false, { value, exitCode: code });
-        } catch { void finish(new ZhihuProviderError(code !== 0 && stdoutBytes === 0 ? "process_failed" : "invalid_response")); }
+        } catch { void finish(code !== 0 && stdoutBytes === 0 ? processFailure() : new ZhihuProviderError("invalid_response")); }
       };
       async function finish(error?: Error, terminate = false, output?: { value: unknown; exitCode: number }) {
         if (settled) return;
@@ -123,6 +194,8 @@ export function createZhihuProvider(config: ZhihuProviderConfig, dependencies: P
         child.stdin.destroy();
         child.stdout.destroy();
         child.stderr.destroy();
+        stderrLine = Buffer.alloc(0);
+        diagnostic = undefined;
         if (error) reject(error); else resolve(output!);
       }
       child.stdout.on("data", onStdout);
@@ -133,7 +206,7 @@ export function createZhihuProvider(config: ZhihuProviderConfig, dependencies: P
       try { child.stdin.end(body, "utf8"); } catch { void finish(new ZhihuProviderError("stdin_failed"), true); }
     });
   }
-  async function checked<T>(action: "plan" | "research", input: unknown, parse: (value: unknown) => T): Promise<T> {
+  async function checked<T>(action: "plan" | "research" | "supplement", input: unknown, parse: (value: unknown) => T): Promise<T> {
     const output = await execute(action, input);
     try {
       const result = parse(output.value);
@@ -155,11 +228,15 @@ export function createZhihuProvider(config: ZhihuProviderConfig, dependencies: P
       const validated = validateResearchInput({ ...input, request: {
         id: "validation-only", question: "输入校验", searchQueries: ["输入校验"], relevantUserConditions: [], evidenceLimit: 1,
       } });
-      return checked("plan", { goal: validated.goal, user_context: validated.user_context }, parsePlanningResponse);
+      return checked("plan", { goal: validated.goal, user_context: validated.user_context }, value => parsePlanningResponse(value, profile));
     },
     async researchOne(input) {
       const validated = validateResearchInput(input);
       return checked("research", validated, value => parseResearchResponse(value, validated.request));
+    },
+    async planSupplemental(input) {
+      const validated = validateSupplementalInput(input);
+      return checked("supplement", validated, value => parseSupplementalResponse(value, validated));
     },
   };
 }
