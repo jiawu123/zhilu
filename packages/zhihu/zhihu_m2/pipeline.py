@@ -316,7 +316,9 @@ def main(argv: list[str] | None = None) -> int:
                       "error_code": response["error"]["code"] if response["error"] else None,
                       **{key: response['metrics'].get(key, 0) for key in (
                           'planner_calls_attempted', 'search_calls_attempted',
-                          'compiler_calls_attempted', 'batch_model_calls_attempted')}}),
+                          'compiler_calls_attempted', 'batch_model_calls_attempted',
+                          'candidate_count', 'evidence_count', 'batch_invalid_item_count',
+                          'batch_valid_output_count', 'batch_invalid_group_count')}}),
           file=sys.stderr, flush=True)
     try:
         sys.stdout.write(text)

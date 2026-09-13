@@ -1,5 +1,22 @@
 # Zhihu Knowledge
 
+## 2026-09-13：真实检索后批量编译失败修复
+
+已修复“单个无效候选被研究假设引用，导致整批有效证据一起丢失”的问题。每张卡继续使用原 compiler 严格校验；不合法的整个研究假设被舍弃，并返回 `partial` 和问题记录。所有候选都不合法时仍然失败。跨进程诊断只传固定类别和计数，不输出原始异常、引文或模型文本。
+
+任意话题使用新的通用入口，避免从编程示例复制出陈旧 `user_context`：
+
+```powershell
+Set-Location 'C:\Users\Kylee\Desktop\zhilu'
+# 默认仅预览输入，不联网。
+node .\node_modules\tsx\dist\cli.mjs .\apps\server\scripts\research_zhihu.ts --question '计划一场环中国旅行'
+# 显式真实验证：Server Provider → Python → 知乎 → compiler → 既有 adapter。
+# 最多1次知乎搜索（10候选）、1次批量模型、0次Planner，不重试。
+node .\node_modules\tsx\dist\cli.mjs .\apps\server\scripts\research_zhihu.ts --question '计划一场环中国旅行' --live
+```
+
+入口固定 `batch-v1`、空用户背景、最多5张卡，禁用缓存；Python沿用现有安全环境中的凭据。每次创建独立 `artifacts/research-zhihu-*` 目录，`status.json` 是安全摘要，`result.json` 是通过校验的完整 EvidencePack（失败时不生成）。`partial` 表示有未完成项，`no_evidence` 表示正常无证据；失败摘要明确区分 search/compile/provider。完整根因、验证记录和剩余限制见 [真实批量编译修复说明](../../docs/ZHIHU_LIVE_COMPILATION_FIX_2026-09-13.md)。
+
 ## 2026-09-12 新分工：首轮预算、批量证据、缓存
 
 生产默认已更新为 `ZHIHU_RETRIEVAL_PROFILE=batch-v1`；Server Planner 默认 `m2-initial`，全轮总计 2–3 条查询。研究仅执行本次请求，用一次模型批量分级/编译替换固定权重与逐篇调用，继续重用原 compiler 校验和 TS adapter。新增覆盖报告、带引用的研究假设、本地缓存与显式补充规划；不生成或批准正式 Roadmap。

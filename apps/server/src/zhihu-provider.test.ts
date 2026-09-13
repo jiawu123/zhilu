@@ -102,7 +102,8 @@ describe("Python provider transport", () => {
   it("retains only checked failure metrics and an allowlisted upstream code", async () => {
     await expect(provider("failed").researchOne(input)).rejects.toMatchObject({
       code: "process_failed", upstreamCode: "research_failed",
-      metrics: { search_calls_attempted: 1, compiler_calls_attempted: 0, evidence_count: 0, candidate_count: 0 },
+      metrics: { search_calls_attempted: 1, compiler_calls_attempted: 0, evidence_count: 0, candidate_count: 0,
+        batch_invalid_item_count: 1, batch_valid_output_count: 0, batch_invalid_group_count: 0 },
     });
   });
   it("rejects invalid input before spawn", async () => {
@@ -158,7 +159,8 @@ describe("Python provider transport", () => {
     } catch (error) {
       expect(error).toMatchObject({ code: "process_failed", upstreamCode: "configuration_error",
         metrics: { planner_calls_attempted: 0, search_calls_attempted: 1, compiler_calls_attempted: 0,
-          batch_model_calls_attempted: 1, model_calls_attempted: 1, candidate_count: 2, evidence_count: 0 } });
+          batch_model_calls_attempted: 1, model_calls_attempted: 1, candidate_count: 2, evidence_count: 0,
+          batch_invalid_item_count: 1, batch_valid_output_count: 1, batch_invalid_group_count: 2 } });
       expect(JSON.stringify(error)).not.toMatch(/private|Authorization|canary|traceback|run_id/u);
       expect(String(error)).not.toContain("secret");
     }
@@ -167,7 +169,7 @@ describe("Python provider transport", () => {
     await expect(provider("stderr-timeout").researchOne(input))
       .rejects.toMatchObject({ code: "timeout", upstreamCode: "research_timeout" });
   });
-  it.each(["stderr-unknown-code", "stderr-wrong-action", "stderr-ok", "stderr-invalid-counter",
+  it.each(["stderr-unknown-code", "stderr-wrong-action", "stderr-ok", "stderr-invalid-counter", "stderr-invalid-batch-counter",
     "stderr-unframed", "stderr-oversize-line", "stderr-conflicting"])("ignores untrusted %s failure metadata", async mode => {
     const failure = await provider(mode).researchOne(input).catch(error => error);
     expect(failure).toMatchObject({ code: "process_failed" });

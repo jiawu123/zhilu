@@ -64,7 +64,8 @@ const failureCodes = new Set(["invalid_arguments", "invalid_json", "input_too_la
   "authentication_failed", "rate_or_quota_limit", "evidence_id_conflict", "research_timeout"]);
 const diagnosticCounters = ["planner_calls_attempted", "search_calls_attempted", "compiler_calls_attempted",
   "batch_model_calls_attempted", "model_calls_attempted", "candidate_count", "evidence_count",
-  "cache_hit", "saved_search_calls", "saved_model_calls", "search_duration_ms", "batch_duration_ms", "total_duration_ms"];
+  "cache_hit", "saved_search_calls", "saved_model_calls", "search_duration_ms", "batch_duration_ms", "total_duration_ms",
+  "batch_invalid_item_count", "batch_valid_output_count", "batch_invalid_group_count"];
 interface PipelineFailure { upstreamCode: string; metrics: Record<string, number> }
 /** Only safe primitives survive a diagnostic line. Never retain upstream logs or run IDs. */
 function parsePipelineFailure(line: Buffer, action: string): PipelineFailure | undefined {
