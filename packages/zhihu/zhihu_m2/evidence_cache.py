@@ -68,11 +68,13 @@ def _validate_result(result, request):
     from zhihu_m2.normalizer import normalize_result
 
     if (type(result) is not dict or not _RESULT_FIELDS <= set(result) or
-            set(result) - _RESULT_FIELDS - {'coverage'} or
+            set(result) - _RESULT_FIELDS - {'coverage', 'insufficientSources'} or
             result['requestId'] != request['id'] or result['status'] not in {'ok', 'no_evidence'} or
             result['issues'] != [] or type(result['compilerOutputs']) is not list or
             len(result['compilerOutputs']) > 50):
         raise ValueError('cache_invalid_record')
+    if 'insufficientSources' in result:
+        _validate_insufficient_sources(result['insufficientSources'])
     _strings(result['unresolvedQuestions'])
     cards = {}
     sources = {}
@@ -126,6 +128,36 @@ def _validate_result(result, request):
         if (any(count > 2 for count in source_counts.values()) or
                 (result['coverage']['status'] == 'sufficient' and not routes)):
             raise ValueError('cache_invalid_record')
+
+
+def _validate_insufficient_sources(posts):
+    """Reuse source provenance validation; these references contain no cards."""
+    from zhihu_m2.evidence_compiler import _source_record
+    from zhihu_m2.normalizer import normalize_result
+    from zhihu_m2.research_runner import INSUFFICIENT_SOURCE_RISKS, _source_variant_key
+    if type(posts) is not list or len(posts) > 24:
+        raise ValueError('cache_invalid_record')
+    seen = set()
+    for post in posts:
+        if (type(post) is not dict or set(post) != {'source', 'reasonCode', 'riskTags'} or
+                post['reasonCode'] not in {'no_evidence', 'compiler_rejected', 'not_selected'}):
+            raise ValueError('cache_invalid_record')
+        _strings(post['riskTags'], maximum=40, maximum_text=2000)
+        if not set(INSUFFICIENT_SOURCE_RISKS) <= set(post['riskTags']):
+            raise ValueError('cache_invalid_record')
+        source = post['source']
+        parts = source['id'].split(':', 2)
+        if len(parts) != 3 or parts[0] != 'zhihu' or type(source['retrievedAt']) is not str:
+            raise ValueError('cache_invalid_record')
+        original = normalize_result({'ContentType': parts[1], 'ContentID': parts[2],
+            'Title': source['title'], 'ContentText': source['snippet'],
+            'Url': source['url'], 'AuthorName': source['author']})
+        if _source_record(original, source['retrievedAt']) != source:
+            raise ValueError('cache_invalid_record')
+        key = _source_variant_key(source)
+        if key in seen:
+            raise ValueError('cache_invalid_record')
+        seen.add(key)
 
 
 def _validate_coverage(coverage, cards, sources):

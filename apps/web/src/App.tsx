@@ -19,6 +19,8 @@ import { getPlanDiff } from "./plan-diff";
 import { formatApiError } from "./api-error";
 import { Onboarding } from "./Onboarding";
 import { readFlowPage, resolveFlowPage, type FlowPage } from "./onboarding-model";
+import { InsufficientEvidenceNotice, InsufficientSourcesDisclosure } from "./ResearchEvidence";
+import { WeeklyOverrunNotice } from "./WeeklyOverrunNotice";
 
 const demoProjectId = "agent-engineer-demo";
 const initialProjectId = new URLSearchParams(window.location.search).get("project") ?? demoProjectId;
@@ -404,7 +406,7 @@ export function App() {
         </button>
         <button className="goal-capsule" onClick={() => setSidebarOpen(true)}>
           <span className="goal-spark">✦</span>
-          <span className="goal-copy"><small>{researchPending ? "研究准备版" : workspace.plan.research?.mode === "mock" ? "Mock 研究路线" : "正在前往"}</small><strong>{workspace.plan.goal}</strong></span>
+          <span className="goal-copy"><small>{researchPending ? "研究准备版" : workspace.plan.research?.mode === "mock" ? "Mock 研究路线" : workspace.plan.research?.roadmapper?.evidenceStatus === "insufficient" ? "证据不足 · 暂定计划" : "正在前往"}</small><strong>{workspace.plan.goal}</strong></span>
           <span className="goal-progress">{progress}%</span>
         </button>
         <button className="change-trigger" onClick={() => setEventContext({})}><span>↯</span><span>现实有变化</span></button>
@@ -454,7 +456,7 @@ export function App() {
   );
 }
 
-function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose, onRunLive, onRunMock, onSelectRoute, onApply, onRevise }: {
+export function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose, onRunLive, onRunMock, onSelectRoute, onApply, onRevise }: {
   proposal: BaselineProposal | null;
   selectedRouteId: string | null;
   busy: boolean;
@@ -483,6 +485,8 @@ function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose, onRun
   }
   const isLive = proposal.researchRun.mode === "live";
   const roadmapper = proposal.roadmapper;
+  const insufficient = isLive && roadmapper?.evidenceStatus === "insufficient";
+  const insufficientSources = proposal.researchRun.evidencePacks.flatMap(pack => pack.insufficientSources ?? []);
   const route = proposal.researchRun.routeCandidates.find((item) => item.id === selectedRouteId) ?? proposal.researchRun.routeCandidates[0];
   const preview = proposal.previews.find((item) => item.routeId === route?.id)?.plan;
   const previewReviewNodes = preview?.nodes.filter((node) => node.type === "checkpoint" || node.type === "assumption") ?? [];
@@ -506,6 +510,8 @@ function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose, onRun
           </div>
           {error && <div className="research-error" role="alert">{error}</div>}
         </header>
+        {insufficient && <InsufficientEvidenceNotice />}
+        <InsufficientSourcesDisclosure sources={insufficientSources} showEmpty={insufficient} />
         <div className="route-lab-grid">
           <section className="route-choice">
             <p className="section-kicker">选择路线</p>
@@ -541,6 +547,7 @@ function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose, onRun
           </section>
           <section className="preview-rail" key={route?.id}>
             <p className="section-kicker">计划内容</p>
+            <WeeklyOverrunNotice overruns={roadmapper?.weeklyOverruns} routeId={route?.id} />
             {roadmapper && <p className="preview-note">任务拆分、日期与工时是 AI 推断，确认后仍可在图上调整。</p>}
             {preview?.nodes.filter((node) => node.type === "task").map((node, index) => (
               <article className="preview-task" key={node.id}>
@@ -591,7 +598,7 @@ function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose, onRun
           </aside>
         </div>
         <footer>
-          <div><span className="route-proof-dot" /><small>{isLive ? "知乎内容提供依据；路线安排仍需结合你的实际情况确认。" : "这是机制演示，不是已验证的知乎研究结论。"}</small></div>
+          <div><span className="route-proof-dot" /><small>{isLive ? insufficient ? "证据不足：这份暂定计划由模型推断，确认前请核实关键安排。" : "知乎内容提供依据；路线安排仍需结合你的实际情况确认。" : "这是机制演示，不是已验证的知乎研究结论。"}</small></div>
           <button className="research-primary" disabled={busy || !selectedRouteId} onClick={onApply}>{busy ? "正在写入路线…" : "确认计划，生成路线图 / Plan Bundle"}<span>→</span></button>
         </footer>
       </section>
@@ -721,7 +728,7 @@ function RoadmapGraph({ workspace, selectedId, focusId, pending, onSelect, onRes
   );
 }
 
-function Sidebar({ open, plan, projectId, history, focusTasks, pendingCount, busy, onClose, onAddTask, onNewProject, onSelectTask }: { open: boolean; plan: PlanState; projectId: string; history: PlanCommit[]; focusTasks: PlanNode[]; pendingCount: number; busy: boolean; onClose: () => void; onAddTask: () => void; onNewProject: () => void; onSelectTask: (id: string) => void }) {
+export function Sidebar({ open, plan, projectId, history, focusTasks, pendingCount, busy, onClose, onAddTask, onNewProject, onSelectTask }: { open: boolean; plan: PlanState; projectId: string; history: PlanCommit[]; focusTasks: PlanNode[]; pendingCount: number; busy: boolean; onClose: () => void; onAddTask: () => void; onNewProject: () => void; onSelectTask: (id: string) => void }) {
   const tasks = plan.nodes.filter((node) => node.type === "task" && node.status !== "archived");
   const reviewNodes = plan.nodes.filter((node) => (node.type === "checkpoint" || node.type === "assumption") && node.status !== "archived");
   const done = tasks.filter((task) => task.status === "done").length;
@@ -730,6 +737,9 @@ function Sidebar({ open, plan, projectId, history, focusTasks, pendingCount, bus
       <div className="drawer-head"><div><span className="brand-symbol">路</span><strong>路线背包</strong></div><button onClick={onClose}>×</button></div>
       <div className="drawer-scroll">
         <section className="drawer-goal"><small>你的目的地</small><p>{plan.goal}</p></section>
+        <WeeklyOverrunNotice overruns={plan.research?.roadmapper?.weeklyOverruns} routeId={plan.research?.selectedRouteId} />
+        {plan.research?.mode === "live" && plan.research.roadmapper?.evidenceStatus === "insufficient" && <InsufficientEvidenceNotice />}
+        <InsufficientSourcesDisclosure sources={plan.research?.insufficientSources ?? []} showEmpty={plan.research?.mode === "live" && plan.research.roadmapper?.evidenceStatus === "insufficient"} />
         <section className="progress-card"><div className="progress-ring" style={{ "--progress": `${tasks.length ? (done / tasks.length) * 360 : 0}deg` } as CSSProperties}><span>{done}/{tasks.length}</span></div><div><strong>{plan.weeklyHours} 小时</strong><small>每周探索时间</small></div></section>
         {pendingCount > 0 && <div className="pending-callout"><span>↯</span><div><strong>{pendingCount} 个变化待确认</strong><small>正式路线还没有被改变</small></div></div>}
         <section className="week-focus"><p className="section-kicker">接下来 7 天</p>{focusTasks.length === 0 ? <div className="focus-empty">这周没有必须抵达的路标。</div> : focusTasks.map((task, index) => <button key={task.id} onClick={() => onSelectTask(task.id)}><span>{index === 0 ? "下一站" : formatDateRange(task)}</span><strong>{task.title}</strong><small>{task.estimatedHours ?? "—"}h · {statusLabel(task.status)}</small></button>)}</section>

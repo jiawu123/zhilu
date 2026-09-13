@@ -135,15 +135,24 @@ export interface PlanResearchState {
   selectedRouteId: string;
   routeCandidates: RouteCandidate[];
   roadmapper?: RoadmapperRun;
+  insufficientSources?: InsufficientResearchSource[];
 }
 
 /** 模型只提出草案；Run ID 和批准状态由 Controller / 用户管理。 */
+export interface RoadmapperPlanningBudget {
+  weeklyToleranceRatio: number;
+  weeklyToleranceHours: number;
+}
+
 export interface RoadmapperRun {
   runId: string;
   mode: "model";
   recommendationReason: string;
   recommendationEvidenceIds: string[];
   warnings: string[];
+  evidenceStatus?: "sufficient" | "insufficient";
+  planningBudget?: RoadmapperPlanningBudget;
+  weeklyOverruns?: Array<{ routeId: string; week: number; capacityHours: number; plannedHours: number; toleranceHours: number }>;
 }
 
 export type EventType =
@@ -313,6 +322,13 @@ export interface ResearchRequest {
   evidenceLimit: number;
 }
 
+/** Retrieved posts for review only; never counted as EvidenceCards or used as verified citations. */
+export interface InsufficientResearchSource {
+  source: ZhihuEvidenceCompilerOutput["source"];
+  reasonCode: "no_evidence" | "compiler_rejected" | "not_selected";
+  riskTags: string[];
+}
+
 export interface EvidencePack {
   requestId: string;
   evidence: EvidenceCard[];
@@ -320,6 +336,7 @@ export interface EvidencePack {
   unresolvedQuestions: string[];
   /** M2 结构覆盖报告；不等同于已验证分歧、事实或可执行路线。 */
   coverage?: ResearchCoverage;
+  insufficientSources?: InsufficientResearchSource[];
 }
 
 export interface ResearchCoverage {
@@ -350,6 +367,7 @@ export interface ResearchRunResult {
   evidencePacks: EvidencePack[];
   routeCandidates: RouteCandidate[];
   controller?: ResearchControllerReport;
+  planningBudget?: RoadmapperPlanningBudget;
 }
 
 /** Controller-observed diagnostics, never a claim of semantic or factual verification. */

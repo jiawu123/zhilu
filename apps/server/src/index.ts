@@ -40,7 +40,7 @@ import { PlanRepository } from "./repository";
 import { buildM2Context, M2ContextError } from "./m2-context";
 import { BoundaryError, validateResearchInput } from "./zhihu-boundary";
 import { createZhihuProvider, readZhihuProviderConfig, ZhihuProviderError, type ZhihuProvider } from "./zhihu-provider";
-import { createRoadmapperProvider, readRoadmapperConfig, RoadmapperProviderError, type RoadmapperProvider } from "./roadmapper-provider";
+import { createRoadmapperProvider, readRoadmapperConfig, readRoadmapperPlanningBudget, RoadmapperProviderError, type RoadmapperProvider } from "./roadmapper-provider";
 import { runResearchController, ResearchControllerError } from "./research-controller";
 import { acceptInterviewAnswers, generateInterviewBatch, InterviewError } from "./interview";
 import { reviseBaseline } from "./baseline-revision";
@@ -553,6 +553,7 @@ async function liveBaseline(
       throw new HttpError(409, "当前项目已经有 Baseline；新的知识缺口应从 Event 发起。");
     }
     validateRoadmapperPlan(plan, new Date().toISOString());
+    const planningBudget = readRoadmapperPlanningBudget();
     if (live.busy.has(projectId)) throw new HttpError(409, "当前项目已有研究正在执行。");
     live.busy.add(projectId);
     lockedId = projectId;
@@ -560,7 +561,8 @@ async function liveBaseline(
     // 在检索产生调用成本之前确认 Roadmapper 配置可用。
     live.roadmapper ??= createRoadmapperProvider(readRoadmapperConfig());
 
-    const research = await runResearchController(plan, live.provider);
+    const research = await runResearchController(plan, live.provider, { evidencePolicy: "allow_insufficient" });
+    research.planningBudget = planningBudget;
     const modelInput = prepareRoadmapperInput(plan, research, uniqueId("roadmapper"));
     // A failed M3 can be retried offline/from a snapshot without paying for M2 again.
     await repository.saveResearchSnapshot(plan, research);
@@ -581,7 +583,8 @@ async function liveBaseline(
     if (lockedId && error instanceof ResearchControllerError) {
       try {
         await repository.saveResearchFailure(lockedId, { occurredAt: new Date().toISOString(),
-          code: error.code, message: error.message, controller: error.report });
+          code: error.code, message: error.message, controller: error.report,
+          ...(error.completedResearch ? { completedResearch: error.completedResearch } : {}) });
       } catch { console.warn("研究失败诊断未能保存；原始错误仍返回前端。"); }
     }
     sendLiveError(response, error);

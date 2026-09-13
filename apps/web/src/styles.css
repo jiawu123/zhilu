@@ -413,4 +413,21 @@ button:disabled { opacity: .5; cursor: wait; }
 .text-answer { display: block; }
 .text-answer small { display: block; text-align: right; color: var(--muted); margin-top: 8px; }
 .imported-background { white-space: pre-wrap; overflow-wrap: anywhere; }
+.insufficient-evidence-notice { padding: 18px 20px; margin: 16px 0; border: 1px solid #b7894a; border-radius: 14px; background: #33291f; color: #f4d5a5; }
+.insufficient-evidence-notice strong { font-size: 16px; }
+.insufficient-evidence-notice p, .insufficient-sources > p, .insufficient-sources-empty { margin: 10px 0 0; font-size: 13px; line-height: 1.7; }
+.insufficient-sources { margin: 16px 0; overflow-wrap: anywhere; }
+.insufficient-sources > summary { color: #f4d5a5; cursor: pointer; }
+.insufficient-sources-empty { color: var(--muted); margin-bottom: 16px; }
+.insufficient-source { padding: 18px; margin: 14px 0; border: 1px solid var(--line); border-radius: 14px; background: #211d32; }
+.insufficient-source-tag { display: inline-block; border: 1px solid #b7894a; border-radius: 6px; color: #f4d5a5; padding: 3px 8px; font-size: 12px; }
+.insufficient-source h3 { font-size: 16px; margin: 12px 0; }
+.insufficient-source a { color: var(--mint); }
+.insufficient-source p, .insufficient-source small, .insufficient-source-risks { color: var(--muted); font-size: 12px; line-height: 1.7; }
+.insufficient-source blockquote { margin: 14px 0; padding-left: 14px; border-left: 2px solid #827251; line-height: 1.8; font-size: 13px; overflow-wrap: anywhere; }
+.insufficient-source-risks { padding-left: 20px; }
+.weekly-overrun-notice { margin: 14px 0; padding: 16px; border: 1px solid #b7894a; border-radius: 14px; background: #33291f; color: #f4d5a5; }
+.weekly-overrun-notice strong { font-size: 14px; }
+.weekly-overrun-notice p { margin: 10px 0 0; font-size: 13px; line-height: 1.8; }
+.weekly-overrun-notice small { display: block; margin-top: 4px; color: #d9c9b0; }
 @media (prefers-reduced-motion: reduce) { .model-spinner { animation: none; } .interview-progress-card progress::-webkit-progress-value { transition: none; } }

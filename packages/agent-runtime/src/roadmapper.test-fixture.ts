@@ -3,8 +3,8 @@ import type { RoadmapperInput } from "./roadmapper";
 /** 离线模型边界样例：供 Runtime 与 HTTP 集成测试共用，不作为产品 fallback。 */
 export function roadmapperDraftFixture(input: RoadmapperInput) {
   const { weeks, evidence } = input.context;
-  const routes = ["build", "practice"].map((id, index) => {
-    const evidenceIds = [evidence[index]!.id];
+  const routes = (input.context.evidenceStatus === "insufficient" ? ["build"] : ["build", "practice"]).map((id, index) => {
+    const evidenceIds = evidence[index] ? [evidence[index]!.id] : [];
     const boundary1 = Math.ceil(weeks.length / 3), boundary2 = Math.ceil(weeks.length * 2 / 3);
     return {
       id, title: index ? "先演练写作方法" : "先试写章节", summary: "用章节产出与读者反馈持续验证写作路线。",
@@ -25,5 +25,5 @@ export function roadmapperDraftFixture(input: RoadmapperInput) {
     };
   });
   return { recommendedRouteId: "build", recommendationReason: "用户已有选题且重视反馈，先试写可及早检查选题；仍须验证读者是否愿意参与。",
-    recommendationEvidenceIds: [evidence[0]!.id], routes };
+    recommendationEvidenceIds: evidence[0] ? [evidence[0]!.id] : [], routes };
 }

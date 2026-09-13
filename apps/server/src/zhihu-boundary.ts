@@ -1,4 +1,4 @@
-import type { EvidencePack, ResearchQuestionDraft, ResearchRequest, ZhihuEvidenceCompilerOutput } from "@zhilu/contracts";
+import type { EvidencePack, InsufficientResearchSource, ResearchQuestionDraft, ResearchRequest, ZhihuEvidenceCompilerOutput } from "@zhilu/contracts";
 import { validateResearchQuestionDrafts } from "@zhilu/agent-runtime";
 import { adaptZhihuCompilerOutput } from "./zhihu-adapter.js";
 
@@ -95,16 +95,33 @@ function envelope(value: unknown, action: string) {
   check(e.error === null);
   return { data: object(e.data), runId, metrics };
 }
-function validateCompiler(value: unknown): ZhihuEvidenceCompilerOutput {
-  const o = object(value); keys(o, ["compiler_version", "status", "reason", "source", "evidence_cards"]);
-  check(o.compiler_version === "m2-evidence-v0.1.2" && ["ok", "no_evidence"].includes(o.status as string));
-  text(o.reason, 1000, o.status === "ok");
-  const s = object(o.source); keys(s, ["id", "provider", "title", "url", "author", "snippet", "retrievedAt", "source_scope"]);
+function validateCompilerSource(value: unknown): ZhihuEvidenceCompilerOutput["source"] {
+  const s = object(value); keys(s, ["id", "provider", "title", "url", "author", "snippet", "retrievedAt", "source_scope"]);
   text(s.id, 300); text(s.title, 2000); text(s.author, 64000, true); const snippet = text(s.snippet, 24000); const url = text(s.url, 4096);
   let parsed: URL; try { parsed = new URL(url); } catch { throw new BoundaryError("invalid_response"); }
   check(parsed.protocol === "https:" && (parsed.hostname === "zhihu.com" || parsed.hostname.endsWith(".zhihu.com")) && !parsed.username && !parsed.password && (!parsed.port || parsed.port === "443") && !/[\s\\\p{C}]/u.test(url));
   check(s.provider === "zhihu" && s.source_scope === "search_snippet");
   if (s.retrievedAt !== null) { const timestamp = text(s.retrievedAt, 80); check(/(?:Z|[+-]\d{2}:\d{2})$/u.test(timestamp) && Number.isFinite(Date.parse(timestamp))); }
+  return { id: text(s.id, 300), provider: "zhihu", title: text(s.title, 2000), url, author: text(s.author, 64000, true),
+    snippet, retrievedAt: s.retrievedAt === null ? null : text(s.retrievedAt, 80), source_scope: "search_snippet" };
+}
+
+/** Reuses compiler source validation; these posts never become adopted EvidenceCards. */
+export function validateInsufficientSources(value: unknown): InsufficientResearchSource[] {
+  return list(value, 24).map(raw => {
+    const item = object(raw); keys(item, ["source", "reasonCode", "riskTags"]);
+    check(item.reasonCode === "no_evidence" || item.reasonCode === "compiler_rejected" || item.reasonCode === "not_selected");
+    const riskTags = strings(item.riskTags, 40, 200);
+    check(["证据不足", "search_snippet_only", "not_independently_verified", "semantic_support_not_checked"].every(tag => riskTags.includes(tag)));
+    return { source: validateCompilerSource(item.source), reasonCode: item.reasonCode, riskTags };
+  });
+}
+
+function validateCompiler(value: unknown): ZhihuEvidenceCompilerOutput {
+  const o = object(value); keys(o, ["compiler_version", "status", "reason", "source", "evidence_cards"]);
+  check(o.compiler_version === "m2-evidence-v0.1.2" && ["ok", "no_evidence"].includes(o.status as string));
+  text(o.reason, 1000, o.status === "ok");
+  const s = validateCompilerSource(o.source), snippet = s.snippet;
   const cards = list(o.evidence_cards, 1); check(cards.length === (o.status === "ok" ? 1 : 0));
   for (const value of cards) {
     const c = object(value);
@@ -125,7 +142,7 @@ const ISSUE_STAGES: Record<string, ResearchIssue["stage"]> = { search_timeout: "
 export function parseResearchResponse(value: unknown, request: ResearchRequest): ResearchProviderResult {
   const checkedRequest = validateResearchRequest(request);
   const { data, runId, metrics } = envelope(value, "research");
-  keys(data, ["requestId", "status", "compilerOutputs", "routeCandidates", "unresolvedQuestions", "issues"], ["coverage"]);
+  keys(data, ["requestId", "status", "compilerOutputs", "routeCandidates", "unresolvedQuestions", "issues"], ["coverage", "insufficientSources"]);
   check(data.requestId === checkedRequest.id && ["ok", "no_evidence", "partial"].includes(data.status as string));
   const unresolvedQuestions = strings(data.unresolvedQuestions, 100, 2000);
   const issues: ResearchIssue[] = list(data.issues, 200).map(value => {
@@ -158,6 +175,7 @@ export function parseResearchResponse(value: unknown, request: ResearchRequest):
     return { id, title: text(route.title, 300), summary: text(route.summary, 1000), applicableWhen, evidenceIds, risks };
   });
   const pack: EvidencePack = { requestId: checkedRequest.id, evidence, routeCandidates, unresolvedQuestions };
+  if (Object.hasOwn(data, "insufficientSources")) pack.insufficientSources = validateInsufficientSources(data.insufficientSources);
   if (Object.hasOwn(data, "coverage")) {
     const c = object(data.coverage); keys(c, ["status", "evidenceCount", "targetMin", "targetMax", "hasCaveat", "gaps", "reviewStatus"]);
     check(c.status === "sufficient" || c.status === "insufficient");

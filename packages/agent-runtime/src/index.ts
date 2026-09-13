@@ -10,12 +10,13 @@ import type {
   ResearchRequest,
   ResearchRunResult,
   ResearchControllerReport,
+  RoadmapperPlanningBudget,
   RouteCandidate,
   ValidationIssue,
   ValidationResult,
 } from "@zhilu/contracts";
 import { PLAN_SCHEMA_VERSION } from "@zhilu/contracts";
-export { prepareRoadmapperInput, compileRoadmapperBaseline, validateRoadmapperPlan, RoadmapperValidationError, type RoadmapperInput } from "./roadmapper";
+export { prepareRoadmapperInput, compileRoadmapperBaseline, validateRoadmapperPlan, validateRoadmapperPlanningBudget, RoadmapperValidationError, type RoadmapperInput } from "./roadmapper";
 export { prepareEventReplanInput, compileEventReplan, EventReplanValidationError, type EventReplanInput, type EventReplanDraft } from "./event-replan";
 export { aggregateResearchEvidence, ResearchEvidenceError } from "./research-evidence";
 
@@ -285,6 +286,7 @@ export interface LiveResearchInput {
   evidencePacks: EvidencePack[];
   now: string;
   controller?: ResearchControllerReport;
+  planningBudget?: RoadmapperPlanningBudget;
 }
 
 /**

@@ -6,15 +6,21 @@ import { buildM2Context } from "./m2-context";
 import { BoundaryError, validateResearchInput, validateSupplementalInput } from "./zhihu-boundary";
 import { ZhihuProviderError, type M2Provider, type ZhihuProvider } from "./zhihu-provider";
 
+/** Accepted request outputs for private diagnostics, never an approved roadmap input. */
+export interface CompletedResearchEvidence { requests: ResearchRequest[]; evidencePacks: EvidencePack[] }
+
 export class ResearchControllerError extends Error {
   constructor(readonly code: string, message: string, readonly status: number, readonly report: ResearchControllerReport,
-    readonly cleanupError?: "cleanup_failed") { super(message); this.name = "ResearchControllerError"; }
+    readonly cleanupError?: "cleanup_failed", readonly completedResearch?: CompletedResearchEvidence) {
+    super(message); this.name = "ResearchControllerError";
+  }
 }
 
 /** Bounded orchestration only: no model configuration, Plan writes, or automatic approvals. */
 export async function runResearchController(plan: PlanState, provider: ZhihuProvider & Partial<Pick<M2Provider, "planSupplemental">>,
-  options: { timeoutMs?: number } = {}): Promise<LiveResearchInput & { controller: ResearchControllerReport }> {
+  options: { timeoutMs?: number; evidencePolicy?: "strict" | "allow_insufficient" } = {}): Promise<LiveResearchInput & { controller: ResearchControllerReport }> {
   const timeoutMs = options.timeoutMs ?? 630000;
+  const allowInsufficient = options.evidencePolicy === "allow_insufficient";
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 630000) throw new Error("Invalid Controller deadline.");
   const context = buildM2Context(plan);
   const report: ResearchControllerReport = { coverage: { status: "insufficient", evidenceCount: 0, targetMin: 6, targetMax: 8,
@@ -24,9 +30,24 @@ export async function runResearchController(plan: PlanState, provider: ZhihuProv
   const timer = setTimeout(() => abort.abort(), timeoutMs);
   const callOptions = { signal: abort.signal };
   const requests: ResearchRequest[] = [], packs: EvidencePack[] = [], questions: ResearchQuestionDraft[] = [], executed: string[] = [];
+  const scheduled: ResearchRequest[] = [];
+  function completedResearch(): CompletedResearchEvidence | undefined {
+    return requests.length ? structuredClone({ requests, evidencePacks: packs }) : undefined;
+  }
+  function updateCoverage(aggregated: ReturnType<typeof aggregateResearchEvidence>) {
+    report.coverage = structuredClone(aggregated.coverage);
+    report.questionCoverage = structuredClone(aggregated.questionCoverage);
+    const completed = new Set(requests.map(request => request.id));
+    const unfinished = scheduled.filter(request => !completed.has(request.id));
+    report.questionCoverage.push(...unfinished.map(request => ({ requestId: request.id, evidenceIds: [] })));
+    if (unfinished.length) {
+      report.coverage.status = "insufficient";
+      report.coverage.gaps.push({ kind: "route", reason: `还有 ${unfinished.length} 个研究问题未完成，后续请求未执行或未返回有效结果。` });
+    }
+  }
   function fail(code: string, message: string, status = 422): never {
     report.stopReason = code;
-    throw new ResearchControllerError(code, message, status, structuredClone(report));
+    throw new ResearchControllerError(code, message, status, structuredClone(report), undefined, completedResearch());
   }
   function checkDeadline() { if (abort.signal.aborted) throw new ZhihuProviderError("timeout"); }
   async function stage<T extends { status: string }>(name: "plan" | "research" | "supplement", operation: () => Promise<T>, requestId?: string): Promise<T> {
@@ -50,6 +71,8 @@ export async function runResearchController(plan: PlanState, provider: ZhihuProv
       seen.add(key);
     }
     batch.forEach(request => validateResearchInput({ ...context, request }));
+    scheduled.push(...batch);
+    if (requests.length) updateCoverage(aggregateResearchEvidence(requests, packs));
     report.rounds++;
     for (const [index, request] of batch.entries()) {
       checkDeadline();
@@ -62,19 +85,27 @@ export async function runResearchController(plan: PlanState, provider: ZhihuProv
       }
       report.searchCallsAttempted += searchCount;
       report.cacheHits += result.metrics.cache_hit === 1 ? 1 : 0;
+      // Validate and measure each completed output before a partial/future request can stop the round.
+      const aggregated = aggregateResearchEvidence([...requests, request], [...packs, result.pack]);
       requests.push(request); questions.push(drafts[index]!); packs.push(result.pack);
-      if (result.status === "partial") fail("partial_research", "研究只完成了一部分，已停止后续调用；请检查失败阶段。", 502);
+      updateCoverage(aggregated);
+      if (result.status === "partial" && !allowInsufficient) {
+        const stages = ([['search', '知乎检索'], ['normalize', '内容规范化'], ['rank', '证据排序'],
+          ['compile', '证据编译'], ['coverage', '覆盖检查']] as const)
+          .filter(([stage]) => result.issues.some(issue => issue.stage === stage))
+          .map(([stage, label]) => `${label}（${result.issues.filter(issue => issue.stage === stage).length}项）`);
+        fail("partial_research", `${stages.join("、") || "研究处理"}部分未通过；已取得 ${report.coverage.evidenceCount} 张可用证据，研究尚未完成，已停止后续调用。`, 502);
+      }
     }
     const aggregated = aggregateResearchEvidence(requests, packs);
-    report.coverage = aggregated.coverage;
-    report.questionCoverage = aggregated.questionCoverage;
+    updateCoverage(aggregated);
     return aggregated;
   }
   try {
     const planning = await stage("plan", () => provider.planForBaseline(context, callOptions));
     if (planning.status === "needs_clarification") fail("needs_clarification", `研究前还需要确认：${planning.clarificationQuestions.join("；")}`, 409);
     let aggregated = await researchRound(planning.questions, "initial");
-    if (aggregated.coverage.status === "insufficient") {
+    if (aggregated.coverage.status === "insufficient" && !allowInsufficient) {
       if (!provider.planSupplemental) fail("insufficient_coverage", "证据覆盖不足，当前研究接口未提供补检索能力；未生成计划。");
       const supplementInput = validateSupplementalInput({ ...context,
         gaps: aggregated.coverage.gaps.slice(0, 12).map(gap => ({ ...gap, reason: [...gap.reason].slice(0, 600).join("") })),
@@ -83,9 +114,13 @@ export async function runResearchController(plan: PlanState, provider: ZhihuProv
       if (supplemental.status === "stop") fail("insufficient_coverage", "证据覆盖不足，未找到有用的补充查询；请澄清目标或调整研究范围。");
       aggregated = await researchRound(supplemental.questions, "supplemental");
     }
-    if (aggregated.coverage.status !== "sufficient") fail("insufficient_coverage", "一轮补检索后仍有证据缺口，未生成正式路线。请查看缺口并澄清目标。");
+    if (aggregated.coverage.status !== "sufficient" && !allowInsufficient) fail("insufficient_coverage", "一轮补检索后仍有证据缺口，未生成正式路线。请查看缺口并澄清目标。");
     checkDeadline();
-    report.stopReason = "coverage_sufficient";
+    if (report.stages.some(stage => stage.stage === "research" && stage.status === "partial")) {
+      report.coverage.status = "insufficient";
+      report.coverage.gaps.push({ kind: "route", reason: "部分研究处理未通过，路线将基于已确认条件和模型推断，缺少的知乎依据仍待核实。" });
+    }
+    report.stopReason = report.coverage.status === "sufficient" ? "coverage_sufficient" : "model_planning_with_insufficient_evidence";
     return { runId: `research-live-${randomUUID()}`, proposalId: `baseline-live-${randomUUID()}`, now: new Date().toISOString(),
       questions, requests, evidencePacks: aggregated.evidencePacks, controller: structuredClone(report) };
   } catch (error) {
@@ -98,7 +133,7 @@ export async function runResearchController(plan: PlanState, provider: ZhihuProv
       }
       const status = error instanceof ZhihuProviderError ? error.status : error.code === "invalid_request" ? 422 : 502;
       throw new ResearchControllerError(error.code, error instanceof ZhihuProviderError ? researchFailureMessage(error, report) : "研究接口数据未通过校验。",
-        status, structuredClone(report), error instanceof ZhihuProviderError ? error.cleanupError : undefined);
+        status, structuredClone(report), error instanceof ZhihuProviderError ? error.cleanupError : undefined, completedResearch());
     }
     if (error instanceof ResearchRequestValidationError) fail("invalid_queries", "研究问题或 Query 不符合数量与安全约束。");
     if (error instanceof ResearchEvidenceError) fail("invalid_evidence", "研究证据或引用关系未通过校验。", 502);

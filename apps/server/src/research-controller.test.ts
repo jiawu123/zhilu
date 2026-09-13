@@ -3,7 +3,7 @@ import type { EvidenceCard, ResearchQuestionDraft, ResearchRequest } from "@zhil
 import { confirmedPlan } from "./fixtures/live-plan";
 import type { M2Provider } from "./zhihu-provider";
 import { ZhihuProviderError } from "./zhihu-provider";
-import { runResearchController } from "./research-controller";
+import { ResearchControllerError, runResearchController } from "./research-controller";
 
 const questions: ResearchQuestionDraft[] = [
   { question: "怎样通过项目学习？", searchQueries: ["项目学习路线", "项目学习实践"], rationale: "确认实践路线" },
@@ -33,6 +33,29 @@ function provider(): M2Provider {
 const plan = () => ({ ...confirmedPlan(), weeklyHours: 10 });
 
 describe("research Controller budgets and coverage", () => {
+  it.each(["no_evidence", "partial"] as const)("allows %s to reach model planning without supplemental searches", async status => {
+    const source = provider(), before = plan(), saved = structuredClone(before);
+    source.researchOne = vi.fn<M2Provider["researchOne"]>(async ({ request }) => ({ ...result(request, 0, 0), status,
+      pack: { requestId: request.id, evidence: [], routeCandidates: [], unresolvedQuestions: [] },
+      issues: status === "partial" ? [{ code: "compiler_invalid_output", stage: "compile" }] : [] }));
+    const research = await runResearchController(before, source, { evidencePolicy: "allow_insufficient" });
+    expect(research.controller).toMatchObject({ stopReason: "model_planning_with_insufficient_evidence", rounds: 1,
+      queriesAttempted: 3, searchCallsAttempted: 3, coverage: { status: "insufficient", evidenceCount: 0, reviewStatus: "needs_human_review" } });
+    expect(research.requests).toHaveLength(2);
+    expect(research.controller.stages.filter(stage => stage.stage === "research").map(stage => stage.status)).toEqual([status, status]);
+    expect(source.planForBaseline).toHaveBeenCalledTimes(1);
+    expect(source.planSupplemental).not.toHaveBeenCalled();
+    expect(before).toEqual(saved);
+  });
+
+  it("keeps an execution error fatal even when evidence insufficiency is allowed", async () => {
+    const source = provider();
+    source.researchOne = vi.fn(async () => { throw new ZhihuProviderError("invalid_response"); });
+    await expect(runResearchController(plan(), source, { evidencePolicy: "allow_insufficient" })).rejects.toMatchObject({ code: "invalid_response" });
+    expect(source.researchOne).toHaveBeenCalledTimes(1);
+    expect(source.planSupplemental).not.toHaveBeenCalled();
+  });
+
   it("aggregates sufficient evidence without another Planner and leaves the plan untouched", async () => {
     const source = provider(), before = plan(), saved = structuredClone(before);
     const research = await runResearchController(before, source);
@@ -119,6 +142,59 @@ describe("research Controller budgets and coverage", () => {
     await expect(runResearchController(plan(), source)).rejects.toMatchObject({ code: "partial_research" });
     expect(source.researchOne).toHaveBeenCalledTimes(1);
     expect(source.planSupplemental).not.toHaveBeenCalled();
+  });
+
+  it("reports accepted partial evidence and unexecuted questions without claiming complete coverage", async () => {
+    const source = provider(), before = plan(), saved = structuredClone(before);
+    source.researchOne = vi.fn<M2Provider["researchOne"]>(async ({ request }) => ({ ...result(request, 0, 6), status: "partial",
+      issues: [{ code: "compiler_invalid_output", stage: "compile" }] }));
+    const failure = await runResearchController(before, source).catch(error => error) as ResearchControllerError;
+    expect(failure).toBeInstanceOf(ResearchControllerError);
+    expect(failure).toMatchObject({ code: "partial_research", status: 502, report: {
+      coverage: { status: "insufficient", evidenceCount: 6, reviewStatus: "needs_human_review" },
+      stopReason: "partial_research", rounds: 1, queriesAttempted: 2, searchCallsAttempted: 2,
+    } });
+    expect(failure.message).toContain("编译");
+    expect(failure.message).toContain("6");
+    expect(failure.report.coverage.gaps.some(gap => gap.reason.includes("尚未取得研究证据"))).toBe(false);
+    expect(failure.report.coverage.gaps.some(gap => gap.reason.includes("未执行"))).toBe(true);
+    expect(failure.report.questionCoverage.map(question => question.evidenceIds.length)).toEqual([6, 0]);
+    expect(failure.completedResearch?.evidencePacks[0]?.evidence).toEqual(result(failure.completedResearch!.requests[0]!, 0, 6).pack.evidence);
+    expect(source.researchOne).toHaveBeenCalledTimes(1);
+    expect(source.planSupplemental).not.toHaveBeenCalled();
+    expect(before).toEqual(saved);
+  });
+
+  it("retains earlier accepted evidence when a later request fails", async () => {
+    const source = provider();
+    source.researchOne = vi.fn<M2Provider["researchOne"]>(async ({ request }) => {
+      if (request.question === questions[0]!.question) return result(request, 0, 3);
+      const failure = new ZhihuProviderError("process_failed");
+      failure.upstreamCode = "rate_or_quota_limit";
+      failure.metrics = { search_calls_attempted: 1 };
+      throw failure;
+    });
+    const failure = await runResearchController(plan(), source).catch(error => error) as ResearchControllerError;
+    expect(failure).toMatchObject({ code: "process_failed", report: {
+      coverage: { evidenceCount: 3, status: "insufficient" }, searchCallsAttempted: 3, stopReason: "rate_or_quota_limit",
+    } });
+    expect(failure.report.questionCoverage.map(question => question.evidenceIds.length)).toEqual([3, 0]);
+    expect(failure.completedResearch?.requests).toHaveLength(1);
+    expect(failure.completedResearch?.evidencePacks[0]?.evidence).toHaveLength(3);
+    expect(source.planSupplemental).not.toHaveBeenCalled();
+  });
+
+  it("reports zero usable partial cards accurately without exposing upstream issue text", async () => {
+    const source = provider();
+    source.researchOne = vi.fn<M2Provider["researchOne"]>(async ({ request }) => ({ ...result(request, 0, 0), status: "partial",
+      pack: { requestId: request.id, evidence: [], routeCandidates: [], unresolvedQuestions: [] },
+      issues: [{ code: "compiler_invalid_output", stage: "compile", detail: "private-canary" } as never] }));
+    const failure = await runResearchController(plan(), source).catch(error => error) as ResearchControllerError;
+    expect(failure.report.coverage.evidenceCount).toBe(0);
+    expect(failure.message).toContain("编译");
+    expect(failure.message).toContain("0");
+    expect(JSON.stringify({ message: failure.message, report: failure.report })).not.toContain("private-canary");
+    expect(source.researchOne).toHaveBeenCalledTimes(1);
   });
 
   it("records failed query attempts and does not retry quota failures", async () => {

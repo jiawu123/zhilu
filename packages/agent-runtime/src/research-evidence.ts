@@ -104,7 +104,8 @@ export function aggregateResearchEvidence(requests: ResearchRequest[], packs: Ev
     const unresolvedQuestions = [...new Set([
       ...pack.unresolvedQuestions.filter(reason => !previousGapReasons.has(reason)), ...retained.map(gap => gap.reason),
     ])];
-    return { requestId: pack.requestId, evidence, routeCandidates, unresolvedQuestions, coverage: localCoverage };
+    return { requestId: pack.requestId, evidence, routeCandidates, unresolvedQuestions, coverage: localCoverage,
+      ...(pack.insufficientSources ? { insufficientSources: structuredClone(pack.insufficientSources) } : {}) };
   });
   // Route IDs are local to each M2 request. Namespace cross-pack collisions without merging viewpoints.
   const routeCounts = new Map<string, number>();

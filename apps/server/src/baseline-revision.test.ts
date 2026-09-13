@@ -9,11 +9,52 @@ import { roadmapperDraftFixture } from "../../../packages/agent-runtime/src/road
 import { syntheticM3Snapshot } from "./fixtures/m3-replay";
 import { createZhiluServer } from "./index";
 import { PlanRepository } from "./repository";
+import { reviseBaseline } from "./baseline-revision";
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const clean of cleanup.splice(0)) await clean(); });
 
 describe("plan conversation before confirmation", () => {
+  it("retains the saved tolerance through repeated revisions despite looser Server settings", async () => {
+    const { plan, research } = syntheticM3Snapshot();
+    research.planningBudget = { weeklyToleranceRatio: 0.05, weeklyToleranceHours: 0.25 };
+    const input = prepareRoadmapperInput(plan, research, "initial-budget-model");
+    const proposal = compileRoadmapperBaseline(plan, research, input, roadmapperDraftFixture(input));
+    const generate = vi.fn(async (value: RoadmapperInput) => roadmapperDraftFixture(value));
+    vi.stubEnv("ROADMAP_WEEKLY_TOLERANCE_PERCENT", "50"); vi.stubEnv("ROADMAP_WEEKLY_TOLERANCE_HOURS", "8");
+    try {
+      const next = await reviseBaseline(plan, proposal, proposal.recommendedRouteId, "先收集反馈", { generate }, research.now);
+      const latest = await reviseBaseline(plan, next, next.recommendedRouteId, "再整理材料", { generate }, research.now);
+      expect(next.roadmapper!.planningBudget).toEqual(research.planningBudget);
+      expect(latest.roadmapper!.planningBudget).toEqual(research.planningBudget);
+      expect(latest.researchRun.planningBudget).toEqual(research.planningBudget);
+      expect(generate.mock.calls.every(([value]) => JSON.stringify(value.context.planningBudget) === JSON.stringify(research.planningBudget))).toBe(true);
+      expect(plan.weeklyHours).toBe(6);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it.each([0, 1])("revises an insufficient draft with %i valid cards without reusing prior AI inference IDs", async count => {
+    const { plan, research } = syntheticM3Snapshot();
+    research.evidencePacks.forEach((pack, index) => { pack.evidence = pack.evidence.slice(0, index === 0 ? count : 0); pack.routeCandidates = []; });
+    const input = prepareRoadmapperInput(plan, research, "initial-model");
+    const draft = roadmapperDraftFixture(input), userFactId = input.context.userFacts[0]!.id;
+    draft.routes[0]!.tasks[0]!.evidenceIds = [userFactId];
+    const proposal = compileRoadmapperBaseline(plan, research, input, draft);
+    const before = structuredClone({ plan, proposal });
+    const priorInference = proposal.previews[0]!.plan.evidence.find(card => card.sourceType === "ai")!.id;
+    const generate = vi.fn(async (value: RoadmapperInput) => ({ ...roadmapperDraftFixture(value), recommendationReason: "按照已确认条件调整，证据仍不足。" }));
+    const revised = await reviseBaseline(plan, proposal, proposal.recommendedRouteId, "先完成可核实的准备事项", { generate }, research.now);
+    expect(generate).toHaveBeenCalledTimes(1);
+    const sent = JSON.stringify(generate.mock.calls[0]![0]);
+    expect(sent).not.toContain(priorInference);
+    expect(sent).toContain(userFactId);
+    expect(revised.roadmapper).toMatchObject({ mode: "model", evidenceStatus: "insufficient" });
+    expect(revised.roadmapper!.warnings).toContain("证据不足");
+    expect(revised.previews).toHaveLength(1);
+    expect(revised.previews[0]!.plan.nodes.every(node => !node.evidenceIds.includes(priorInference))).toBe(true);
+    expect({ plan, proposal }).toEqual(before);
+  });
+
   it("uses cached evidence, preserves conversation, rejects stale confirmation, and writes only when confirmed", async () => {
     const root = await mkdtemp(join(tmpdir(), "zhilu-revision-"));
     const repository = new PlanRepository(root, "unused");

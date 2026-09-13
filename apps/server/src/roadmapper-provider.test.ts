@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createRoadmapperProvider, readRoadmapperConfig, type RoadmapperConfig } from "./roadmapper-provider";
+import { createRoadmapperProvider, readRoadmapperConfig, readRoadmapperPlanningBudget, type RoadmapperConfig } from "./roadmapper-provider";
 
 const config: RoadmapperConfig = {
   apiUrl: "https://model.example/v1/chat/completions", apiKey: "private-key", model: "test-model",
@@ -15,6 +15,27 @@ function provider(result: Response, overrides: Partial<RoadmapperConfig> = {}) {
   return { p: createRoadmapperProvider({ ...config, ...overrides }, { fetch: request }), request };
 }
 afterEach(() => vi.useRealTimers());
+
+describe("Roadmapper scheduling tolerance configuration", () => {
+  it("defaults to ten percent capped at one hour without requiring model credentials", () => {
+    expect(readRoadmapperPlanningBudget({})).toEqual({ weeklyToleranceRatio: 0.1, weeklyToleranceHours: 1 });
+  });
+  it.each([
+    [{ ROADMAP_WEEKLY_TOLERANCE_PERCENT: "0", ROADMAP_WEEKLY_TOLERANCE_HOURS: "1" }, { weeklyToleranceRatio: 0, weeklyToleranceHours: 1 }],
+    [{ ROADMAP_WEEKLY_TOLERANCE_PERCENT: "10", ROADMAP_WEEKLY_TOLERANCE_HOURS: "0" }, { weeklyToleranceRatio: 0.1, weeklyToleranceHours: 0 }],
+    [{ ROADMAP_WEEKLY_TOLERANCE_PERCENT: "25", ROADMAP_WEEKLY_TOLERANCE_HOURS: "2.5" }, { weeklyToleranceRatio: 0.25, weeklyToleranceHours: 2.5 }],
+  ])("parses an explicit bounded tolerance without replacing zero", (env, expected) => {
+    expect(readRoadmapperPlanningBudget(env)).toEqual(expected);
+  });
+  it.each(["", " ", "SECRET_BAD_CONFIGURATION", "Infinity", "NaN", "-1", "51"])("rejects an invalid percentage without echoing it", value => {
+    expect(() => readRoadmapperPlanningBudget({ ROADMAP_WEEKLY_TOLERANCE_PERCENT: value }))
+      .toThrow("Roadmapper 模型配置无效，请检查 Server 启动环境。");
+  });
+  it.each(["", "Infinity", "not-a-number", "-1", "8.01"])("rejects an invalid hourly maximum", value => {
+    expect(() => readRoadmapperPlanningBudget({ ROADMAP_WEEKLY_TOLERANCE_HOURS: value }))
+      .toThrow("Roadmapper 模型配置无效，请检查 Server 启动环境。");
+  });
+});
 
 describe("Roadmapper model transport", () => {
   it("sends one bounded JSON-object request without tools or redirects", async () => {

@@ -33,6 +33,53 @@ ISSUE_CODES = frozenset({
     'compiler_failed', 'compiler_invalid_output', 'compiler_budget_exhausted',
     'freshness_not_enforced', 'candidate_batch_truncated',
 })
+INSUFFICIENT_SOURCE_RISKS = (
+    '证据不足', 'search_snippet_only', 'not_independently_verified',
+    'semantic_support_not_checked',
+)
+
+
+def _source_variant_key(source):
+    # Repeated retrieval of the exact same original keeps its first timestamp.
+    # Different snippets, titles or authors are never combined into a source.
+    return _json([source[key] for key in ('id', 'provider', 'title', 'url', 'author', 'snippet', 'source_scope')])
+
+
+def collect_insufficient_sources(originals, outputs, selected_outputs, *, attempted_keys=None):
+    """Keep bounded original references apart from compiler-accepted cards.
+
+    Inputs are locally validated source records and compiler outputs. In
+    particular rejected model text is never copied into this display channel.
+    """
+    accepted = {_source_variant_key(output['source']) for output in selected_outputs
+                if output['evidence_cards']}
+    compiled = {_source_variant_key(output['source']): output for output in outputs}
+    sources, seen, stored_bytes = [], set(), 0
+    for original in originals:
+        key = _source_variant_key(original)
+        if key in seen or key in accepted:
+            continue
+        seen.add(key)
+        output = compiled.get(key)
+        if output is not None:
+            reason = 'no_evidence' if output['status'] == 'no_evidence' else 'not_selected'
+        else:
+            reason = 'compiler_rejected' if attempted_keys is None or key in attempted_keys else 'not_selected'
+        risks = list(INSUFFICIENT_SOURCE_RISKS)
+        if output is not None:
+            for card in output['evidence_cards']:
+                for risk in card['risk_flags']:
+                    if risk not in risks:
+                        risks.append(risk)
+        post = {'source': copy.deepcopy(original), 'reasonCode': reason, 'riskTags': risks}
+        size = len(_json(post).encode('utf-8'))
+        if stored_bytes + size > 192 * 1024:
+            continue
+        sources.append(post)
+        stored_bytes += size
+        if len(sources) >= 24:
+            break
+    return sources
 
 
 class ResearchError(ValueError):
@@ -407,6 +454,8 @@ def _run_batch(frozen, dep, occurrences, counts, issues, remaining):
     from zhihu_m2.batch_screening import select_evidence, sanitize_batch_diagnostics
     from zhihu_m2.candidate_pool import build_candidate_pool, variant_key
     from zhihu_m2.llm_client import LLMError
+    from zhihu_m2.evidence_compiler import _source_record
+    from zhihu_m2.models import ZhihuResult
     # RRF is solely a recall ordering for the bounded batch, never truth scoring.
     pool = build_candidate_pool(occurrences)
     def rrf(source):
@@ -477,8 +526,12 @@ def _run_batch(frozen, dep, occurrences, counts, issues, remaining):
             issues.append({'code': 'compiler_invalid_output', 'stage': 'compile'})
         outputs = selected['compilerOutputs']
         routes = selected['researchCandidates']
+        insufficient_sources = collect_insufficient_sources(
+            [_source_record(ZhihuResult(**candidate['result']), candidate['retrieved_at'])
+             for candidate in candidates], result['compilerOutputs'], outputs)
     else:
         outputs, routes = [], []
+        insufficient_sources = []
     counts['batch_duration_ms'] = max(0, round((dep.monotonic() - batch_started) * 1000))
     coverage = assess_coverage(outputs, routes)
     counts['evidence_count'] = coverage['evidenceCount']
@@ -490,7 +543,7 @@ def _run_batch(frozen, dep, occurrences, counts, issues, remaining):
     status = 'partial' if issues else ('ok' if counts['evidence_count'] else 'no_evidence')
     return {'requestId': frozen['request']['id'], 'status': status, 'compilerOutputs': outputs,
             'routeCandidates': routes, 'unresolvedQuestions': [gap['reason'] for gap in coverage['gaps']],
-            'issues': issues, 'coverage': coverage}
+            'issues': issues, 'coverage': coverage, 'insufficientSources': insufficient_sources}
 
 
 def _run(frozen, *, dependencies, limits, metrics, options, cache):
@@ -537,6 +590,10 @@ def _run(frozen, *, dependencies, limits, metrics, options, cache):
             cached = cache.get(frozen)
             counts['cache_read_duration_ms'] = max(0, round((dep.monotonic() - cache_started) * 1000))
             if cached is not None and isinstance(cached['result'].get('coverage'), dict):
+                if 'insufficientSources' not in cached['result']:
+                    cached_outputs = cached['result']['compilerOutputs']
+                    cached['result']['insufficientSources'] = collect_insufficient_sources(
+                        [output['source'] for output in cached_outputs], cached_outputs, cached_outputs)
                 counts.update(cache_hit=1, saved_search_calls=cached['saved_search_calls'],
                               saved_model_calls=cached['saved_model_calls'],
                               evidence_count=cached['result']['coverage']['evidenceCount'],
@@ -656,6 +713,7 @@ def _run(frozen, *, dependencies, limits, metrics, options, cache):
     remaining()
     compiler_successes = compiler_attempts = 0
     attempted_ids, accepted_ids = set(), set()
+    attempted_keys = set()
     while len(attempted_ids) < len(candidates):
         if len(cards) >= request['evidenceLimit']:
             break
@@ -679,6 +737,7 @@ def _run(frozen, *, dependencies, limits, metrics, options, cache):
         if v3:
             remaining()
         attempted_ids.add(sid)
+        attempted_keys.add(_source_variant_key(_source_record(original, retrieved_at)))
         counts['compiler_calls_attempted'] += 1
         compiler_attempts += 1
         try:
@@ -731,6 +790,10 @@ def _run(frozen, *, dependencies, limits, metrics, options, cache):
     if not cards:
         unresolved.append('No applicable evidence was obtained from the evaluated search results.')
     remaining()
+    original_sources = ([_source_record(occurrence.result, occurrence.retrieved_at) for occurrence in occurrences]
+                        if v3 else [_source_record(original, timestamp) for original, timestamp in candidates.values()])
     return {'requestId': request['id'], 'status': 'partial' if issues else 'ok' if cards else 'no_evidence',
             'compilerOutputs': outputs, 'routeCandidates': [],
-            'unresolvedQuestions': unresolved, 'issues': issues}
+            'unresolvedQuestions': unresolved, 'issues': issues,
+            'insufficientSources': collect_insufficient_sources(original_sources, outputs, outputs,
+                                                                attempted_keys=attempted_keys)}
