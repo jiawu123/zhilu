@@ -93,7 +93,7 @@ try {
             Invoke-CheckedNative -Label 'Python backend suite (offline)' -Executable $pythonPath -Arguments @('-B', '-m', 'pytest', '-q')
         } finally { Pop-Location }
         Invoke-CheckedNative -Label 'Server and backend dependency tests (offline)' -Executable $nodePath -Arguments @(
-            $vitestPath, 'run', 'apps/server/src', 'apps/server/scripts/test_m2_followup.test.ts', 'packages/agent-runtime/src', 'packages/plan-engine/src')
+            $vitestPath, 'run', 'apps/server/src', 'apps/server/scripts/test_m2_followup.test.ts', 'apps/server/scripts/research_zhihu.test.ts', 'packages/agent-runtime/src', 'packages/plan-engine/src')
         Invoke-CheckedNative -Label 'Server typecheck' -Executable $nodePath -Arguments @(
             $tscPath, '--noEmit', '-p', 'apps/server/tsconfig.json')
         Invoke-CheckedNative -Label 'Full local HTTP flow (offline)' -Executable $nodePath -Arguments @(

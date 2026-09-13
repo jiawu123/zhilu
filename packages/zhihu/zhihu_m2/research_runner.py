@@ -15,6 +15,7 @@ import math
 import multiprocessing
 import os
 import re
+import sys
 import time
 import unicodedata
 from typing import Callable
@@ -255,12 +256,15 @@ def _spawn_context():
     return multiprocessing.get_context('spawn')
 
 
-def _compiler_worker(connection, compiler, result, kwargs):
+def _compiler_worker(connection, compiler, result, kwargs, collect_diagnostics=False):
     """Private IPC worker. Never serialize an exception or print its details."""
     try:
         # Discard library output: stdout belongs exclusively to the entry JSON.
         # os.devnull stores no request data or artifacts on disk.
         with open(os.devnull, 'w', encoding='utf-8') as sink, redirect_stdout(sink), redirect_stderr(sink):
+            diagnostics = []
+            if collect_diagnostics:
+                kwargs = {**kwargs, 'diagnostics': diagnostics}
             try:
                 from zhihu_m2 import evidence_compiler, llm_client
             except ImportError:
@@ -282,6 +286,9 @@ def _compiler_worker(connection, compiler, result, kwargs):
                 except BaseException:
                     packet = {'kind': 'fatal', 'code': 'execution_error'}
             try:
+                if collect_diagnostics:
+                    from zhihu_m2.batch_screening import sanitize_batch_diagnostics
+                    packet['diagnostics'] = sanitize_batch_diagnostics(diagnostics)
                 encoded = _json(packet).encode('utf-8')
                 if len(encoded) > 2 * 1024 * 1024:
                     raise ValueError()
@@ -296,7 +303,7 @@ def _compiler_worker(connection, compiler, result, kwargs):
         connection.close()
 
 
-def _compile_with_deadline(result, *, timeout, compiler=None, **kwargs):
+def _compile_with_deadline(result, *, timeout, compiler=None, diagnostics=None, **kwargs):
     """Run production compiler in a killable process within remaining wall time.
 
     Inputs travel over multiprocessing's private pipe, never argv or files.
@@ -310,7 +317,7 @@ def _compile_with_deadline(result, *, timeout, compiler=None, **kwargs):
     context = _spawn_context()
     receive, send = context.Pipe(duplex=False)
     process = context.Process(target=_compiler_worker,
-        args=(send, compiler if compiler is not None else _compile, result, kwargs),
+        args=(send, compiler if compiler is not None else _compile, result, kwargs, diagnostics is not None),
         name='zhihu-evidence-compiler')
     try:
         process.start()
@@ -326,6 +333,9 @@ def _compile_with_deadline(result, *, timeout, compiler=None, **kwargs):
             raise ResearchError('research_timeout')
         if process.exitcode != 0 or type(packet) is not dict:
             raise ResearchError('execution_error')
+        if diagnostics is not None:
+            from zhihu_m2.batch_screening import sanitize_batch_diagnostics
+            diagnostics.extend(sanitize_batch_diagnostics(packet.pop('diagnostics', [])))
         kind = packet.get('kind')
         if kind == 'result' and set(packet) == {'kind', 'output'}:
             return packet['output']
@@ -394,7 +404,7 @@ def assess_coverage(outputs, route_candidates):
 
 def _run_batch(frozen, dep, occurrences, counts, issues, remaining):
     from dataclasses import asdict
-    from zhihu_m2.batch_screening import select_evidence
+    from zhihu_m2.batch_screening import select_evidence, sanitize_batch_diagnostics
     from zhihu_m2.candidate_pool import build_candidate_pool, variant_key
     from zhihu_m2.llm_client import LLMError
     # RRF is solely a recall ordering for the bounded batch, never truth scoring.
@@ -428,6 +438,7 @@ def _run_batch(frozen, dep, occurrences, counts, issues, remaining):
     if len(ordered) > len(candidates):
         issues.append({'code': 'candidate_batch_truncated', 'stage': 'coverage'})
     batch_started = dep.monotonic()
+    diagnostics = []
     if candidates:
         try:
             kwargs = dict(goal=frozen['goal'], user_context=_context(frozen),
@@ -436,7 +447,8 @@ def _run_batch(frozen, dep, occurrences, counts, issues, remaining):
             counts['batch_model_calls_attempted'] += 1
             counts['model_calls_attempted'] += 1
             if dep.batch_compile is _batch_compile:
-                result = _compile_with_deadline(candidates, timeout=remaining(), compiler=_batch_compile, **kwargs)
+                result = _compile_with_deadline(candidates, timeout=remaining(), compiler=_batch_compile,
+                                                diagnostics=diagnostics, **kwargs)
             else:
                 result = dep.batch_compile(copy.deepcopy(candidates), **kwargs)
             remaining()
@@ -449,6 +461,18 @@ def _run_batch(frozen, dep, occurrences, counts, issues, remaining):
             raise ResearchError('compilation_failed') from None
         finally:
             counts['batch_duration_ms'] = max(0, round((dep.monotonic() - batch_started) * 1000))
+            safe_diagnostics = sanitize_batch_diagnostics(diagnostics)
+            if safe_diagnostics:
+                counts['batch_invalid_item_count'] = sum(event['batch_debug'] == 'item_invalid' for event in safe_diagnostics)
+                counts['batch_valid_output_count'] = max((event.get('valid_output_count', 0)
+                    for event in safe_diagnostics if event['batch_debug'] == 'items_validated'), default=0)
+                counts['batch_invalid_group_count'] = max((event.get('invalid_group_count', 0)
+                    for event in safe_diagnostics if event['batch_debug'] == 'research_candidates_invalid'), default=0)
+                # Child library stdout/stderr stays discarded. Only bounded,
+                # allowlisted metadata is transported over IPC and emitted here.
+                if os.environ.get('ZHIHU_BATCH_DEBUG') == '1':
+                    for event in safe_diagnostics:
+                        print(_json(event), file=sys.stderr, flush=True)
         for item in selected['issues']:
             issues.append({'code': 'compiler_invalid_output', 'stage': 'compile'})
         outputs = selected['compilerOutputs']

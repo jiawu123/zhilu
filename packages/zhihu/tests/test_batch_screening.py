@@ -138,6 +138,88 @@ def test_invalid_quote_is_partial_when_other_evidence_is_valid(model):
     assert output['issues'] == [{'code': 'batch_item_invalid', 'candidateIndex': 1}]
 
 
+def test_hypothesis_citing_rejected_quote_drops_whole_group_and_keeps_valid_cards(model):
+    values = [candidate(i) for i in range(3)]
+    proposed = [item(i, value) for i, value in enumerate(values)]
+    proposed[1]['compilation']['evidence_cards'][0]['supporting_quote'] = '不存在于原文的引用。'
+    groups = [{
+        'title': '共同假设', 'summary': '依赖两张卡共同成立，不能删掉引用后保留。',
+        'applicableWhen': ['条件已知时'], 'candidateIndices': [0, 1], 'risks': [],
+    }, {
+        'title': '独立假设', 'summary': '第三张卡独立支持。',
+        'applicableWhen': ['条件适用时'], 'candidateIndices': [2], 'risks': [],
+    }]
+    model['payload'] = {'items': proposed, 'researchCandidates': groups}
+    before = copy.deepcopy(model['payload'])
+    output = run(values)
+    assert [value['source']['id'] for value in output['compilerOutputs']] == [
+        'zhihu:Answer:0', 'zhihu:Answer:2']
+    assert len(output['researchCandidates']) == 1
+    assert output['researchCandidates'][0]['title'] == '独立假设'
+    assert output['researchCandidates'][0]['evidenceIds'] == [
+        output['compilerOutputs'][1]['evidence_cards'][0]['id']]
+    assert output['issues'] == [
+        {'code': 'batch_item_invalid', 'candidateIndex': 1},
+        {'code': 'batch_research_candidate_invalid', 'researchCandidateIndex': 0},
+    ]
+    assert model['payload'] == before
+
+
+@pytest.mark.parametrize('groups', [None, {}, 'invalid', [None] * 9])
+def test_invalid_hypothesis_collection_preserves_valid_evidence(model, groups):
+    values = [candidate()]
+    model['payload'] = {'items': [item(0, values[0])], 'researchCandidates': groups}
+    diagnostics = []
+    output = run(values, diagnostics=diagnostics)
+    assert len(output['compilerOutputs'][0]['evidence_cards']) == 1
+    assert output['researchCandidates'] == []
+    assert output['issues'] == [{'code': 'batch_research_candidate_invalid'}]
+    rejected = next(event for event in diagnostics if event['batch_debug'] == 'research_candidates_invalid')
+    if isinstance(groups, list):
+        assert rejected['invalid_group_count'] == 9
+    else:
+        assert 'invalid_group_count' not in rejected
+
+
+def test_two_card_item_and_no_evidence_citations_preserve_eight_independent_cards(model, monkeypatch, capsys):
+    batch = importlib.import_module('zhihu_m2.batch_screening')
+    values = [candidate(i) for i in range(10)]
+    proposed = [item(i, value) for i, value in enumerate(values)]
+    proposed[5]['compilation'] = {'status': 'no_evidence', 'reason': '缺少所需依据。',
+                                'evidence_cards': []}
+    extra_card = copy.deepcopy(proposed[6]['compilation']['evidence_cards'][0])
+    extra_card['claim'] = '另一条主张仍然不能绕过单卡契约。'
+    proposed[6]['compilation']['evidence_cards'].append(extra_card)
+    model['payload'] = {'items': proposed, 'researchCandidates': [{
+        'title': f'假设{index}', 'summary': '需要完整的所引证据才能成立。',
+        'applicableWhen': ['条件已知'], 'candidateIndices': indices, 'risks': [],
+    } for index, indices in enumerate([[0, 2, 3, 4, 6, 7], [1, 5, 9], [6, 7]])]}
+    monkeypatch.setenv('ZHIHU_BATCH_DEBUG', '1')
+    diagnostics = []
+    full = run(values, diagnostics=diagnostics)
+    invalid_item = next(entry for entry in diagnostics if entry['batch_debug'] == 'item_invalid')
+    assert invalid_item['candidate_index'] == 6
+    assert invalid_item['card_count'] == 2
+    stderr_events = [json.loads(line) for line in capsys.readouterr().err.splitlines()]
+    assert invalid_item in stderr_events
+    assert len(full['compilerOutputs']) == 9
+    assert sum(len(value['evidence_cards']) for value in full['compilerOutputs']) == 8
+    assert full['researchCandidates'] == []
+    assert full['issues'] == [
+        {'code': 'batch_item_invalid', 'candidateIndex': 6},
+        {'code': 'batch_research_candidate_invalid', 'researchCandidateIndex': 0},
+        {'code': 'batch_research_candidate_invalid', 'researchCandidateIndex': 1},
+        {'code': 'batch_research_candidate_invalid', 'researchCandidateIndex': 2},
+    ]
+    selected = batch.select_evidence(full, evidence_limit=5)
+    assert sum(len(value['evidence_cards']) for value in selected['compilerOutputs']) == 5
+    assert selected['researchCandidates'] == []
+    assert all(value['source']['id'] != 'zhihu:Answer:6' for value in selected['compilerOutputs'])
+    for compiled in selected['compilerOutputs']:
+        for card in compiled['evidence_cards']:
+            assert compiled['source']['snippet'][card['quote_start']:card['quote_end']] == card['supporting_quote']
+
+
 def test_all_invalid_items_fail_without_raw_exception(model):
     batch = importlib.import_module('zhihu_m2.batch_screening')
     candidates = [candidate()]
@@ -276,8 +358,11 @@ def test_hypothesis_cannot_cite_valid_no_evidence(model):
         'title': '无依据的路线', 'summary': '不应接受。', 'applicableWhen': [],
         'candidateIndices': [0], 'risks': [],
     }]}
-    with pytest.raises(batch.BatchValidationError):
-        run(values)
+    output = run(values)
+    assert output['compilerOutputs'][0]['status'] == 'no_evidence'
+    assert output['researchCandidates'] == []
+    assert output['issues'] == [
+        {'code': 'batch_research_candidate_invalid', 'researchCandidateIndex': 0}]
 
 
 def test_oversize_prompt_is_rejected_before_model_and_never_truncates_snippet(model):
@@ -315,15 +400,18 @@ def test_hypotheses_reference_validated_cards_and_removed_citations_drop_group(m
 
 
 @pytest.mark.parametrize('indices', [[True], [999], [], [0, 0]])
-def test_malformed_hypothesis_fails_closed(model, indices):
+def test_malformed_hypothesis_is_rejected_without_discarding_evidence(model, indices):
     batch = importlib.import_module('zhihu_m2.batch_screening')
     candidates = [candidate()]
     model['payload'] = {'items': [item(0, candidates[0])], 'researchCandidates': [{
         'title': '某方法', 'summary': '作者建议进行练习。', 'applicableWhen': ['某条件'],
         'candidateIndices': indices, 'risks': [],
     }]}
-    with pytest.raises(batch.BatchValidationError):
-        run(candidates)
+    output = run(candidates)
+    assert len(output['compilerOutputs'][0]['evidence_cards']) == 1
+    assert output['researchCandidates'] == []
+    assert output['issues'] == [
+        {'code': 'batch_research_candidate_invalid', 'researchCandidateIndex': 0}]
 
 
 def test_hypothesis_requires_explicit_applicability_for_shared_boundary(model):
@@ -333,8 +421,120 @@ def test_hypothesis_requires_explicit_applicability_for_shared_boundary(model):
         'title': '某方法', 'summary': '作者建议记录结果。', 'applicableWhen': [],
         'candidateIndices': [0], 'risks': [],
     }]}
-    with pytest.raises(batch.BatchValidationError):
-        run(values)
+    output = run(values)
+    assert len(output['compilerOutputs'][0]['evidence_cards']) == 1
+    assert output['researchCandidates'] == []
+    assert output['issues'] == [
+        {'code': 'batch_research_candidate_invalid', 'researchCandidateIndex': 0}]
+
+
+def test_diagnostics_never_include_untrusted_model_keys_labels_or_indices(model, monkeypatch, capsys):
+    monkeypatch.setenv('ZHIHU_BATCH_DEBUG', '1')
+    marker = 'SYNTHETIC_PRIVATE_MODEL_TEXT'
+    values = [candidate(i) for i in range(2)]
+    invalid = item(1, values[1], relevance=marker)
+    invalid[marker] = marker
+    model['payload'] = {'items': [item(0, values[0]), invalid], 'researchCandidates': [{
+        'title': marker, 'summary': marker, 'applicableWhen': [marker],
+        'candidateIndices': [marker], 'risks': [], marker: marker,
+    }]}
+    diagnostics = []
+    output = run(values, diagnostics=diagnostics)
+    assert len(output['compilerOutputs']) == 1
+    assert {entry['batch_debug'] for entry in diagnostics} >= {
+        'model_returned', 'item_invalid', 'items_validated', 'research_candidate_invalid'}
+    assert marker not in json.dumps(diagnostics)
+    assert marker not in capsys.readouterr().err
+
+
+def test_diagnostics_are_available_without_stderr_opt_in(model, monkeypatch, capsys):
+    monkeypatch.delenv('ZHIHU_BATCH_DEBUG', raising=False)
+    values = [candidate()]
+    model['payload'] = {'items': [item(0, values[0])]}
+    diagnostics = []
+    run(values, diagnostics=diagnostics)
+    assert [entry['batch_debug'] for entry in diagnostics] == ['model_returned', 'items_validated']
+    assert capsys.readouterr().err == ''
+
+
+def test_diagnostic_sanitizer_rejects_unknown_text_and_boolean_counts():
+    batch = importlib.import_module('zhihu_m2.batch_screening')
+    value = [None, {'batch_debug': 'PRIVATE_TEXT'}, {
+        'batch_debug': 'item_invalid', 'candidate_index': True,
+        'proposed_field_count': 7, 'exception_type': 'PRIVATE_TEXT',
+        'labels': {'relevance': 'PRIVATE_TEXT'}, 'PRIVATE_TEXT': 'PRIVATE_TEXT',
+    }, {
+        'batch_debug': 'model_returned', 'payload_type': 'dict',
+        'item_count': 2, 'research_candidate_count': -1,
+    }]
+    assert batch.sanitize_batch_diagnostics(value) == [
+        {'batch_debug': 'item_invalid', 'proposed_field_count': 7},
+        {'batch_debug': 'model_returned', 'payload_type': 'dict', 'item_count': 2},
+    ]
+    assert batch.sanitize_batch_diagnostics({'batch_debug': 'items_validated'}) == []
+    assert len(batch.sanitize_batch_diagnostics([{'batch_debug': 'items_validated'}] * 200)) == 128
+
+
+@pytest.mark.parametrize('number', [1_000_001, 10 ** 100, float('nan'), True, False])
+def test_diagnostic_sanitizer_drops_out_of_bound_and_noninteger_counts(number):
+    batch = importlib.import_module('zhihu_m2.batch_screening')
+    assert batch.sanitize_batch_diagnostics([{
+        'batch_debug': 'item_invalid', 'card_count': number, 'proposed_field_count': number,
+    }]) == [{'batch_debug': 'item_invalid'}]
+    assert batch.sanitize_batch_diagnostics([{
+        'batch_debug': 'item_invalid', 'card_count': 0, 'proposed_field_count': 1_000_000,
+    }]) == [{'batch_debug': 'item_invalid', 'card_count': 0, 'proposed_field_count': 1_000_000}]
+
+
+@pytest.mark.parametrize('compilation', [
+    None, [], 'SYNTHETIC_PRIVATE_MODEL_TEXT', True,
+    {'evidence_cards': None}, {'evidence_cards': {}},
+    {'evidence_cards': 'SYNTHETIC_PRIVATE_MODEL_TEXT'}, {'evidence_cards': True},
+])
+def test_invalid_compilation_types_do_not_break_debug_card_count(model, monkeypatch, capsys, compilation):
+    monkeypatch.setenv('ZHIHU_BATCH_DEBUG', '1')
+    values = [candidate(i) for i in range(2)]
+    invalid = item(1, values[1])
+    invalid['compilation'] = compilation
+    model['payload'] = {'items': [item(0, values[0]), invalid]}
+    diagnostics = []
+    output = run(values, diagnostics=diagnostics)
+    assert len(output['compilerOutputs']) == 1
+    invalid_item = next(entry for entry in diagnostics if entry['batch_debug'] == 'item_invalid')
+    assert invalid_item['candidate_index'] == 1
+    assert 'card_count' not in invalid_item
+    assert 'SYNTHETIC_PRIVATE_MODEL_TEXT' not in json.dumps(diagnostics)
+    assert 'SYNTHETIC_PRIVATE_MODEL_TEXT' not in capsys.readouterr().err
+
+
+def test_duplicate_hypothesis_is_dropped_without_discarding_first_group(model):
+    values = [candidate()]
+    group = {'title': '同一假设', 'summary': '有依据的主张。',
+             'applicableWhen': ['已知条件'], 'candidateIndices': [0], 'risks': []}
+    model['payload'] = {'items': [item(0, values[0])],
+                        'researchCandidates': [group, copy.deepcopy(group)]}
+    output = run(values)
+    assert len(output['researchCandidates']) == 1
+    assert len(output['compilerOutputs'][0]['evidence_cards']) == 1
+    assert output['issues'] == [
+        {'code': 'batch_research_candidate_invalid', 'researchCandidateIndex': 1}]
+
+
+@pytest.mark.parametrize('field,value', [
+    ('title', ''), ('summary', 9), ('extra', 'untrusted'),
+    ('applicableWhen', 'condition'), ('risks', [''] * 9),
+])
+def test_invalid_hypothesis_fields_do_not_weaken_evidence_validation(model, field, value):
+    values = [candidate()]
+    group = {'title': '某方法', 'summary': '作者建议进行练习。',
+             'applicableWhen': ['某条件'], 'candidateIndices': [0], 'risks': []}
+    group[field] = value
+    model['payload'] = {'items': [item(0, values[0])], 'researchCandidates': [group]}
+    output = run(values)
+    assert len(output['compilerOutputs'][0]['evidence_cards']) == 1
+    assert output['researchCandidates'] == []
+    assert output['issues'] == [
+        {'code': 'batch_research_candidate_invalid', 'researchCandidateIndex': 0}]
 
 
 @pytest.mark.parametrize('domain', ['programming', 'writing'])

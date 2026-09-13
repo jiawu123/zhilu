@@ -7,6 +7,8 @@ is no search, planner, weighted score, retry, shared-card adapter, or quote repa
 import copy
 import hashlib
 import json
+import os
+import sys
 from collections import Counter
 from dataclasses import fields
 from typing import Any
@@ -77,6 +79,61 @@ class BatchValidationError(evidence_compiler.EvidenceValidationError):
 
 def _invalid():
     raise BatchValidationError('Batch evidence response is invalid.')
+
+
+_DEBUG_EVENTS = {
+    'model_returned', 'top_level_invalid', 'item_invalid', 'items_validated',
+    'all_items_invalid', 'card_conflict', 'research_candidate_invalid',
+    'research_candidates_invalid',
+}
+_DEBUG_COUNTERS = {
+    'item_count', 'research_candidate_count', 'top_level_field_count',
+    'candidate_index', 'proposed_field_count', 'invalid_label_count',
+    'card_count',
+    'valid_output_count', 'assessment_count', 'issue_count',
+    'evidence_candidate_count', 'input_candidate_count',
+    'research_candidate_index', 'group_count', 'valid_group_count',
+    'invalid_group_count',
+}
+_DEBUG_ENUMS = {
+    'payload_type': {'dict', 'list', 'str', 'int', 'float', 'bool', 'NoneType'},
+    'exception_type': {'ValueError', 'TypeError', 'KeyError', 'UnicodeError',
+                       'EvidenceValidationError', 'BatchValidationError'},
+}
+
+
+def sanitize_batch_diagnostics(value) -> list[dict]:
+    """Keep bounded, fixed diagnostic metadata; never forward model-authored text."""
+    if not isinstance(value, list):
+        return []
+    sanitized = []
+    for entry in value[:128]:
+        if not isinstance(entry, dict):
+            continue
+        event = entry.get('batch_debug')
+        if not isinstance(event, str) or event not in _DEBUG_EVENTS:
+            continue
+        safe = {'batch_debug': event}
+        for key in _DEBUG_COUNTERS:
+            number = entry.get(key)
+            if type(number) is int and 0 <= number <= 1_000_000:
+                safe[key] = number
+        for key, allowed in _DEBUG_ENUMS.items():
+            label = entry.get(key)
+            if isinstance(label, str) and label in allowed:
+                safe[key] = label
+        sanitized.append(safe)
+    return sanitized
+
+
+def _debug(event, *, diagnostics=None, **fields):
+    """Collect safe metadata; optional stderr output never contains model text."""
+    for safe in sanitize_batch_diagnostics([{'batch_debug': event, **fields}]):
+        if isinstance(diagnostics, list) and len(diagnostics) < 128:
+            diagnostics.append(safe)
+        if os.environ.get('ZHIHU_BATCH_DEBUG') == '1':
+            print(json.dumps(safe, ensure_ascii=False, sort_keys=True),
+                  file=sys.stderr, flush=True)
 
 
 def _bounded_text(value, limit):
@@ -165,21 +222,60 @@ def _research_candidates(value, evidence_by_candidate):
 
 
 def compile_batch(candidates: list[dict], *, goal: str, user_context: dict,
-                  research_question: str, retrieved_at: str | None = None) -> dict[str, Any]:
+                  research_question: str, retrieved_at: str | None = None,
+                  diagnostics: list[dict] | None = None) -> dict[str, Any]:
     """Classify/compile at most 24 original variants in exactly one model attempt.
 
     Valid item outputs are in candidate order, with parallel assessments. Invalid
     or missing items create bounded issues; an entirely invalid batch raises.
     Legitimate no_evidence outputs preserve the original model reason. Optional
     hypothesis groups require validated evidence references and human review.
+    Reject an invalid group as a whole without discarding independent evidence.
     """
     prepared, prompt = _prepare(candidates, goal=goal, user_context=user_context,
                                 research_question=research_question, retrieved_at=retrieved_at)
     payload = llm_client.generate_json(system_prompt=SYSTEM_PROMPT, user_prompt=prompt,
                                        max_tokens=12000)
-    if (not isinstance(payload, dict) or set(payload) not in
-            ({'items'}, {'items', 'researchCandidates'}) or not isinstance(payload['items'], list)
-            or len(payload['items']) > MAX_CANDIDATES):
+
+    _debug(
+        'model_returned',
+        diagnostics=diagnostics,
+        payload_type=type(payload).__name__,
+        top_level_field_count=(
+            len(payload)
+            if isinstance(payload, dict)
+            else None
+        ),
+        item_count=(
+            len(payload.get('items'))
+            if isinstance(payload, dict)
+            and isinstance(payload.get('items'), list)
+            else None
+        ),
+        research_candidate_count=(
+            len(payload.get('researchCandidates'))
+            if isinstance(payload, dict)
+            and isinstance(payload.get('researchCandidates'), list)
+            else None
+        ),
+    )
+
+    if (
+        not isinstance(payload, dict)
+        or set(payload) not in ({'items'}, {'items', 'researchCandidates'})
+        or not isinstance(payload.get('items'), list)
+        or len(payload['items']) > MAX_CANDIDATES
+    ):
+        _debug(
+            'top_level_invalid',
+            diagnostics=diagnostics,
+            payload_type=type(payload).__name__,
+            top_level_field_count=(
+                len(payload)
+                if isinstance(payload, dict)
+                else None
+            ),
+        )
         _invalid()
     indices = [item.get('candidate_index') for item in payload['items']
                if isinstance(item, dict) and type(item.get('candidate_index')) is int
@@ -209,20 +305,106 @@ def compile_batch(candidates: list[dict], *, goal: str, user_context: dict,
                         or proposed['support'] == 'none')
             if excluded and compiled['status'] != 'no_evidence':
                 raise ValueError
-        except (ValueError, TypeError, KeyError, UnicodeError):
-            issues.append({'code': 'batch_item_invalid', 'candidateIndex': index})
+        except (ValueError, TypeError, KeyError, UnicodeError) as error:
+            _debug(
+                'item_invalid',
+                diagnostics=diagnostics,
+                candidate_index=index,
+                exception_type=type(error).__name__,
+                card_count=(
+                    len(proposed['compilation']['evidence_cards'])
+                    if isinstance(proposed.get('compilation'), dict)
+                    and isinstance(proposed['compilation'].get('evidence_cards'), list)
+                    else None
+                ),
+                proposed_field_count=(
+                    len(proposed)
+                    if isinstance(proposed, dict)
+                    else None
+                ),
+                invalid_label_count=(
+                    sum(not isinstance(proposed.get(key), str)
+                        or proposed[key] not in labels for key, labels in LABELS.items())
+                    if isinstance(proposed, dict)
+                    else None
+                ),
+            )
+
+            issues.append({
+                'code': 'batch_item_invalid',
+                'candidateIndex': index,
+            })
             continue
         outputs.append(compiled)
         assessments.append({'candidateIndex': index, 'sourceId': source['id'],
                             **{key: proposed[key] for key in LABELS}})
         if compiled['evidence_cards']:
             evidence_by_candidate[index] = compiled['evidence_cards'][0]['id']
+    _debug(
+        'items_validated',
+        diagnostics=diagnostics,
+        valid_output_count=len(outputs),
+        assessment_count=len(assessments),
+        issue_count=len(issues),
+        evidence_candidate_count=len(evidence_by_candidate),
+    )
+
     if not outputs:
+        _debug(
+            'all_items_invalid',
+            diagnostics=diagnostics,
+            input_candidate_count=len(prepared),
+            issue_count=len(issues),
+        )
         _invalid()
-    _check_card_conflicts(outputs)
-    groups = _research_candidates(payload.get('researchCandidates', []), evidence_by_candidate)
-    return {'compilerOutputs': outputs, 'assessments': assessments, 'issues': issues,
-            'researchCandidates': groups}
+
+    try:
+        _check_card_conflicts(outputs)
+    except BatchValidationError:
+        _debug(
+            'card_conflict',
+            diagnostics=diagnostics,
+            valid_output_count=len(outputs),
+        )
+        raise
+
+    proposed_groups = payload.get('researchCandidates', [])
+    groups, group_ids = [], set()
+    if not isinstance(proposed_groups, list) or len(proposed_groups) > 8:
+        issues.append({'code': 'batch_research_candidate_invalid'})
+        _debug(
+            'research_candidates_invalid',
+            diagnostics=diagnostics,
+            group_count=len(proposed_groups) if isinstance(proposed_groups, list) else None,
+            invalid_group_count=len(proposed_groups) if isinstance(proposed_groups, list) else None,
+        )
+    else:
+        for group_index, proposed_group in enumerate(proposed_groups):
+            try:
+                group = _research_candidates([proposed_group], evidence_by_candidate)[0]
+                if group['id'] in group_ids:
+                    _invalid()
+            except BatchValidationError:
+                # A summary may depend on every cited card. Do not remove a bad
+                # reference and keep that summary, or invalidate unrelated cards.
+                issues.append({'code': 'batch_research_candidate_invalid',
+                               'researchCandidateIndex': group_index})
+                _debug('research_candidate_invalid', diagnostics=diagnostics,
+                       research_candidate_index=group_index)
+                continue
+            group_ids.add(group['id'])
+            groups.append(group)
+        if len(groups) != len(proposed_groups):
+            _debug('research_candidates_invalid', diagnostics=diagnostics,
+                   group_count=len(proposed_groups), valid_group_count=len(groups),
+                   invalid_group_count=len(proposed_groups) - len(groups))
+
+    return {
+        'compilerOutputs': outputs,
+        'assessments': assessments,
+        'issues': issues,
+        'researchCandidates': groups,
+    }
 
 
 def select_evidence(batch: dict, *, evidence_limit: int) -> dict:

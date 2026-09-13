@@ -87,7 +87,7 @@ function envelope(value: unknown, action: string) {
     check(e.data === null); const error = object(e.error); keys(error, ["code", "message"]); const code = text(error.code, 100); text(error.message, 2000);
     check(UPSTREAM_CODES.has(code));
     const safeMetrics: Record<string, number> = {};
-    for (const key of ["planner_calls_attempted", "search_calls_attempted", "compiler_calls_attempted", "candidate_count", "evidence_count", "batch_model_calls_attempted", "model_calls_attempted", "cache_hit", "cache_write_success", "saved_search_calls", "saved_model_calls", "search_duration_ms", "batch_duration_ms", "total_duration_ms", "cache_read_duration_ms"]) {
+    for (const key of ["planner_calls_attempted", "search_calls_attempted", "compiler_calls_attempted", "candidate_count", "evidence_count", "batch_model_calls_attempted", "model_calls_attempted", "cache_hit", "cache_write_success", "saved_search_calls", "saved_model_calls", "search_duration_ms", "batch_duration_ms", "total_duration_ms", "cache_read_duration_ms", "batch_invalid_item_count", "batch_valid_output_count", "batch_invalid_group_count"]) {
       if (Object.hasOwn(metrics, key)) safeMetrics[key] = integer(metrics[key], 0, Number.MAX_SAFE_INTEGER);
     }
     throw new BoundaryError("upstream_failed", code, safeMetrics);

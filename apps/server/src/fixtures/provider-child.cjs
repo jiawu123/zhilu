@@ -40,11 +40,13 @@ else {
         error_code: mode === 'stderr-timeout' ? 'research_timeout' : 'configuration_error',
         planner_calls_attempted: 0, search_calls_attempted: 1, compiler_calls_attempted: 0,
         batch_model_calls_attempted: 1, model_calls_attempted: 1, candidate_count: 2, evidence_count: 0,
+        batch_invalid_item_count: 1, batch_valid_output_count: 1, batch_invalid_group_count: 2,
         run_id: 'private run id', message: 'Authorization secret-canary traceback', unknown_counter: 9876 };
       if (mode === 'stderr-unknown-code') metadata.error_code = 'private-canary';
       if (mode === 'stderr-wrong-action') metadata.action = 'plan';
       if (mode === 'stderr-ok') metadata.ok = true;
       if (mode === 'stderr-invalid-counter') metadata.search_calls_attempted = true;
+      if (mode === 'stderr-invalid-batch-counter') metadata.batch_invalid_item_count = true;
       if (mode === 'stderr-oversize-line') metadata.message = 'x'.repeat(5000);
       const line = JSON.stringify(metadata) + (mode === 'stderr-unframed' ? '' : '\r\n');
       process.stderr.write('private diagnostic log 🍞\r\n');
@@ -75,6 +77,9 @@ else {
     if (['failed', 'research-timeout', 'bad-failure', 'stderr-envelope-failed'].includes(mode)) {
       response.ok = false; response.data = null;
       response.error = { code: mode === 'research-timeout' ? 'research_timeout' : 'research_failed', message: 'private raw upstream secret' };
+      response.metrics.batch_invalid_item_count = 1;
+      response.metrics.batch_valid_output_count = 0;
+      response.metrics.batch_invalid_group_count = 0;
       if (mode === 'bad-failure') response.action = 'plan';
       process.exitCode = 1;
     }
