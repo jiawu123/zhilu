@@ -10,14 +10,14 @@ export function buildM2Context(plan: PlanState): {goal: string; user_context: Re
   if (!goal || !context || goal.confirmed !== true || context.confirmed !== true) throw new M2ContextError();
   if (typeof goal.goal !== "string" || !goal.goal.trim() || [...goal.goal].length > 2000
       || typeof context.currentSituation !== "string" || !context.currentSituation.trim()
-      || typeof context.weeklyHours !== "number" || !Number.isFinite(context.weeklyHours) || context.weeklyHours <= 0)
+      || typeof plan.weeklyHours !== "number" || !Number.isFinite(plan.weeklyHours) || plan.weeklyHours <= 0)
     throw new M2ContextError();
   for (const list of [context.constraints, goal.successCriteria, goal.nonGoals, goal.mustHaveOutcomes, goal.tradeoffs]) {
     if (!Array.isArray(list) || list.some((item) => typeof item !== "string")) throw new M2ContextError();
   }
   if (context.backgroundNotes !== undefined && typeof context.backgroundNotes !== "string") throw new M2ContextError();
   const user_context: Record<string, unknown> = {
-    current_situation: context.currentSituation, weekly_hours: context.weeklyHours,
+    current_situation: context.currentSituation, weekly_hours: plan.weeklyHours,
     constraints: [...context.constraints], success_criteria: [...goal.successCriteria],
     target_date: goal.targetDate, non_goals: [...goal.nonGoals],
     must_have_outcomes: [...goal.mustHaveOutcomes], tradeoffs: [...goal.tradeoffs], review_cadence: goal.reviewCadence,

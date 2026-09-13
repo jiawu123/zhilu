@@ -110,10 +110,18 @@ def _system_prompt(frozen: dict, *, retrieval_profile: str = "legacy") -> str:
             "每题恰好2条独立Query，合计6条且跨题不重复。此处是精确数量，不是上限。"
             "信息不足仍返回needs_clarification，不凑问题。\n")
     if frozen.get("planning_profile") == INITIAL_PROFILE:
+        # The generic one-query example violates the initial round's minimum.
+        prompt = prompt.replace('"queries":["主题 操作对象 研究焦点"]',
+                                '"queries":["主题 操作对象 研究焦点","主题 操作对象 适用限制"]')
         return prompt + "\n【M2 首轮查询预算覆盖数量规则】\n" + (
+            "输入还包含max_total_queries，表示所有问题的Query数量之和的上限。"
             "信息充分且status=ok时，生成1到max_questions个有实际决策价值的研究问题，"
             "所有问题总计2到3条不重复Query，按决策优先级排列；每题仍最多2条Query。"
             "这是全轮总量，不是每题数量。简单目标可以只提一个问题和两条互补Query，不凑三个问题。"
+            "当max_total_queries=3时，各题Query数量的合法分配只有[2]、[1,1]、[2,1]、[1,2]、[1,1,1]，"
+            "且问题数不能超过max_questions、每题数量不能超过queries_per_question。"
+            "[2,2]合计4条，属于无效输出；不要给两个问题各配两条。"
+            "输出前检查所有queries数组的长度之和，不满足总预算时先删去低优先级Query。"
             "只研究最优先的路线、适用条件或限制，不为了达到数量虚构需求。"
             "目标不清仍返回needs_clarification。不要规划自动补搜或自动重试。\n")
     return prompt
@@ -125,7 +133,10 @@ def build_planner_prompts(frozen_input: dict, *, retrieval_profile: str = "legac
     Hash the transport's full messages for wire-level audit, not SYSTEM_PROMPT.
     """
     frozen = build_planner_input(**frozen_input)
-    return _system_prompt(frozen, retrieval_profile=retrieval_profile), _json(frozen)
+    model_input = dict(frozen)
+    if frozen.get("planning_profile") == INITIAL_PROFILE:
+        model_input["max_total_queries"] = min(3, frozen["max_questions"] * frozen["queries_per_question"])
+    return _system_prompt(frozen, retrieval_profile=retrieval_profile), _json(model_input)
 
 
 def _json(value: Any) -> str:
@@ -298,6 +309,35 @@ def validate_plan_response(payload: Any, frozen_input: dict) -> dict:
         raise PlannerValidationError(str(error)) from None
 
 
+def compile_planner_response(payload: Any, frozen_input: dict) -> dict:
+    """Validate all candidates, then allocate the initial round's execution budget."""
+    frozen = build_planner_input(**frozen_input)
+    if frozen.get("planning_profile") != INITIAL_PROFILE:
+        return validate_plan_response(payload, frozen)
+    candidate_input = dict(frozen)
+    candidate_input.pop("planning_profile")
+    candidates = validate_plan_response(payload, candidate_input)
+    if candidates["planned_query_count"] <= 3:
+        return validate_plan_response(payload, frozen)
+    selected = copy.deepcopy(payload)
+    # Keep every research question represented, then use the remaining slots
+    # for second queries in the model's question-priority order.
+    remaining = 3 - len(selected["research_questions"])
+    deferred = []
+    for question in selected["research_questions"]:
+        keep = 1 + min(remaining, len(question["queries"]) - 1)
+        remaining -= keep - 1
+        deferred.extend({"research_question": question["research_question"], "query": query}
+                        for query in question["queries"][keep:])
+        question["queries"] = question["queries"][:keep]
+    result = validate_plan_response(selected, frozen)
+    result["query_selection"] = {
+        "policy": "one_per_question_then_priority", "proposed_query_count": candidates["planned_query_count"],
+        "selected_query_count": result["planned_query_count"], "deferred_queries": deferred,
+    }
+    return result
+
+
 def plan_research(
     goal: str, user_context: dict, *, max_questions: int = 3, queries_per_question: int = 2,
     planning_profile: str | None = None,
@@ -305,7 +345,8 @@ def plan_research(
     """Make ONE model call and return a pending-review plan. No search or retry.
 
     This public function is live. Use the CLI without --call-model for preview.
-    No files are written by this function; run_planner provides saved run logs.
+    Acceptance runs may opt into a local diagnostic file via the trusted
+    ZHIHU_PLANNER_DIAGNOSTIC_FILE environment variable; no credentials are saved.
     """
     frozen = build_planner_input(goal, user_context, max_questions=max_questions,
                                  queries_per_question=queries_per_question, planning_profile=planning_profile)
@@ -313,7 +354,19 @@ def plan_research(
     profile = options_from_env(os.environ).profile
     system_prompt, user_prompt = build_planner_prompts(frozen, retrieval_profile=profile)
     payload = llm_client.generate_json(system_prompt, user_prompt, max_tokens=2400)
-    return validate_plan_response(payload, frozen)
+    diagnostic = {"status": "failed", "input": frozen, "model_response": payload}
+    try:
+        result = compile_planner_response(payload, frozen)
+        diagnostic.update(status="passed", planned_query_count=result["planned_query_count"],
+                          query_selection=result.get("query_selection"))
+        return result
+    except PlannerValidationError as error:
+        diagnostic["validation_message"] = str(error)
+        raise
+    finally:
+        diagnostic_file = os.environ.get("ZHIHU_PLANNER_DIAGNOSTIC_FILE")
+        if diagnostic_file:
+            _write(Path(diagnostic_file), diagnostic)
 
 
 SUPPLEMENTAL_PROMPT = """你是知乎 M2 的补充查询规划器，只返回最终 JSON。
@@ -461,6 +514,7 @@ def _safe_error_code(error: Exception) -> str:
 def run_planner(
     input_file: Path | str, *, max_questions: int = 3, queries_per_question: int = 2,
     call_model: bool = False, output_root: Path | str = "artifacts",
+    planning_profile: str | None = None,
 ) -> dict:
     """Offline preview by default; explicit execution saves one proposed plan.
 
@@ -473,7 +527,8 @@ def run_planner(
         raise ValueError("call_model must be a boolean.")
     request = _load_request(Path(input_file))
     frozen = build_planner_input(**request, max_questions=max_questions,
-                                 queries_per_question=queries_per_question)
+                                 queries_per_question=queries_per_question,
+                                 planning_profile=planning_profile)
     load_local_env()
     profile = options_from_env(os.environ).profile
     system_prompt, user_prompt = build_planner_prompts(frozen, retrieval_profile=profile)
@@ -482,7 +537,8 @@ def run_planner(
         "status": "dry_run", "stage": "preview", "run_kind": "query_plan_only",
         "input": frozen, "input_file": str(Path(input_file).resolve()),
         "system_prompt_sha256": _hash(system_prompt), "frozen_input_sha256": _hash(user_prompt),
-        "max_total_queries": max_questions * queries_per_question,
+        "max_total_queries": min(3, max_questions * queries_per_question)
+            if planning_profile == INITIAL_PROFILE else max_questions * queries_per_question,
         "planner_calls_attempted": 0, "model_calls_upper_bound": 0,
         "new_zhihu_search": False, "queries_executed": False,
         "automatic_retries": False, "evidence_compilation_performed": False,
@@ -509,7 +565,7 @@ def run_planner(
         report["stage"] = "save_model_response"
         _write(folder / "model_response.json", payload)
         report["stage"] = "validate"
-        plan = validate_plan_response(payload, frozen)
+        plan = compile_planner_response(payload, frozen)
         report["stage"] = "save_plan"
         _write(folder / "query_plan.json", plan)
         report.update(status=plan["status"], stage="finished",
@@ -532,12 +588,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--input", default="examples/planner_request.json")
     parser.add_argument("--max-questions", type=int, choices=(1, 2, 3), default=3)
     parser.add_argument("--queries-per-question", type=int, choices=(1, 2), default=2)
+    parser.add_argument("--planning-profile", choices=(INITIAL_PROFILE, BASELINE_PROFILE))
     parser.add_argument("--output-root", default="artifacts")
     parser.add_argument("--call-model", action="store_true", help="Authorize at most one model call; never searches Zhihu")
     args = parser.parse_args(argv)
     try:
         report = run_planner(args.input, max_questions=args.max_questions,
                              queries_per_question=args.queries_per_question,
+                             planning_profile=args.planning_profile,
                              call_model=args.call_model, output_root=args.output_root)
     except (ValueError, OSError) as error:
         report = {"status": "error", "stage": "prepare", "error_type": type(error).__name__,

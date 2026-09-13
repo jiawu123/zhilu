@@ -237,6 +237,32 @@ export interface CreateProjectInput {
   adaptiveAnswer: string;
 }
 
+export interface InterviewQuestion {
+  id: string;
+  question: string;
+  /** Older saved interviews default to single choice. */
+  type?: "single" | "multiple" | "text" | "toggle";
+  options: Array<{ id: string; label: string; allowsText?: boolean }>;
+}
+
+export interface InterviewAnswer {
+  questionId: string;
+  optionId?: string;
+  optionIds?: string[];
+  text?: string;
+  skipped?: boolean;
+}
+
+export interface InterviewSession {
+  id: string;
+  goal: string;
+  backgroundNotes?: string;
+  questions: InterviewQuestion[];
+  answers: InterviewAnswer[];
+  status: "asking" | "complete";
+  summary?: CreateProjectInput;
+}
+
 export interface ImpactDiff {
   eventId: string;
   affectedNodeIds: string[];
@@ -255,7 +281,19 @@ export interface PlanCommit {
   actor: "user" | "agent" | "system";
   reason: string;
   eventId?: string;
+  processing?: EventProcessingRecord;
   snapshot: PlanState;
+}
+
+/** 事件提案的处理依据，由 Controller 写入，不接受模型自报批准或检索状态。 */
+export interface EventProcessingRecord {
+  mode: "deterministic" | "model";
+  researchNeeded: boolean;
+  researchReason: string;
+  usedEvidenceIds: string[];
+  runId?: string;
+  summary: string;
+  warnings: string[];
 }
 
 /** Query Planner 的输出。它只生成问题内容和检索 Query，不分配运行 ID。 */
@@ -311,6 +349,20 @@ export interface ResearchRunResult {
   requests: ResearchRequest[];
   evidencePacks: EvidencePack[];
   routeCandidates: RouteCandidate[];
+  controller?: ResearchControllerReport;
+}
+
+/** Controller-observed diagnostics, never a claim of semantic or factual verification. */
+export interface ResearchControllerReport {
+  coverage: ResearchCoverage;
+  questionCoverage: Array<{ requestId: string; evidenceIds: string[] }>;
+  rounds: number;
+  queryBudget: 6;
+  queriesAttempted: number;
+  searchCallsAttempted: number;
+  cacheHits: number;
+  stages: Array<{ stage: "plan" | "research" | "supplement"; requestId?: string; durationMs: number; status: string }>;
+  stopReason: string;
 }
 
 export interface BaselineRoutePreview {
@@ -327,6 +379,7 @@ export interface BaselineProposal {
   researchRun: ResearchRunResult;
   previews: BaselineRoutePreview[];
   roadmapper?: RoadmapperRun;
+  conversation?: Array<{ role: "user" | "assistant"; content: string }>;
 }
 
 export interface RoadmapView {

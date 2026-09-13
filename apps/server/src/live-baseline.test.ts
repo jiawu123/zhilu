@@ -1,13 +1,15 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createResearchReadyPlan, type RoadmapperInput } from "@zhilu/agent-runtime";
-import type { CreateProjectInput, EvidenceCard, ResearchQuestionDraft } from "@zhilu/contracts";
+import type { CreateProjectInput, EvidenceCard, ResearchQuestionDraft, ResearchRequest } from "@zhilu/contracts";
 import { createZhiluServer } from "./index";
 import { PlanRepository } from "./repository";
-import type { ZhihuProvider } from "./zhihu-provider";
+import { executeM3Replay } from "./m3-replay";
+import { ZhihuProviderError, type M2Provider, type ZhihuProvider } from "./zhihu-provider";
+import type { ResearchProviderResult } from "./zhihu-boundary";
 import { RoadmapperProviderError, type RoadmapperProvider } from "./roadmapper-provider";
 import { roadmapperDraftFixture } from "../../../packages/agent-runtime/src/roadmapper.test-fixture";
 
@@ -28,8 +30,8 @@ const input: CreateProjectInput = {
 };
 
 const questions: ResearchQuestionDraft[] = [
-  { question: "怎样尽早用项目验证 Agent 能力？", rationale: "需要可检查成果", searchQueries: ["Agent 项目 验证", "Agent 项目 反馈", "Agent 项目 测试"] },
-  { question: "哪些基础能力最容易阻碍完成项目？", rationale: "需要控制风险", searchQueries: ["Agent 基础能力", "Agent 初学者 短板", "Agent 学习路线"] },
+  { question: "怎样尽早用项目验证 Agent 能力？", rationale: "需要可检查成果", searchQueries: ["Agent 项目 验证", "Agent 项目 反馈"] },
+  { question: "哪些基础能力最容易阻碍完成项目？", rationale: "需要控制风险", searchQueries: ["Agent 初学者 短板"] },
 ];
 
 const cleanup: Array<() => Promise<void>> = [];
@@ -38,29 +40,30 @@ afterEach(async () => { for (const close of cleanup.splice(0)) await close(); vi
 
 describe("live research Baseline orchestration", () => {
   it("keeps live research pending, then commits the user-selected route", async () => {
-    const planForBaseline = vi.fn(async () => ({ status: "ready_for_review" as const, questions, clarificationQuestions: [] }));
-    const researchOne = vi.fn(async ({ request }: Parameters<ZhihuProvider["researchOne"]>[0]) => ({
-      runId: `run-${request.id}`,
-      status: "ok" as const,
-      pack: { requestId: request.id, evidence: [evidence(`e-${request.id}`, request.question)], routeCandidates: [], unresolvedQuestions: [] },
-      issues: [],
-      metrics: { search_calls_attempted: request.searchQueries.length, compiler_calls_attempted: 1, candidate_count: 1, evidence_count: 1 },
-    }));
+    const { planForBaseline, researchOne } = readyResearch();
     const fixture = await setup({ planForBaseline, researchOne } as ZhihuProvider);
 
     const response = await fetch(`${fixture.origin}/api/projects/${fixture.projectId}/research/live/baseline`, { method: "POST" });
     expect(response.status).toBe(202);
-    const proposal = await response.json() as { id: string; recommendedRouteId: string; roadmapper: { runId: string; mode: string }; researchRun: { id: string; mode: string; routeCandidates: unknown[]; evidencePacks: unknown[] } };
-    expect(proposal.researchRun).toMatchObject({ mode: "live" });
+    const proposal = await response.json() as { id: string; recommendedRouteId: string; roadmapper: { runId: string; mode: string }; researchRun: { id: string; mode: string; routeCandidates: unknown[]; evidencePacks: unknown[]; controller: { questionCoverage: Array<{ requestId: string; evidenceIds: string[] }> } } };
+    expect(proposal.researchRun).toMatchObject({ mode: "live", controller: {
+      coverage: { status: "sufficient", evidenceCount: 6, targetMin: 6, targetMax: 8, hasCaveat: true, gaps: [], reviewStatus: "needs_human_review" },
+      rounds: 1, queryBudget: 6, queriesAttempted: 3, searchCallsAttempted: 3, cacheHits: 0, stopReason: "coverage_sufficient",
+    } });
+    expect(proposal.researchRun.controller.questionCoverage).toHaveLength(2);
+    expect(proposal.researchRun.controller.questionCoverage.every(question => question.evidenceIds.length === 3)).toBe(true);
     expect(proposal.researchRun.routeCandidates).toHaveLength(2);
     expect(proposal.researchRun.evidencePacks).toHaveLength(2);
     expect(planForBaseline).toHaveBeenCalledTimes(1);
     expect(researchOne).toHaveBeenCalledTimes(2);
+    expect(researchOne.mock.calls.reduce((sum, [call]) => sum + call.request.searchQueries.length, 0)).toBe(3);
+    expect(researchOne.mock.calls.every(([call]) => call.request.evidenceLimit === 8)).toBe(true);
     expect(proposal.roadmapper.mode).toBe("model");
     expect(proposal.roadmapper.runId).not.toBe(proposal.researchRun.id);
     expect((await fixture.repository.getPlan(fixture.projectId)).version).toBe(1);
     expect(await fixture.repository.getHistory(fixture.projectId)).toHaveLength(0);
     expect(await fixture.repository.getBaselineProposals(fixture.projectId)).toHaveLength(1);
+    expect(await readdir(join(fixture.root, fixture.projectId, ".plan", "research-snapshots"))).toEqual([`${proposal.researchRun.id}.json`]);
 
     const applied = await fetch(`${fixture.origin}/api/projects/${fixture.projectId}/baseline/apply`, {
       method: "POST",
@@ -72,6 +75,128 @@ describe("live research Baseline orchestration", () => {
     expect(workspace.plan).toMatchObject({ version: 2, research: { mode: "live" } });
     expect(workspace.plan.evidence.some((item) => item.sourceType === "zhihu")).toBe(true);
     expect(workspace.history).toHaveLength(1);
+  });
+
+  it("does not call the model or save a proposal when an older provider cannot fill coverage gaps", async () => {
+    const research = readyResearch(1), generate = vi.fn();
+    const fixture = await setup(research, { generate });
+    const before = await fixture.repository.getPlan(fixture.projectId);
+    const response = await fetch(`${fixture.origin}/api/projects/${fixture.projectId}/research/live/baseline`, { method: "POST" });
+    expect(response.status).toBe(422);
+    expect(await response.json()).toMatchObject({ code: "insufficient_coverage", controller: {
+      coverage: { status: "insufficient", evidenceCount: 2 }, rounds: 1, queriesAttempted: 3,
+    } });
+    expect(research.researchOne).toHaveBeenCalledTimes(2);
+    expect(generate).not.toHaveBeenCalled();
+    expect(await fixture.repository.getBaselineProposals(fixture.projectId)).toHaveLength(0);
+    expect(await fixture.repository.getPlan(fixture.projectId)).toEqual(before);
+    expect(await fixture.repository.getHistory(fixture.projectId)).toHaveLength(0);
+  });
+
+  it("reports cached evidence without counting planned queries as actual search calls", async () => {
+    const research = readyResearch();
+    research.researchOne.mockImplementation(async ({ request }) => ({
+      ...researchResult(request), metrics: {
+        search_calls_attempted: 0, compiler_calls_attempted: 0, candidate_count: 3, evidence_count: 3, cache_hit: 1,
+      },
+    }));
+    const fixture = await setup(research);
+    const response = await fetch(`${fixture.origin}/api/projects/${fixture.projectId}/research/live/baseline`, { method: "POST" });
+    expect(response.status).toBe(202);
+    expect(await response.json()).toMatchObject({ researchRun: { controller: {
+      coverage: { status: "sufficient" }, queriesAttempted: 3, searchCallsAttempted: 0, cacheHits: 2,
+      rounds: 1, stopReason: "coverage_sufficient",
+    } } });
+    expect((await fixture.repository.getPlan(fixture.projectId)).version).toBe(1);
+    expect(await fixture.repository.getHistory(fixture.projectId)).toHaveLength(0);
+  });
+
+  it("executes one explicit supplemental round before generating a pending baseline", async () => {
+    const research = readyResearch(2);
+    const planSupplemental = vi.fn<M2Provider["planSupplemental"]>(async supplement => ({
+      status: "ready_for_review", questions: [{ question: "业余时间怎样控制项目范围？", rationale: "补齐时间约束证据", searchQueries: ["业余 Agent 项目 范围 控制"] }],
+      stopReason: null, gaps: supplement.gaps, plannerCallsAttempted: 1,
+    }));
+    const generate = vi.fn(async (input: Parameters<RoadmapperProvider["generate"]>[0]) => roadmapperDraftFixture(input as RoadmapperInput));
+    const fixture = await setup({ ...research, planSupplemental }, { generate });
+    const before = await fixture.repository.getPlan(fixture.projectId);
+    const response = await fetch(`${fixture.origin}/api/projects/${fixture.projectId}/research/live/baseline`, { method: "POST" });
+    expect(response.status).toBe(202);
+    expect(await response.json()).toMatchObject({ researchRun: { controller: {
+      coverage: { status: "sufficient", evidenceCount: 6 }, rounds: 2, queryBudget: 6, queriesAttempted: 4,
+      searchCallsAttempted: 4, stopReason: "coverage_sufficient",
+    } } });
+    expect(planSupplemental).toHaveBeenCalledTimes(1);
+    expect(planSupplemental.mock.calls[0]![0]).toMatchObject({
+      executed_queries: questions.flatMap(question => question.searchQueries), remaining_query_budget: 3,
+    });
+    expect(planSupplemental.mock.calls[0]![0].gaps).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "evidence_count" })]));
+    expect(research.researchOne).toHaveBeenCalledTimes(3);
+    expect(research.researchOne.mock.calls.reduce((sum, [call]) => sum + call.request.searchQueries.length, 0)).toBe(4);
+    expect(generate).toHaveBeenCalledTimes(1);
+    const context = (generate.mock.calls[0]![0] as RoadmapperInput).context;
+    expect(context.routeCandidates).toHaveLength(3);
+    expect(context.routeCandidates!.every(route => route.evidenceIds.every(id => context.evidence.some(card => card.id === id)))).toBe(true);
+    expect(await fixture.repository.getBaselineProposals(fixture.projectId)).toHaveLength(1);
+    expect(await fixture.repository.getPlan(fixture.projectId)).toEqual(before);
+    expect(await fixture.repository.getHistory(fixture.projectId)).toHaveLength(0);
+  });
+
+  it("rejects a supplemental query that repeats initial research without more searches or model calls", async () => {
+    const research = readyResearch(2), generate = vi.fn();
+    const planSupplemental = vi.fn<M2Provider["planSupplemental"]>(async supplement => ({
+      status: "ready_for_review", questions: [{ question: "重复检索", rationale: "不应执行重复查询", searchQueries: [questions[0]!.searchQueries[0]!] }],
+      stopReason: null, gaps: supplement.gaps, plannerCallsAttempted: 1,
+    }));
+    const fixture = await setup({ ...research, planSupplemental }, { generate });
+    const before = await fixture.repository.getPlan(fixture.projectId);
+    const response = await fetch(`${fixture.origin}/api/projects/${fixture.projectId}/research/live/baseline`, { method: "POST" });
+    expect(response.status).toBe(422);
+    expect(await response.json()).toMatchObject({ code: "invalid_queries" });
+    expect(planSupplemental).toHaveBeenCalledTimes(1);
+    expect(research.researchOne).toHaveBeenCalledTimes(2);
+    expect(generate).not.toHaveBeenCalled();
+    expect(await fixture.repository.getBaselineProposals(fixture.projectId)).toHaveLength(0);
+    expect(await fixture.repository.getPlan(fixture.projectId)).toEqual(before);
+    expect(await fixture.repository.getHistory(fixture.projectId)).toHaveLength(0);
+  });
+
+  it("stops after a partial upstream result without supplementing or generating a baseline", async () => {
+    const research = readyResearch(), generate = vi.fn(), planSupplemental = vi.fn();
+    research.researchOne.mockImplementationOnce(async ({ request }) => ({
+      ...researchResult(request), status: "partial", issues: [{ code: "rate_or_quota_limit", stage: "search", queryIndex: 1 }],
+    }));
+    const fixture = await setup({ ...research, planSupplemental }, { generate });
+    const before = await fixture.repository.getPlan(fixture.projectId);
+    const response = await fetch(`${fixture.origin}/api/projects/${fixture.projectId}/research/live/baseline`, { method: "POST" });
+    expect(response.status).toBe(502);
+    expect(await response.json()).toMatchObject({ code: "partial_research" });
+    expect(research.researchOne).toHaveBeenCalledTimes(1);
+    expect(planSupplemental).not.toHaveBeenCalled();
+    expect(generate).not.toHaveBeenCalled();
+    expect(await fixture.repository.getBaselineProposals(fixture.projectId)).toHaveLength(0);
+    expect(await fixture.repository.getPlan(fixture.projectId)).toEqual(before);
+    expect(await fixture.repository.getHistory(fixture.projectId)).toHaveLength(0);
+  });
+
+  it("stops after an upstream failure without retrying, supplementing, or changing the plan", async () => {
+    const research = readyResearch(), generate = vi.fn(), planSupplemental = vi.fn();
+    const failure = new ZhihuProviderError("process_failed");
+    failure.upstreamCode = "rate_or_quota_limit";
+    research.researchOne.mockRejectedValueOnce(failure);
+    const fixture = await setup({ ...research, planSupplemental }, { generate });
+    const before = await fixture.repository.getPlan(fixture.projectId);
+    const response = await fetch(`${fixture.origin}/api/projects/${fixture.projectId}/research/live/baseline`, { method: "POST" });
+    expect(response.status).toBe(502);
+    expect(await response.json()).toMatchObject({ error: expect.stringContaining("限流或额度不足") });
+    const diagnostic = JSON.parse(await readFile(join(fixture.root, fixture.projectId, ".plan", "research-failure.json"), "utf8"));
+    expect(diagnostic).toMatchObject({ code: "process_failed", controller: { stopReason: "rate_or_quota_limit" } });
+    expect(research.researchOne).toHaveBeenCalledTimes(1);
+    expect(planSupplemental).not.toHaveBeenCalled();
+    expect(generate).not.toHaveBeenCalled();
+    expect(await fixture.repository.getBaselineProposals(fixture.projectId)).toHaveLength(0);
+    expect(await fixture.repository.getPlan(fixture.projectId)).toEqual(before);
+    expect(await fixture.repository.getHistory(fixture.projectId)).toHaveLength(0);
   });
 
   it("does not run searches or create a proposal when the Planner needs clarification", async () => {
@@ -108,12 +233,39 @@ describe("live research Baseline orchestration", () => {
     expect((await fetch(endpoint, { method: "POST" })).status).toBe(202);
   });
 
-  it("reports model failure without falling back to a rules or Mock proposal", async () => {
-    const fixture = await setup(readyResearch(), { generate: async () => { throw new RoadmapperProviderError("timeout"); } });
+  it("keeps replayable research after model failure without a rules or Mock proposal", async () => {
+    const snapshotsAtModel: string[] = [];
+    const fixture = await setup(readyResearch(), { generate: async () => {
+      snapshotsAtModel.push(...await readdir(join(fixture.root, fixture.projectId, ".plan", "research-snapshots")));
+      throw new RoadmapperProviderError("timeout");
+    } });
+    const before = await fixture.repository.getPlan(fixture.projectId);
     const response = await fetch(`${fixture.origin}/api/projects/${fixture.projectId}/research/live/baseline`, { method: "POST" });
     expect(response.status).toBe(504);
     expect(await fixture.repository.getBaselineProposals(fixture.projectId)).toHaveLength(0);
-    expect((await fixture.repository.getPlan(fixture.projectId)).version).toBe(1);
+    expect(await fixture.repository.getPlan(fixture.projectId)).toEqual(before);
+    expect(await fixture.repository.getHistory(fixture.projectId)).toHaveLength(0);
+    const directory = join(fixture.root, fixture.projectId, ".plan", "research-snapshots");
+    const snapshots = await readdir(directory);
+    expect(snapshots).toHaveLength(1);
+    expect(snapshotsAtModel).toEqual(snapshots);
+    const path = join(directory, snapshots[0]!);
+    if (process.platform !== "win32") expect((await stat(path)).mode & 0o777).toBe(0o600);
+    const snapshot = JSON.parse(await readFile(path, "utf8"));
+    expect(snapshot.plan).toEqual(before);
+    expect(snapshot.research).toMatchObject({ questions, controller: {
+      coverage: { status: "sufficient", evidenceCount: 6 }, stopReason: "coverage_sufficient",
+    } });
+    expect(snapshots[0]).toBe(`${snapshot.research.runId}.json`);
+    expect(snapshot.research.requests).toHaveLength(2);
+    expect(snapshot.research.evidencePacks).toHaveLength(2);
+    expect(snapshot.research.evidencePacks.flatMap((pack: { evidence: EvidenceCard[] }) => pack.evidence)).toHaveLength(6);
+    // Exercise the actual HTTP-saved shape, not only the standalone synthetic fixture.
+    const replay = await executeM3Replay(snapshot, { live: false });
+    expect(replay.report).toMatchObject({ status: "structural_pass", evidenceCount: 6, routeCount: 2,
+      calls: { zhihu: 0, roadmapper: 0, offlineFixture: 1 }, formalPlanWritten: false, historyWritten: false });
+    expect(await fixture.repository.getBaselineProposals(fixture.projectId)).toHaveLength(0);
+    expect(await fixture.repository.getPlan(fixture.projectId)).toEqual(before);
   });
 
   it("rejects a draft if the user edits the plan during model generation", async () => {
@@ -174,7 +326,7 @@ describe("live research Baseline orchestration", () => {
   });
 });
 
-async function setup(provider: ZhihuProvider, roadmapperProvider: RoadmapperProvider = { generate: async input => roadmapperDraftFixture(input as RoadmapperInput) }) {
+async function setup(provider: ZhihuProvider & Partial<Pick<M2Provider, "planSupplemental">>, roadmapperProvider: RoadmapperProvider = { generate: async input => roadmapperDraftFixture(input as RoadmapperInput) }) {
   const root = await mkdtemp(join(tmpdir(), "zhilu-live-baseline-"));
   const repository = new PlanRepository(root, resolve("examples/agent-engineer/plan-state.json"));
   const plan = createResearchReadyPlan(input, `project-${crypto.randomUUID().slice(0, 8)}`, "2026-09-12T08:00:00.000Z");
@@ -185,17 +337,26 @@ async function setup(provider: ZhihuProvider, roadmapperProvider: RoadmapperProv
     await new Promise<void>((done) => server.close(() => done()));
     await rm(root, { recursive: true, force: true });
   });
-  return { repository, projectId: plan.projectId, origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
+  return { root, repository, projectId: plan.projectId, origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
 }
 
-function readyResearch() {
+function readyResearch(evidenceCount = 3) {
   return {
     planForBaseline: vi.fn(async () => ({ status: "ready_for_review" as const, questions, clarificationQuestions: [] })),
-    researchOne: vi.fn(async ({ request }: Parameters<ZhihuProvider["researchOne"]>[0]) => ({
-      runId: `run-${request.id}`, status: "ok" as const,
-      pack: { requestId: request.id, evidence: [evidence(`e-${request.id}`, request.question)], routeCandidates: [], unresolvedQuestions: [] },
-      issues: [], metrics: { search_calls_attempted: 1, compiler_calls_attempted: 1, candidate_count: 1, evidence_count: 1 },
-    })),
+    researchOne: vi.fn(async ({ request }: Parameters<ZhihuProvider["researchOne"]>[0]) => researchResult(request, evidenceCount)),
+  };
+}
+
+function researchResult(request: ResearchRequest, evidenceCount = 3): ResearchProviderResult {
+  const cards = Array.from({ length: evidenceCount }, (_, index) => evidence(`e-${request.id}-${index + 1}`, `${request.question}：实践建议 ${index + 1}`));
+  return {
+    runId: `run-${request.id}`, status: "ok",
+    pack: {
+      requestId: request.id, evidence: cards,
+      routeCandidates: [{ id: `route-${request.id}`, title: "先做最小项目验证", summary: "根据实际反馈逐步扩展项目范围。", applicableWhen: ["会 Python 且只能使用业余时间"], evidenceIds: cards.map(card => card.id), risks: ["复杂集成可能超过每周 10 小时预算"] }],
+      unresolvedQuestions: [],
+    },
+    issues: [], metrics: { search_calls_attempted: request.searchQueries.length, compiler_calls_attempted: 1, candidate_count: evidenceCount, evidence_count: evidenceCount },
   };
 }
 
@@ -209,10 +370,11 @@ function evidence(id: string, title: string): EvidenceCard {
     verificationStatus: "unverified",
     sourceTitle: `知乎回答 ${id}`,
     sourceUrl: `https://www.zhihu.com/question/1/answer/${encodeURIComponent(id)}`,
-    supportingQuote: "先完成一次实践，再根据结果调整。",
-    applicableWhen: ["需要用实践验证路线时"],
-    caveats: ["来自单篇知乎经验"],
-    riskTags: ["not_independently_verified"],
+    author: `作者-${id}`,
+    supportingQuote: `${title}，先完成一次实践，再根据结果调整。`,
+    applicableWhen: ["会 Python、只能使用业余时间，每周可投入 10 小时"],
+    caveats: ["外部集成调试可能超过业余时间预算，应先验证最小可运行范围"],
+    riskTags: ["search_snippet_only", "not_independently_verified", "semantic_support_not_checked"],
     adoptionReason: "用于生成真实研究路线草案",
   };
 }

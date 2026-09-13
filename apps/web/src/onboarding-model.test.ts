@@ -1,28 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { adaptiveQuestionFor, createProjectInput, type InterviewAnswers } from "./onboarding-model";
+import { readFlowPage, resolveFlowPage } from "./onboarding-model";
 
-const answers: InterviewAnswers = {
-  goal: "完成一个 Agent 项目",
-  successCriterion: "公开 Demo；包含评测结果",
-  targetDate: "2026-12-20",
-  currentSituation: "会 TypeScript",
-  weeklyHours: 8,
-  constraints: "预算有限\n中文资料优先",
-  adaptiveAnswer: "优先保证可验证性",
-  backgroundNotes: "已有后端项目经验",
-};
-
-describe("adaptive onboarding", () => {
-  it("asks a tighter tradeoff question when weekly time is scarce", () => {
-    expect(adaptiveQuestionFor({ weeklyHours: 4, targetDate: "2026-12-20" }, "2026-09-11")).toContain("最不能放弃");
-    expect(adaptiveQuestionFor({ weeklyHours: 10, targetDate: "2026-10-20" }, "2026-09-11")).toContain("期限比较紧");
+describe("separate interview, plan and roadmap pages", () => {
+  it("starts new visitors in the interview and restores explicit page URLs", () => {
+    expect(readFlowPage("")).toBe("interview");
+    expect(readFlowPage("?project=p&page=interview")).toBe("interview");
+    expect(readFlowPage("?project=p&page=plan")).toBe("plan");
+    expect(readFlowPage("?project=p&page=roadmap")).toBe("roadmap");
+    expect(readFlowPage("?project=p")).toBe("roadmap");
   });
-
-  it("turns editable answers into two confirmed cards", () => {
-    const input = createProjectInput(answers, "发生冲突时优先什么？");
-    expect(input.userContext.constraints).toEqual(["预算有限", "中文资料优先"]);
-    expect(input.goalContract.successCriteria).toEqual(["公开 Demo", "包含评测结果"]);
-    expect(input.userContext.backgroundNotes).toBe("已有后端项目经验");
-    expect(input.goalContract.confirmed).toBe(true);
+  it("guards the roadmap until the pending plan is confirmed, including browser back and direct links", () => {
+    expect(resolveFlowPage("roadmap", true)).toBe("plan");
+    expect(resolveFlowPage("roadmap", false)).toBe("roadmap");
+    expect(resolveFlowPage("interview", true)).toBe("interview");
+    expect(resolveFlowPage("plan", true)).toBe("plan");
   });
 });

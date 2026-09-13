@@ -58,8 +58,35 @@ def test_initial_accepts_two_or_three_total_queries_without_padding(counts, mode
 @pytest.mark.parametrize("counts", [(1,), (2, 2), (2, 2, 2)])
 def test_initial_rejects_query_total_outside_budget_without_retry(counts, model):
     model["response"] = proposal(counts)
+    frozen = qp.build_planner_input(GOAL, CONTEXT, planning_profile=qp.INITIAL_PROFILE)
     with pytest.raises(qp.PlannerValidationError, match="2..3"):
-        qp.plan_research(GOAL, CONTEXT, planning_profile="m2-initial")
+        qp.validate_plan_response(model["response"], frozen)
+    assert len(model["calls"]) == 0
+
+
+@pytest.mark.parametrize("counts,expected", [((2, 2), (2, 1)), ((2, 2, 2), (1, 1, 1)),
+                                           ((1, 2, 1), (1, 1, 1)), ((2, 1, 2), (1, 1, 1))])
+def test_initial_allocates_budget_without_losing_questions_or_retrying(counts, expected, model):
+    model["response"] = proposal(counts)
+    original = copy.deepcopy(model["response"])
+    result = qp.plan_research(GOAL, CONTEXT, planning_profile=qp.INITIAL_PROFILE)
+    assert tuple(len(q["queries"]) for q in result["research_questions"]) == expected
+    assert result["planned_query_count"] == 3
+    assert result["query_selection"]["proposed_query_count"] == sum(counts)
+    deferred = [item["query"] for item in result["query_selection"]["deferred_queries"]]
+    selected = [query for q in result["research_questions"] for query in q["queries"]]
+    assert sorted(selected + deferred) == sorted(query for q in original["research_questions"] for query in q["queries"])
+    assert result["queries_executed"] is False
+    assert model["response"] == original
+    assert len(model["calls"]) == 1
+
+
+@pytest.mark.parametrize("bad_query", ["https://example.com", "小木桌 结构条件1 检验方法1"])
+def test_initial_validates_even_candidates_that_would_be_deferred(bad_query, model):
+    model["response"] = proposal((2, 2))
+    model["response"]["research_questions"][1]["queries"][1] = bad_query
+    with pytest.raises(qp.PlannerValidationError):
+        qp.plan_research(GOAL, CONTEXT, planning_profile=qp.INITIAL_PROFILE)
     assert len(model["calls"]) == 1
 
 
@@ -85,6 +112,19 @@ def test_initial_rejects_incompatible_caller_limit_before_model(model):
     with pytest.raises(ValueError):
         qp.plan_research(GOAL, CONTEXT, planning_profile="m2-initial", max_questions=1, queries_per_question=1)
     assert not model["calls"]
+
+
+@pytest.mark.parametrize("questions,per_question,budget", [(3, 2, 3), (1, 2, 2), (2, 1, 2)])
+def test_initial_wire_budget_and_example_match_validator(questions, per_question, budget):
+    frozen = qp.build_planner_input(GOAL, CONTEXT, planning_profile=qp.INITIAL_PROFILE,
+                                    max_questions=questions, queries_per_question=per_question)
+    system, user = qp.build_planner_prompts(frozen, retrieval_profile="batch-v1")
+    assert json.loads(user)["max_total_queries"] == budget
+    assert "[2,2]合计4条，属于无效输出" in system
+    example = json.JSONDecoder().raw_decode(system[system.index('{"status":"ok"'):])[0]
+    # The example uses two queries under the standard production limits.
+    standard = qp.build_planner_input(GOAL, CONTEXT, planning_profile=qp.INITIAL_PROFILE)
+    assert qp.validate_plan_response(example, standard)["planned_query_count"] == 2
 
 
 def supplemental(**kwargs):

@@ -49,6 +49,28 @@ describe("Python provider transport", () => {
   it("times out and cleans the process", async () => {
     await expect(provider("hang", { timeoutMs: 100 }).researchOne(input)).rejects.toMatchObject({ code: "timeout" });
   });
+  it("rejects an already aborted Controller call before spawning a process", async () => {
+    let calls = 0;
+    const p = createZhihuProvider(config, { spawn: () => { calls++; throw new Error("must not spawn"); } });
+    const signal = AbortSignal.abort();
+    await expect(p.researchOne(input, { signal })).rejects.toMatchObject({ code: "timeout" });
+    await expect(p.planForBaseline({ goal: input.goal, user_context: {} }, { signal })).rejects.toMatchObject({ code: "timeout" });
+    await expect(p.planSupplemental({ goal: input.goal, user_context: {}, gaps: [], executed_queries: [], remaining_query_budget: 3 }, { signal }))
+      .rejects.toMatchObject({ code: "timeout" });
+    expect(calls).toBe(0);
+  });
+  it("kills a running process when the Controller deadline aborts it", async () => {
+    let childPid = 0;
+    const controller = new AbortController();
+    const p = createZhihuProvider(config, { spawn: (_exe, _args, options) => {
+      const child = spawn(process.execPath, [fixture, "hang"], options);
+      childPid = child.pid!;
+      queueMicrotask(() => controller.abort());
+      return child;
+    } });
+    await expect(p.researchOne(input, { signal: controller.signal })).rejects.toMatchObject({ code: "timeout" });
+    expect(() => process.kill(childPid, 0)).toThrow();
+  });
   it("recognizes a Python deadline failure as timeout after validating its envelope", async () => {
     await expect(provider("research-timeout").researchOne(input)).rejects.toMatchObject({ code: "timeout" });
     await expect(provider("bad-failure").researchOne(input)).rejects.toMatchObject({ code: "invalid_response" });

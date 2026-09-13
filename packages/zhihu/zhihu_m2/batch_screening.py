@@ -11,6 +11,8 @@ import os
 import sys
 from collections import Counter
 from dataclasses import fields
+from pathlib import Path
+from uuid import uuid4
 from typing import Any
 
 from zhihu_m2 import evidence_compiler, llm_client
@@ -51,6 +53,11 @@ relevance=unrelated、applicability=inapplicable 或 support=none 时必须 no_e
 每卡只有 source_id、supporting_quote、claim、claim_type、applies_when、caveats。
 source_id 原样复制。supporting_quote 必须是该元素 snippet 中连续逐字的8–400字符；
 保留原始空格、CRLF、emoji、标点，不能拼接、翻译、补省略号或只引标题。
+优先只摘取一条8–120字符的连续短句。不要把开头的介绍与后面的步骤、代码或结论拼在一起。
+不要为了让句子独立而把“这是”替换成项目名称；主语补充只能写在claim，不能修改引文。
+示例：snippet为“先运行程序。\\n记录每次输出，再比较预期结果。”时，可以原样引用
+“记录每次输出，再比较预期结果。”；不能改成“运行程序，记录输出并比较结果”。
+输出前逐项确认supporting_quote整体在对应snippet中连续出现；无法直接复制时返回no_evidence。
 先选择回答问题的原文，再概括单条归因主张。claim 保留作者、否定、条件与时间。
 claim_type 为 advice/experience/opinion/factual_claim。第一人称宣传不自动是 experience。
 方法题需要动作或判据，不以教程章节数凑证据；资源题允许有依据的资源名称与范围。
@@ -223,6 +230,7 @@ def _research_candidates(value, evidence_by_candidate):
 
 def compile_batch(candidates: list[dict], *, goal: str, user_context: dict,
                   research_question: str, retrieved_at: str | None = None,
+                  diagnostic_dir: Path | None = None,
                   diagnostics: list[dict] | None = None) -> dict[str, Any]:
     """Classify/compile at most 24 original variants in exactly one model attempt.
 
@@ -230,13 +238,60 @@ def compile_batch(candidates: list[dict], *, goal: str, user_context: dict,
     or missing items create bounded issues; an entirely invalid batch raises.
     Legitimate no_evidence outputs preserve the original model reason. Optional
     hypothesis groups require validated evidence references and human review.
-    Reject an invalid group as a whole without discarding independent evidence.
     """
     prepared, prompt = _prepare(candidates, goal=goal, user_context=user_context,
                                 research_question=research_question, retrieved_at=retrieved_at)
-    payload = llm_client.generate_json(system_prompt=SYSTEM_PROMPT, user_prompt=prompt,
-                                       max_tokens=12000)
+    root = os.environ.get('ZHIHU_BATCH_DIAGNOSTIC_DIR')
+    folder = diagnostic_dir or (Path(root) / ('batch-' + uuid4().hex) if root else None)
+    report = {'status': 'failed', 'stage': 'model', 'model_calls_attempted': 0,
+              'search_calls_attempted': 0}
+    if folder is not None:
+        folder.mkdir(parents=True, exist_ok=False, mode=0o700)
+        _write_diagnostic(folder / 'input.json', dict(candidates=candidates, goal=goal,
+            user_context=user_context, research_question=research_question, retrieved_at=retrieved_at))
+        _write_diagnostic(folder / 'report.json', report)
+    try:
+        report['model_calls_attempted'] = 1
+        if folder is not None:
+            _write_diagnostic(folder / 'report.json', report)
+        payload = llm_client.generate_json(system_prompt=SYSTEM_PROMPT, user_prompt=prompt,
+                                           max_tokens=12000)
+        if folder is not None:
+            _write_diagnostic(folder / 'model_response.json', payload)
+        result = _validate_batch_payload(payload, prepared, report, diagnostics)
+        report.update(status='partial' if result['issues'] else 'passed', stage='finished', evidence_count=sum(
+            len(item['evidence_cards']) for item in result['compilerOutputs']))
+        if folder is not None:
+            _write_diagnostic(folder / 'validated.json', result)
+        return result
+    except Exception as error:
+        report['error_type'] = type(error).__name__
+        if isinstance(error, llm_client.LLMError):
+            report['error_code'] = ('model_output_incomplete' if str(error) ==
+                "DeepSeek finish_reason was not 'stop'; output rejected." else 'model_transport_or_json')
+        raise
+    finally:
+        if folder is not None:
+            _write_diagnostic(folder / 'report.json', report)
 
+
+def _write_diagnostic(path: Path, value: Any) -> None:
+    # Opt-in local artifacts may contain user context and source snippets.
+    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), 'w', encoding='utf-8') as stream:
+        json.dump(value, stream, ensure_ascii=False, indent=2, allow_nan=False)
+
+
+def validate_batch_response(payload: Any, candidates: list[dict], *, goal: str,
+                            user_context: dict, research_question: str,
+                            retrieved_at: str | None = None, diagnostic: dict | None = None) -> dict:
+    """Replay exactly the production validation without any model or search call."""
+    prepared, _ = _prepare(candidates, goal=goal, user_context=user_context,
+                            research_question=research_question, retrieved_at=retrieved_at)
+    return _validate_batch_payload(payload, prepared, diagnostic if diagnostic is not None else {})
+
+
+def _validate_batch_payload(payload, prepared, diagnostic, diagnostics=None):
+    diagnostic['stage'] = 'batch_envelope'
     _debug(
         'model_returned',
         diagnostics=diagnostics,
@@ -285,6 +340,8 @@ def compile_batch(candidates: list[dict], *, goal: str, user_context: dict,
                          if isinstance(item, dict) and type(item.get('candidate_index')) is int
                          and 0 <= item['candidate_index'] < len(prepared)}
     outputs, assessments, issues = [], [], []
+    diagnostic['stage'] = 'items'
+    diagnostic['item_errors'] = []
     if len(indices) != len(payload['items']):
         issues.append({'code': 'batch_item_invalid'})
     evidence_by_candidate = {}
@@ -306,6 +363,9 @@ def compile_batch(candidates: list[dict], *, goal: str, user_context: dict,
             if excluded and compiled['status'] != 'no_evidence':
                 raise ValueError
         except (ValueError, TypeError, KeyError, UnicodeError) as error:
+            diagnostic['item_errors'].append({'candidate_index': index,
+                'reason': str(error) if isinstance(error, evidence_compiler.EvidenceValidationError)
+                else 'Invalid item fields, labels or exclusion consistency.'})
             _debug(
                 'item_invalid',
                 diagnostics=diagnostics,
@@ -358,6 +418,8 @@ def compile_batch(candidates: list[dict], *, goal: str, user_context: dict,
         )
         _invalid()
 
+    diagnostic['valid_item_count'] = len(outputs)
+    diagnostic['stage'] = 'card_conflicts'
     try:
         _check_card_conflicts(outputs)
     except BatchValidationError:
@@ -368,6 +430,7 @@ def compile_batch(candidates: list[dict], *, goal: str, user_context: dict,
         )
         raise
 
+    diagnostic['stage'] = 'research_candidates'
     proposed_groups = payload.get('researchCandidates', [])
     groups, group_ids = [], set()
     if not isinstance(proposed_groups, list) or len(proposed_groups) > 8:
@@ -399,6 +462,7 @@ def compile_batch(candidates: list[dict], *, goal: str, user_context: dict,
                    group_count=len(proposed_groups), valid_group_count=len(groups),
                    invalid_group_count=len(proposed_groups) - len(groups))
 
+    diagnostic['issues'] = copy.deepcopy(issues)
     return {
         'compilerOutputs': outputs,
         'assessments': assessments,

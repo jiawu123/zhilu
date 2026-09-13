@@ -1,13 +1,15 @@
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { BaselineProposal, PatchProposal, PlanCommit, PlanEvent, PlanState } from "@zhilu/contracts";
+import type { BaselineProposal, EventProcessingRecord, InterviewSession, PatchProposal, PlanCommit, PlanEvent, PlanState } from "@zhilu/contracts";
 import { createCommit } from "@zhilu/plan-engine";
+import type { LiveResearchInput } from "@zhilu/agent-runtime";
 
 export interface PendingChange {
   event: PlanEvent;
   patch: PatchProposal;
   impact: import("@zhilu/contracts").ImpactDiff;
   afterPreview: PlanState;
+  processing?: EventProcessingRecord;
 }
 
 export class PlanRepository {
@@ -15,6 +17,15 @@ export class PlanRepository {
     private readonly dataRoot: string,
     private readonly fixturePath: string,
   ) {}
+
+  async saveInterview(session: InterviewSession): Promise<void> {
+    await writeJsonAtomic(join(this.dataRoot, "interviews", `${session.id}.json`), session);
+  }
+
+  async getInterview(id: string): Promise<InterviewSession> {
+    if (!/^interview-[a-f0-9-]{36}$/.test(id)) throw new Error("Invalid interview identifier.");
+    return JSON.parse(await readFile(join(this.dataRoot, "interviews", `${id}.json`), "utf8")) as InterviewSession;
+  }
 
   /** Read only: live research must never initialize the demo or write commits. */
   async getExistingPlan(projectId: string): Promise<PlanState> {
@@ -87,6 +98,11 @@ export class PlanRepository {
     await writeJsonAtomic(join(this.projectRoot(projectId), "baseline-proposals", `${proposal.id}.json`), proposal);
   }
 
+  async replaceBaselineProposal(projectId: string, previousId: string, proposal: BaselineProposal): Promise<void> {
+    await this.saveBaselineProposal(projectId, proposal);
+    await this.removeBaselineProposal(projectId, previousId);
+  }
+
   async getBaselineProposals(projectId: string): Promise<BaselineProposal[]> {
     const directory = join(this.projectRoot(projectId), "baseline-proposals");
     try {
@@ -102,6 +118,24 @@ export class PlanRepository {
 
   async removeBaselineProposal(projectId: string, proposalId: string): Promise<void> {
     await rm(join(this.projectRoot(projectId), "baseline-proposals", `${proposalId}.json`), { force: true });
+  }
+
+  /** Private, immutable M3 input; never changes Plan or History and is not exported. */
+  async saveResearchSnapshot(plan: PlanState, research: LiveResearchInput): Promise<void> {
+    if (![plan.projectId, research.runId].every(id => /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(id))) {
+      throw new Error("Invalid research snapshot identifier.");
+    }
+    const body = `${JSON.stringify({ plan, research }, null, 2)}\n`;
+    if (Buffer.byteLength(body, "utf8") > 2 * 1024 * 1024) throw new Error("Research snapshot exceeds size limit.");
+    const directory = join(this.projectRoot(plan.projectId), "research-snapshots");
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    await writeFile(join(directory, `${research.runId}.json`), body, { encoding: "utf8", flag: "wx", mode: 0o600 });
+  }
+
+  async saveResearchFailure(projectId: string, failure: {
+    occurredAt: string; code: string; message: string; controller: import("@zhilu/contracts").ResearchControllerReport;
+  }): Promise<void> {
+    await writeJsonAtomic(join(this.projectRoot(projectId), "research-failure.json"), failure);
   }
 
   private planPath(projectId: string): string {

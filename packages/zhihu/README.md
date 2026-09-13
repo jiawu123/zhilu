@@ -21,6 +21,14 @@ node .\node_modules\tsx\dist\cli.mjs .\apps\server\scripts\research_zhihu.ts --q
 
 生产默认已更新为 `ZHIHU_RETRIEVAL_PROFILE=batch-v1`；Server Planner 默认 `m2-initial`，全轮总计 2–3 条查询。研究仅执行本次请求，用一次模型批量分级/编译替换固定权重与逐篇调用，继续重用原 compiler 校验和 TS adapter。新增覆盖报告、带引用的研究假设、本地缓存与显式补充规划；不生成或批准正式 Roadmap。
 
+首轮模型候选仍受最多 3 个问题、每题最多 2 条及格式/去重校验约束。仅候选总数超过 3 条时，程序为每题保留一条，再按问题顺序分配剩余名额；返回的 `query_selection` 记录暂不执行的查询，不自动补搜。最终输出仍须满足首轮 2–3 条预算。`test_m2_followup.ts --live` 会在本次输出目录保存 `planner-diagnostic.json`（含原始模型回答、选取记录或具体校验原因），摘要同时写入 `report.json`。诊断文件只留本地，不应提交；普通服务调用默认不保存，只有可信进程环境设置 `ZHIHU_PLANNER_DIAGNOSTIC_FILE` 时才写入指定文件。
+
+批量编译继续拒绝非原文连续逐字引文。若研究假设引用的候选未产生有效证据，丢弃整个假设并记录 issue，保留其他已验证的证据；不替换引用，也不重写假设摘要。研究流程返回 `partial`，不会将该结果写入成功缓存。越界引用、错误字段、证据 ID 冲突及整批无有效编译项仍会失败。
+
+真实验收会启用 `ZHIHU_BATCH_DIAGNOSTIC_DIR`，在 `batch-diagnostics/batch-…/` 下按次保存 `input.json`、`model_response.json`、`report.json` 和通过校验的结果；输入在模型调用前保存，文件权限为仅当前用户读写。模型传输或 JSON 解析失败时可能没有 `model_response.json`，具体失败类别见报告。诊断目录包含用户条件和来源片段，仅留本地，不提交 Git。报告中的批量调用数不包含采集这些来源的搜索调用，搜索次数以外层研究报告为准。
+
+在本包目录运行 `python -m zhihu_m2.replay_batch --input-dir <某次batch诊断目录>`，只重放本地校验，搜索和模型调用均为 0；加 `--call-model` 只使用已保存的原始输入调用一次模型，仍不搜索、不重跑 Planner。每次回放写入新的 `replay-…` 目录，不覆盖原记录。`partial` 表示恢复了部分证据，不能当作完整 M2 验收通过。
+
 完整接口、Jia 调用方式、预算、回退、真实配额阻塞记录见 [新分工实施与交接](../../docs/M2_FOLLOWUP_STATUS_2026-09-12.md)。现有 HTTP 接口保持不变且默认关闭。真实批量质量和来源分歧仍为 `needs_human_review`。
 
 ```powershell
@@ -1112,4 +1120,3 @@ PowerShell：
 8. 其他模块不需要理解知乎模块内部文件结构；
 9. 没有真实 API Key、Access Secret 或私人数据进入 Git；
 10. 知乎模块不直接修改正式 Plan 或创建计划 Commit。
-

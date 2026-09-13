@@ -5,6 +5,7 @@ import { strToU8, zipSync } from "fflate";
 import type {
   BaselineProposal,
   CreateProjectInput,
+  EventProcessingRecord,
   PatchProposal,
   PlanEvent,
   PlanNode,
@@ -13,8 +14,10 @@ import type {
 } from "@zhilu/contracts";
 import {
   ResearchRequestValidationError,
-  assembleResearchRequests,
   compileRoadmapperBaseline,
+  compileEventReplan,
+  prepareEventReplanInput,
+  EventReplanValidationError,
   prepareRoadmapperInput,
   validateRoadmapperPlan,
   RoadmapperValidationError,
@@ -38,6 +41,9 @@ import { buildM2Context, M2ContextError } from "./m2-context";
 import { BoundaryError, validateResearchInput } from "./zhihu-boundary";
 import { createZhihuProvider, readZhihuProviderConfig, ZhihuProviderError, type ZhihuProvider } from "./zhihu-provider";
 import { createRoadmapperProvider, readRoadmapperConfig, RoadmapperProviderError, type RoadmapperProvider } from "./roadmapper-provider";
+import { runResearchController, ResearchControllerError } from "./research-controller";
+import { acceptInterviewAnswers, generateInterviewBatch, InterviewError } from "./interview";
+import { reviseBaseline } from "./baseline-revision";
 
 const repoRoot = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const repository = new PlanRepository(
@@ -83,6 +89,65 @@ async function route(
 ): Promise<void> {
   const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
   const pathname = url.pathname;
+
+  if (request.method === "POST" && pathname === "/api/interviews") {
+    const input = await readBody<{ goal: string; backgroundNotes?: string }>(request);
+    if (typeof input?.goal !== "string" || !input.goal.trim() || input.goal.length > 2000) throw new HttpError(400, "请输入 1–2000 字的目标。");
+    if (input.backgroundNotes !== undefined && (typeof input.backgroundNotes !== "string" || input.backgroundNotes.length > 100000)) throw new HttpError(400, "背景材料最多 100,000 字符。");
+    live.roadmapper ??= createRoadmapperProvider(readRoadmapperConfig());
+    const session = await generateInterviewBatch({ id: `interview-${crypto.randomUUID()}`, goal: input.goal.trim(),
+      ...(input.backgroundNotes ? { backgroundNotes: input.backgroundNotes } : {}),
+      questions: [], answers: [], status: "asking" }, live.roadmapper, new Date().toISOString().slice(0, 10));
+    await planRepository.saveInterview(session);
+    sendJson(response, 201, session);
+    return;
+  }
+
+  const interviewMatch = pathname.match(/^\/api\/interviews\/(interview-[a-f0-9-]{36})(\/answers)?$/);
+  if (interviewMatch && (request.method === "GET" || request.method === "POST")) {
+    const id = interviewMatch[1]!;
+    if (live.busy.has(id)) throw new HttpError(409, "正在生成下一轮问题，请稍候。");
+    live.busy.add(id);
+    try {
+      let session;
+      try { session = await planRepository.getInterview(id); }
+      catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT") throw new HttpError(404, "访谈不存在，请重新开始。");
+        throw error;
+      }
+      if (request.method === "POST" && interviewMatch[2]) {
+        const input = await readBody<{ answers: unknown }>(request);
+        const answered = acceptInterviewAnswers(session, input?.answers);
+        live.roadmapper ??= createRoadmapperProvider(readRoadmapperConfig());
+        session = await generateInterviewBatch(answered, live.roadmapper, new Date().toISOString().slice(0, 10));
+        await planRepository.saveInterview(session);
+      } else if (request.method !== "GET" || interviewMatch[2]) throw new HttpError(404, "接口不存在。");
+      sendJson(response, 200, session);
+    } finally { live.busy.delete(id); }
+    return;
+  }
+
+  const reviseMatch = pathname.match(/^\/api\/projects\/([^/]+)\/baseline\/revise$/);
+  if (request.method === "POST" && reviseMatch) {
+    const { projectId, plan } = await existingLivePlan(planRepository, reviseMatch[1]!);
+    const input = await readBody<{ proposalId: string; routeId: string; message: string }>(request);
+    if (typeof input?.message !== "string" || !input.message.trim() || input.message.length > 2000) throw new HttpError(400, "调整意见须为 1–2000 字。");
+    if (live.busy.has(projectId)) throw new HttpError(409, "当前项目正在生成草稿，请稍候。");
+    live.busy.add(projectId);
+    try {
+      const proposal = (await planRepository.getBaselineProposals(projectId)).find(item => item.id === input.proposalId);
+      if (!proposal || proposal.baseVersion !== plan.version) throw new HttpError(409, "计划草稿已更新，请刷新后重试。");
+      if (proposal.researchRun.mode !== "live") throw new HttpError(400, "演示草稿不支持真实模型调整，请先生成知乎计划。");
+      if (!proposal.previews.some(item => item.routeId === input.routeId)) throw new HttpError(400, "请选择要调整的路线。");
+      live.roadmapper ??= createRoadmapperProvider(readRoadmapperConfig());
+      const next = await reviseBaseline(plan, proposal, input.routeId, input.message.trim(), live.roadmapper, new Date().toISOString());
+      if ((await planRepository.getExistingPlan(projectId)).version !== plan.version) throw new HttpError(409, "调整期间计划已修改，请刷新。");
+      // Rotate the public ID so a confirmation of the previous draft cannot apply this revision.
+      await planRepository.replaceBaselineProposal(projectId, proposal.id, next);
+      sendJson(response, 200, next);
+    } finally { live.busy.delete(projectId); }
+    return;
+  }
 
   const liveBaselineMatch = pathname.match(/^\/api\/projects\/([^/]+)\/research\/live\/baseline$/);
   if (request.method === "POST" && liveBaselineMatch) {
@@ -174,28 +239,32 @@ async function route(
   if (request.method === "POST" && baselineApplyMatch) {
     const projectId = decodeURIComponent(requiredMatch(baselineApplyMatch, 1));
     const { proposalId, routeId } = await readBody<{ proposalId: string; routeId: string }>(request);
-    const proposal = (await planRepository.getBaselineProposals(projectId)).find((item) => item.id === proposalId);
-    if (!proposal) throw new HttpError(404, `Baseline 提案不存在：${proposalId}`);
-    const plan = await planRepository.getPlan(projectId);
-    const now = new Date().toISOString();
-    const next = applyBaselineProposal(plan, proposal, routeId, now);
-    const route = proposal.researchRun.routeCandidates.find((item) => item.id === routeId);
-    const commit = createCommit(plan, next, {
-      id: next.currentCommitId,
-      createdAt: now,
-      actor: "user",
-      reason: `用户确认${proposal.researchRun.mode === "live" ? "知乎研究" : " Mock Research"}路线：${route?.title ?? routeId}`,
-    });
-    await planRepository.savePlan(next);
-    await planRepository.saveCommit(projectId, commit);
-    await planRepository.removeBaselineProposal(projectId, proposal.id);
-    sendJson(response, 200, {
-      plan: next,
-      view: projectView(next),
-      history: await planRepository.getHistory(projectId),
-      pending: await planRepository.getPending(projectId),
-      baselineProposals: [],
-    });
+    if (live.busy.has(projectId)) throw new HttpError(409, "计划正在调整，请查看最新草稿后再确认。");
+    live.busy.add(projectId);
+    try {
+      const proposal = (await planRepository.getBaselineProposals(projectId)).find((item) => item.id === proposalId);
+      if (!proposal) throw new HttpError(404, `Baseline 提案不存在：${proposalId}`);
+      const plan = await planRepository.getPlan(projectId);
+      const now = new Date().toISOString();
+      const next = applyBaselineProposal(plan, proposal, routeId, now);
+      const route = proposal.researchRun.routeCandidates.find((item) => item.id === routeId);
+      const commit = createCommit(plan, next, {
+        id: next.currentCommitId,
+        createdAt: now,
+        actor: "user",
+        reason: `用户确认${proposal.researchRun.mode === "live" ? "知乎研究" : " Mock Research"}路线：${route?.title ?? routeId}`,
+      });
+      await planRepository.savePlan(next);
+      await planRepository.saveCommit(projectId, commit);
+      await planRepository.removeBaselineProposal(projectId, proposal.id);
+      sendJson(response, 200, {
+        plan: next,
+        view: projectView(next),
+        history: await planRepository.getHistory(projectId),
+        pending: await planRepository.getPending(projectId),
+        baselineProposals: [],
+      });
+    } finally { live.busy.delete(projectId); }
     return;
   }
 
@@ -325,8 +394,14 @@ async function route(
     const impact = calculateImpact(plan, event);
     const patch = proposeDeterministicPatch(plan, event, impact.tasksToRescheduleIds);
     const afterPreview = applyPatch(plan, patch, new Date().toISOString());
-    await planRepository.savePending(projectId, { event, patch, impact, afterPreview });
-    sendJson(response, 202, { event, workflow, impact, patch, before: plan, afterPreview });
+    const processing: EventProcessingRecord = {
+      mode: "deterministic", researchNeeded: workflow.shouldResearch, researchReason: workflow.reason,
+      usedEvidenceIds: [],
+      summary: event.type === "constraint_changed" ? "仅预览每周投入约束及调整原因，尚未重新安排任务日期。" : "仅按事件记录状态或调整原因，尚未生成模型调整方案。",
+      warnings: workflow.shouldResearch ? ["此事件需要补充研究，当前尚未执行检索。"] : [],
+    };
+    await planRepository.savePending(projectId, { event, patch, impact, afterPreview, processing });
+    sendJson(response, 202, { event, workflow, impact, patch, before: plan, afterPreview, processing });
     return;
   }
 
@@ -337,15 +412,22 @@ async function route(
     return;
   }
 
+  const replanMatch = pathname.match(/^\/api\/projects\/([^/]+)\/diff\/replan$/);
+  if (request.method === "POST" && replanMatch) {
+    await replanEvent(request, response, planRepository, requiredMatch(replanMatch, 1), live);
+    return;
+  }
+
   const applyMatch = pathname.match(/^\/api\/projects\/([^/]+)\/diff\/apply$/);
   if (request.method === "POST" && applyMatch) {
     const projectId = decodeURIComponent(requiredMatch(applyMatch, 1));
+    if (live.busy.has(projectId)) throw new HttpError(409, "当前项目正在生成提案，请等待完成后检查并确认。");
     const { patchId } = await readBody<{ patchId: string }>(request);
     const pending = (await planRepository.getPending(projectId)).find((item) => item.patch.id === patchId);
     if (!pending) throw new HttpError(404, `待确认 Patch 不存在：${patchId}`);
     if (!pending.event.confirmed) throw new HttpError(400, "Event 尚未确认");
     const plan = await planRepository.getPlan(projectId);
-    const next = await commitPatch(planRepository, plan, pending.patch, pending.patch.reason, pending.event.id);
+    const next = await commitPatch(planRepository, plan, pending.patch, pending.patch.reason, pending.event.id, pending.processing);
     await planRepository.removePending(projectId, pending.patch.id);
     sendJson(response, 200, { plan: next, view: projectView(next), appliedPatchId: patchId });
     return;
@@ -359,6 +441,7 @@ function proposeDeterministicPatch(plan: PlanState, event: PlanEvent, taskIds: s
   if (event.type === "constraint_changed" && event.changes?.weeklyHours !== undefined) {
     operations.push({ op: "set_weekly_hours", weeklyHours: event.changes.weeklyHours });
     for (const nodeId of taskIds) {
+      if (plan.nodes.find(node => node.id === nodeId)?.manualFields.includes("adjustmentReason")) continue;
       operations.push({
         op: "update_node",
         nodeId,
@@ -392,6 +475,7 @@ async function commitPatch(
   patch: PatchProposal,
   reason: string,
   eventId?: string,
+  processing?: EventProcessingRecord,
 ): Promise<PlanState> {
   const now = new Date().toISOString();
   const next = applyPatch(plan, patch, now);
@@ -403,9 +487,56 @@ async function commitPatch(
     reason,
     ...(eventId ? { eventId } : {}),
   });
+  if (processing) commit.processing = structuredClone(processing);
   await planRepository.savePlan(next);
   await planRepository.saveCommit(next.projectId, commit);
   return next;
+}
+
+async function replanEvent(
+  request: IncomingMessage,
+  response: ServerResponse,
+  repository: PlanRepository,
+  encodedProjectId: string,
+  live: LiveServices,
+): Promise<void> {
+  let lockedId: string | undefined;
+  try {
+    if (!live.enabled) throw new HttpError(503, "真实模型调用尚未启用；原规则预演保持不变。");
+    const { projectId, plan } = await existingLivePlan(repository, encodedProjectId);
+    const body = await readLiveBody(request);
+    if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length !== 1
+      || !("patchId" in body) || typeof body.patchId !== "string") throw new HttpError(400, "请求只能包含 patchId。");
+    const pending = (await repository.getPending(projectId)).find(item => item.patch.id === body.patchId);
+    if (!pending) throw new HttpError(404, "待确认提案不存在，请刷新后重试。");
+    if (pending.patch.baseVersion !== plan.version) throw new HttpError(409, "计划已变化，请基于当前版本重新提出事件。");
+    const impact = calculateImpact(plan, pending.event);
+    const input = prepareEventReplanInput(plan, pending.event, impact);
+    if (live.busy.has(projectId)) throw new HttpError(409, "当前项目已有研究或规划正在执行。");
+    live.busy.add(projectId); lockedId = projectId;
+    // 仅复用模型传输，时间变化不得初始化或调用 Zhihu Provider。
+    live.roadmapper ??= createRoadmapperProvider(readRoadmapperConfig());
+    const output = await live.roadmapper.generate(input);
+    const result = compileEventReplan(plan, pending.event, impact, input, output, {
+      patchId: uniqueId("replan"), runId: uniqueId("event-roadmapper"),
+    });
+    const afterPreview = applyPatch(plan, result.patch, new Date().toISOString());
+    const current = await repository.getExistingPlan(projectId);
+    if (current.version !== plan.version) throw new HttpError(409, "生成期间计划已变化，结果未保存；请重新提出事件。");
+    const proposal = { event: pending.event, impact, afterPreview, ...result };
+    await repository.savePending(projectId, proposal);
+    // 使用新提案 ID，防止旧页面未经查看就批准了新模型方案。
+    await repository.removePending(projectId, pending.patch.id);
+    sendJson(response, 202, { ...proposal, before: plan });
+  } catch (error) {
+    if (error instanceof HttpError) sendJson(response, error.status, { error: error.message });
+    else if (error instanceof EventReplanValidationError) sendJson(response, 422, { error: error.message, code: "invalid_replan" });
+    else if (error instanceof PlanEngineError) sendJson(response, 422, { error: error.message, issues: error.issues });
+    else if (error instanceof RoadmapperProviderError) sendJson(response, error.status, { error: error.message, code: error.code });
+    else sendJson(response, 502, { error: "局部排期未完成，未应用任何模型修改；请刷新检查待确认提案。" });
+  } finally {
+    if (lockedId !== undefined) live.busy.delete(lockedId);
+  }
 }
 
 async function liveBaseline(
@@ -429,35 +560,10 @@ async function liveBaseline(
     // 在检索产生调用成本之前确认 Roadmapper 配置可用。
     live.roadmapper ??= createRoadmapperProvider(readRoadmapperConfig());
 
-    const context = buildM2Context(plan);
-    const planning = await live.provider.planForBaseline(context);
-    if (planning.status === "needs_clarification") {
-      throw new HttpError(409, `研究前还需要确认：${planning.clarificationQuestions.join("；")}`);
-    }
-    const requests = assembleResearchRequests({
-      questions: planning.questions,
-      relevantUserConditions: [
-        plan.userContext!.currentSituation,
-        `每周可投入 ${plan.weeklyHours} 小时`,
-        ...plan.userContext!.constraints,
-      ],
-      evidenceLimitPerQuestion: 4,
-      idFactory: (index) => `rq-live-${index + 1}-${crypto.randomUUID().slice(0, 6)}`,
-    });
-    const results = [];
-    for (const researchRequest of requests) {
-      results.push(await live.provider.researchOne({ ...context, request: researchRequest }));
-    }
-    const now = new Date().toISOString();
-    const research = {
-      runId: uniqueId("research-live"),
-      proposalId: uniqueId("baseline-live"),
-      questions: planning.questions,
-      requests,
-      evidencePacks: results.map((result) => result.pack),
-      now,
-    };
+    const research = await runResearchController(plan, live.provider);
     const modelInput = prepareRoadmapperInput(plan, research, uniqueId("roadmapper"));
+    // A failed M3 can be retried offline/from a snapshot without paying for M2 again.
+    await repository.saveResearchSnapshot(plan, research);
     const modelOutput = await live.roadmapper.generate(modelInput);
     const proposal = compileRoadmapperBaseline(plan, research, modelInput, modelOutput);
     for (const preview of proposal.previews) {
@@ -472,6 +578,12 @@ async function liveBaseline(
     for (const stale of existing) await repository.removeBaselineProposal(projectId, stale.id);
     sendJson(response, 202, proposal);
   } catch (error) {
+    if (lockedId && error instanceof ResearchControllerError) {
+      try {
+        await repository.saveResearchFailure(lockedId, { occurredAt: new Date().toISOString(),
+          code: error.code, message: error.message, controller: error.report });
+      } catch { console.warn("研究失败诊断未能保存；原始错误仍返回前端。"); }
+    }
     sendLiveError(response, error);
   } finally {
     if (lockedId !== undefined) live.busy.delete(lockedId);
@@ -515,6 +627,10 @@ async function existingLivePlan(repository: PlanRepository, encodedProjectId: st
 
 function sendLiveError(response: ServerResponse, error: unknown): void {
   if (error instanceof HttpError) sendJson(response, error.status, { error: error.message });
+  else if (error instanceof ResearchControllerError) sendJson(response, error.status, {
+    error: error.message, code: error.code, controller: error.report,
+    ...(error.cleanupError ? { cleanupError: error.cleanupError } : {}),
+  });
   else if (error instanceof RoadmapperValidationError) sendJson(response, 422, { error: error.message, code: "invalid_roadmap" });
   else if (error instanceof RoadmapperProviderError) sendJson(response, error.status, { error: error.message, code: error.code });
   else if (error instanceof ResearchRequestValidationError) sendJson(response, 422, { error: error.message, issues: error.issues });
@@ -615,6 +731,14 @@ function setCors(response: ServerResponse): void {
 }
 
 function handleError(response: ServerResponse, error: unknown): void {
+  if (error instanceof InterviewError || error instanceof RoadmapperProviderError) {
+    sendJson(response, error.status, { error: error.message });
+    return;
+  }
+  if (error instanceof RoadmapperValidationError) {
+    sendJson(response, 422, { error: error.message });
+    return;
+  }
   if (error instanceof HttpError) {
     sendJson(response, error.status, { error: error.message });
     return;

@@ -1,7 +1,7 @@
 /** Explicit local M2 acceptance; default fixtures never contact a service. */
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
@@ -245,13 +245,31 @@ async function main(): Promise<void> {
     } };
     const cacheDir = resolve(outputDir, `cache-${randomUUID()}`);
     const env = { ZHIHU_RETRIEVAL_PROFILE: 'batch-v1', ZHIHU_SEARCH_LIMIT_PER_QUERY: '5',
+      ZHIHU_PLANNER_DIAGNOSTIC_FILE: resolve(outputDir, 'planner-diagnostic.json'),
+      ZHIHU_BATCH_DIAGNOSTIC_DIR: resolve(outputDir, 'batch-diagnostics'),
       ZHIHU_COMPILER_MAX_CALLS: '3', ZHIHU_RESEARCH_DEADLINE_SECONDS: '600',
       ZHIHU_EVIDENCE_CACHE_ENABLED: 'true', ZHIHU_EVIDENCE_CACHE_DIR: cacheDir,
       ZHIHU_EVIDENCE_CACHE_ONLY: 'false', PYTHON_DOTENV_DISABLED: '0' };
     const provider = createZhihuProvider({ ...config, env });
     const cachedProvider = createZhihuProvider({ ...config, env: { ...env, ZHIHU_EVIDENCE_CACHE_ONLY: 'true' } });
     const acceptance = await executeLiveAcceptance(provider, cachedProvider, context, save);
+    const diagnostic = await readFile(env.ZHIHU_PLANNER_DIAGNOSTIC_FILE, 'utf8')
+      .then(value => JSON.parse(value) as { status: string; validation_message?: string;
+        planned_query_count?: number; query_selection?: unknown })
+      .catch(error => { if (error.code === 'ENOENT') return undefined; throw error; });
+    const batchFolders = await readdir(env.ZHIHU_BATCH_DIAGNOSTIC_DIR, { withFileTypes: true })
+      .catch(error => { if (error.code === 'ENOENT') return []; throw error; });
+    const batchDiagnostics = await Promise.all(batchFolders.filter(entry => entry.isDirectory()).map(async entry => {
+      const path = resolve(env.ZHIHU_BATCH_DIAGNOSTIC_DIR, entry.name, 'report.json');
+      const summary = JSON.parse(await readFile(path, 'utf8'));
+      return { path, status: summary.status, stage: summary.stage, errorCode: summary.error_code,
+        errorType: summary.error_type, itemErrors: summary.item_errors, validItemCount: summary.valid_item_count };
+    }));
     const report = { ...base, ...acceptance, ok: acceptance.status !== 'failed',
+      batchDiagnostics,
+      ...(diagnostic ? { plannerDiagnostic: { status: diagnostic.status,
+        validationMessage: diagnostic.validation_message, plannedQueryCount: diagnostic.planned_query_count,
+        querySelection: diagnostic.query_selection } } : {}),
       finishedAt: new Date().toISOString(), durationMs: Math.round(performance.now() - started) };
     await save('report.json', report);
     console.log(JSON.stringify({ ...report, outputDir }, null, 2));

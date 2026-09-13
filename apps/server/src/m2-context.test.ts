@@ -8,9 +8,18 @@ describe("confirmed M2 context", () => {
     const before = structuredClone(plan);
     const context = buildM2Context(plan);
     expect(context.goal).toBe("完成 Agent 项目");
-    expect(context.user_context).toMatchObject({current_situation: "Python初学者", weekly_hours: 10,
+    expect(context.user_context).toMatchObject({current_situation: "Python初学者", weekly_hours: plan.weeklyHours,
       constraints: ["业余时间"], success_criteria: ["有基本测试"], background_notes: "已练习基础语法"});
     expect(plan).toEqual(before);
+  });
+  it("uses the current approved budget without rewriting historical interview context", () => {
+    const plan = confirmedPlan();
+    plan.version = 3;
+    plan.weeklyHours = 3;
+    expect(buildM2Context(plan).user_context.weekly_hours).toBe(3);
+    expect(plan.userContext!.weeklyHours).toBe(10);
+    plan.weeklyHours = NaN;
+    expect(() => buildM2Context(plan)).toThrow(M2ContextError);
   });
   it.each(["goal", "context"])("rejects unconfirmed %s", (field) => {
     const plan = confirmedPlan();

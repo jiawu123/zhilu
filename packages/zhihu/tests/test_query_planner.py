@@ -285,6 +285,58 @@ def test_failed_schema_saved_without_query_plan_and_without_retry(request_file, 
     assert len(fake_model["calls"]) == 1
 
 
+def test_initial_diagnostic_preserves_rejected_response_and_budget(request_file, tmp_path, fake_model):
+    fake_model["response"]["research_questions"][1]["queries"][1] = "https://example.com"
+    report = run(request_file, tmp_path, call_model=True, planning_profile=qp.INITIAL_PROFILE)
+    folder = Path(report["output_dir"])
+    assert report["status"] == "error"
+    assert report["validation_message"] == "Search queries must be keywords, not URLs."
+    assert report["max_total_queries"] == 3
+    assert read(folder / "model_response.json") == fake_model["response"]
+    assert read(folder / "planner_input.json")["planning_profile"] == qp.INITIAL_PROFILE
+    assert not (folder / "query_plan.json").exists()
+    assert len(fake_model["calls"]) == 1
+
+
+def test_production_diagnostic_saves_failed_output(tmp_path, fake_model, monkeypatch):
+    target = tmp_path / "planner-diagnostic.json"
+    monkeypatch.setenv("ZHIHU_PLANNER_DIAGNOSTIC_FILE", str(target))
+    fake_model["response"] = {"bad_schema": "invalid model data"}
+    with pytest.raises(qp.PlannerValidationError):
+        qp.plan_research(GOAL, CONTEXT, planning_profile=qp.INITIAL_PROFILE)
+    report = read(target)
+    assert report["status"] == "failed"
+    assert report["validation_message"] == "Model output has missing or extra top-level fields."
+    assert report["model_response"] == fake_model["response"]
+    assert len(fake_model["calls"]) == 1
+
+
+def test_production_diagnostic_records_deferred_queries(tmp_path, fake_model, monkeypatch):
+    target = tmp_path / "planner-diagnostic.json"
+    monkeypatch.setenv("ZHIHU_PLANNER_DIAGNOSTIC_FILE", str(target))
+    result = qp.plan_research(GOAL, CONTEXT, planning_profile=qp.INITIAL_PROFILE)
+    report = read(target)
+    assert report["status"] == "passed"
+    assert report["planned_query_count"] == 3
+    assert report["query_selection"] == result["query_selection"]
+    assert report["query_selection"]["proposed_query_count"] == 4
+    assert report["model_response"] == fake_model["response"]
+
+
+def test_initial_diagnostic_cli_uses_production_prompt(request_file, tmp_path, fake_model, capsys):
+    for question in fake_model["response"]["research_questions"]:
+        question["queries"] = question["queries"][:1]
+    code = qp.main(["--input", str(request_file), "--output-root", str(tmp_path / "out"),
+                    "--planning-profile", qp.INITIAL_PROFILE, "--call-model"])
+    report = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert report["planned_query_count"] == 2
+    system, sent, _ = fake_model["calls"][0]
+    assert (system, qp._json(sent)) == qp.build_planner_prompts(inputs(planning_profile=qp.INITIAL_PROFILE))
+    assert sent["max_total_queries"] == 3
+    assert len(fake_model["calls"]) == 1
+
+
 @pytest.mark.parametrize("error", [llm_client.LLMError("SECRET_SENTINEL"), RuntimeError("SECRET_SENTINEL")])
 def test_errors_not_reclassified_and_do_not_leak_exception_text(request_file, tmp_path, fake_model, error):
     fake_model["error"] = error

@@ -7,13 +7,18 @@ import {
   type M2SupplementalInput, type SupplementalPlanningResult,
 } from "./zhihu-boundary";
 
+/** Implementations must honour cancellation and settle only after their in-flight work is stopped.
+ * The Controller awaits that cleanup before releasing the project lock; it cannot time out a
+ * custom provider that ignores this signal. createZhihuProvider implements this contract.
+ */
+export interface ProviderCallOptions { signal?: AbortSignal }
 export interface ZhihuProvider {
-  planForBaseline(input: { goal: string; user_context: Record<string, unknown> }): Promise<BaselinePlanningResult>;
-  researchOne(input: M2ResearchInput): Promise<ResearchProviderResult>;
+  planForBaseline(input: { goal: string; user_context: Record<string, unknown> }, options?: ProviderCallOptions): Promise<BaselinePlanningResult>;
+  researchOne(input: M2ResearchInput, options?: ProviderCallOptions): Promise<ResearchProviderResult>;
 }
 /** Jia explicitly requests gap planning; researchOne never schedules another round. */
 export interface M2Provider extends ZhihuProvider {
-  planSupplemental(input: M2SupplementalInput): Promise<SupplementalPlanningResult>;
+  planSupplemental(input: M2SupplementalInput, options?: ProviderCallOptions): Promise<SupplementalPlanningResult>;
 }
 export interface ZhihuProviderConfig {
   pythonBin: string;
@@ -105,7 +110,8 @@ export function createZhihuProvider(config: ZhihuProviderConfig, dependencies: P
   const profile = planningProfile(config.planningProfile ?? childEnv.ZHIHU_PLANNING_PROFILE ?? "m2-initial");
   childEnv.ZHIHU_PLANNING_PROFILE = profile;
 
-  async function execute(action: "plan" | "research" | "supplement", input: unknown): Promise<{ value: unknown; exitCode: number }> {
+  async function execute(action: "plan" | "research" | "supplement", input: unknown, signal?: AbortSignal): Promise<{ value: unknown; exitCode: number }> {
+    if (signal?.aborted) throw new ZhihuProviderError("timeout");
     let body: string;
     try { body = JSON.stringify(input); } catch { throw new BoundaryError("invalid_request"); }
     if (Buffer.byteLength(body, "utf8") > 64000) throw new BoundaryError("invalid_request");
@@ -166,6 +172,7 @@ export function createZhihuProvider(config: ZhihuProviderConfig, dependencies: P
       };
       const onError = () => { void finish(new ZhihuProviderError("startup_failed"), true); };
       const onStdinError = () => { void finish(new ZhihuProviderError("stdin_failed"), true); };
+      const onAbort = () => { void finish(new ZhihuProviderError("timeout"), true); };
       const onClose = (code: number | null, signal: NodeJS.Signals | null) => {
         if (settled) return;
         if (signal !== null || code === null) {
@@ -181,6 +188,7 @@ export function createZhihuProvider(config: ZhihuProviderConfig, dependencies: P
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
         if (terminate && !await terminateTree(child)) {
           const failure = error instanceof ZhihuProviderError ? error : new ZhihuProviderError("cleanup_failed");
           failure.cleanupError = "cleanup_failed";
@@ -204,11 +212,13 @@ export function createZhihuProvider(config: ZhihuProviderConfig, dependencies: P
       child.once("error", onError);
       child.stdin.on("error", onStdinError);
       child.once("close", onClose);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) { onAbort(); return; }
       try { child.stdin.end(body, "utf8"); } catch { void finish(new ZhihuProviderError("stdin_failed"), true); }
     });
   }
-  async function checked<T>(action: "plan" | "research" | "supplement", input: unknown, parse: (value: unknown) => T): Promise<T> {
-    const output = await execute(action, input);
+  async function checked<T>(action: "plan" | "research" | "supplement", input: unknown, parse: (value: unknown) => T, options?: ProviderCallOptions): Promise<T> {
+    const output = await execute(action, input, options?.signal);
     try {
       const result = parse(output.value);
       if (output.exitCode !== 0) throw new ZhihuProviderError("invalid_response");
@@ -224,20 +234,20 @@ export function createZhihuProvider(config: ZhihuProviderConfig, dependencies: P
     }
   }
   return {
-    async planForBaseline(input) {
+    async planForBaseline(input, options) {
       // Reuse the common input validation without asking the Planner to research anything.
       const validated = validateResearchInput({ ...input, request: {
         id: "validation-only", question: "输入校验", searchQueries: ["输入校验"], relevantUserConditions: [], evidenceLimit: 1,
       } });
-      return checked("plan", { goal: validated.goal, user_context: validated.user_context }, value => parsePlanningResponse(value, profile));
+      return checked("plan", { goal: validated.goal, user_context: validated.user_context }, value => parsePlanningResponse(value, profile), options);
     },
-    async researchOne(input) {
+    async researchOne(input, options) {
       const validated = validateResearchInput(input);
-      return checked("research", validated, value => parseResearchResponse(value, validated.request));
+      return checked("research", validated, value => parseResearchResponse(value, validated.request), options);
     },
-    async planSupplemental(input) {
+    async planSupplemental(input, options) {
       const validated = validateSupplementalInput(input);
-      return checked("supplement", validated, value => parseSupplementalResponse(value, validated));
+      return checked("supplement", validated, value => parseSupplementalResponse(value, validated), options);
     },
   };
 }

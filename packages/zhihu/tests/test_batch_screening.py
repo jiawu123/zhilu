@@ -537,6 +537,30 @@ def test_invalid_hypothesis_fields_do_not_weaken_evidence_validation(model, fiel
         {'code': 'batch_research_candidate_invalid', 'researchCandidateIndex': 0}]
 
 
+@pytest.mark.parametrize('rejected_status', ['bad_quote', 'no_evidence'])
+def test_lost_evidence_drops_whole_hypothesis_and_preserves_valid_cards(model, rejected_status):
+    candidates = [candidate(0), candidate(1)]
+    items = [item(i, value) for i, value in enumerate(candidates)]
+    if rejected_status == 'bad_quote':
+        items[1]['compilation']['evidence_cards'][0]['supporting_quote'] = '这段引文在原始片段中不存在。'
+    else:
+        items[1]['compilation'] = {'status': 'no_evidence', 'reason': '缺少依据。', 'evidence_cards': []}
+    invalid_group = {'title': '依赖两项证据的假设', 'summary': '不能仅靠第一张卡保留这段总结。',
+                     'applicableWhen': ['练习时'], 'candidateIndices': [0, 1], 'risks': []}
+    valid_group = {'title': '只依赖有效证据的假设', 'summary': '作者建议记录练习结果。',
+                   'applicableWhen': ['练习时'], 'candidateIndices': [0], 'risks': []}
+    model['payload'] = {'items': items, 'researchCandidates': [invalid_group, valid_group]}
+    original = copy.deepcopy(model['payload'])
+    result = run(candidates)
+    cards = [card for output in result['compilerOutputs'] for card in output['evidence_cards']]
+    assert len(cards) == 1
+    assert cards[0]['supporting_quote'] == candidates[0]['result']['content_text']
+    assert [g['title'] for g in result['researchCandidates']] == [valid_group['title']]
+    assert result['researchCandidates'][0]['evidenceIds'] == [cards[0]['id']]
+    assert {'code': 'batch_research_candidate_invalid', 'researchCandidateIndex': 0} in result['issues']
+    assert model['payload'] == original
+
+
 @pytest.mark.parametrize('domain', ['programming', 'writing'])
 def test_cross_language_fixture_uses_spawned_batch_and_original_quotes(domain):
     process = subprocess.run(
