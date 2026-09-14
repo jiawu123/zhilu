@@ -20,6 +20,22 @@
 
 若队友需要独立部署，给其自己的腾讯云账号配置协作者身份并限定权限；无需共享主账号扫码登录。不要让两个人同时修改同一个云服务配置。
 
+## 队友修改前端后的再次部署
+
+1. 使用分配给自己的腾讯云子账号和控制台密码登录，先确认能看到 `roadmapper` 环境及 `zhilu-staging` 的“更新服务”按钮。子账号密码用于网页登录；SecretId / SecretKey 不用于网页登录。交接前应在队友自己的电脑上实际确认一次登录。
+2. 将 `origin/codex/p0-core-roadmap` 的部署支持合入自己的开发分支，再完成前端修改；先保存本地改动，处理冲突，不使用强制重置覆盖工作。无需合并 `main`。保留根目录 Dockerfile、部署网关、SSE 请求封装和同源 `/api/...` 路径。
+3. 本地构建和相关检查通过后，提交要部署的改动。在仓库根目录运行下面的打包命令（Windows 可用 Git Bash）。它打包当前分支 `HEAD` 中已提交的应用源码，未提交或未跟踪的前端改动不会进入包；不要只上传 `dist`，也不要上传本机环境变量或数据。
+
+```bash
+git archive --format=zip --output=../zhilu-cloudbase.zip HEAD Dockerfile .dockerignore package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json apps packages/contracts packages/agent-runtime packages/plan-engine packages/zhihu/zhihu_m2 packages/zhihu/requirements-dotenv.txt examples/agent-engineer/plan-state.json deploy/cloudbase
+```
+
+4. 在 CloudBase 进入 `roadmapper` → 云函数 / 托管 → 服务管理 → `zhilu-staging` → **更新服务**，选择压缩包并上传新生成的 `zhilu-cloudbase.zip`。压缩包根目录有 `Dockerfile`；目标目录留空、Dockerfile 名称为 `Dockerfile`、服务端口为 `8080`。更新页面会带入已有配置，核对保留全部服务端环境变量、COS `/mnt/zhilu` 挂载、存储连接、持续运行 1 实例。无需再次领取或填写密钥，也不新建环境或服务。
+5. 确认当前没有生成任务运行后点击“部署”，选择“发布版本并自动切换流量至新版本”。这里是本次发布完成后的流量切换，不是 Git 推送自动部署。等新版本显示“正常”且流量为 100%；只看到镜像构建成功不代表发布完成。
+6. 打开原测试域名，重新登录知乎，检查新前端、历史记录，并跑通一次“访谈 → 生成计划 → 保存 → 路线图”。更新后内存登录会话失效需要重新登录，域名、已登记的 OAuth 回调和 COS 数据应保留。如果失败，查看新版本部署日志，保留旧的正常版本；不要删除服务。遇到首轮已观察到的镜像导出锁冲突，可以用同一个包重试一次。
+
+完整生成、长请求和云端数据恢复仍需按下方线上验收清单验证，避免把“能登录”当作比赛 Demo 全流程已通过。腾讯云服务部署与知乎赛事作品发布是两件事；当前赛事项目仍是草稿，提交前需由团队另行检查并发布。
+
 ## 部署形态
 
 - 一个云托管容器：Node 24、React 构建产物、现有 Node API、Linux 知乎 CLI、旧检索路径使用的 Python 环境。
