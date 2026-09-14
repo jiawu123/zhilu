@@ -136,6 +136,7 @@ export interface PlanResearchState {
   routeCandidates: RouteCandidate[];
   roadmapper?: RoadmapperRun;
   insufficientSources?: InsufficientResearchSource[];
+  zhida?: ZhidaResearch;
 }
 
 /** 模型只提出草案；Run ID 和批准状态由 Controller / 用户管理。 */
@@ -360,6 +361,23 @@ export interface RouteCandidate {
   risks: string[];
 }
 
+/** References suggested by Zhida; summaries are AI-generated, not verified source excerpts. */
+export interface ZhidaSource {
+  id: string;
+  title: string;
+  url: string;
+  author?: string;
+  summary?: string;
+}
+
+export interface ZhidaResearch {
+  provider: "zhida-agent";
+  answer: string;
+  sources: ZhidaSource[];
+  durationMs: number;
+  generatedAt: string;
+}
+
 export interface ResearchRunResult {
   id: string;
   mode: "mock" | "live";
@@ -370,6 +388,7 @@ export interface ResearchRunResult {
   routeCandidates: RouteCandidate[];
   controller?: ResearchControllerReport;
   planningBudget?: RoadmapperPlanningBudget;
+  zhida?: ZhidaResearch;
 }
 
 /** Controller-observed diagnostics, never a claim of semantic or factual verification. */

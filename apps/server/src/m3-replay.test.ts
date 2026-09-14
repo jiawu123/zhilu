@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { roadmapperDraftFixture } from "../../../packages/agent-runtime/src/roadmapper.test-fixture";
 import type { RoadmapperInput } from "@zhilu/agent-runtime";
+import type { ZhidaResearch } from "@zhilu/contracts";
 import { syntheticM3Snapshot } from "./fixtures/m3-replay";
 import { executeM3Replay, MAX_M3_SNAPSHOT_BYTES, parseM3ReplayArguments, readM3Snapshot, saveM3ReplayArtifacts, validateM3Snapshot } from "./m3-replay";
 import { RoadmapperProviderError } from "./roadmapper-provider";
@@ -19,6 +20,73 @@ function transportSnapshot() {
   snapshot.research.evidencePacks.forEach(pack => pack.evidence.forEach(card => { card.riskTags = card.riskTags.filter(flag => flag !== "synthetic_fixture"); }));
   return snapshot;
 }
+
+function directAnswerSnapshot() {
+  const snapshot = syntheticM3Snapshot(now);
+  snapshot.research.questions = [];
+  snapshot.research.requests = [];
+  snapshot.research.evidencePacks = [];
+  snapshot.research.zhida = { provider: "zhida-agent", answer: "先试写一个章节，再收集读者反馈。[1]", durationMs: 2500,
+    generatedAt: now, sources: [{ id: "1", title: "写作经验", url: "https://www.zhihu.com/answer/123",
+      author: "作者", summary: "AI 整理：用小作品取得反馈" }] };
+  return snapshot;
+}
+
+describe("direct-answer snapshot replay", () => {
+  it.each([true, false])("replays a one-route direct answer with optional sources=%s and zero evidence", async withSources => {
+    const snapshot = directAnswerSnapshot();
+    if (!withSources) snapshot.research.zhida!.sources = [];
+    const before = structuredClone(snapshot);
+    expect(validateM3Snapshot(snapshot, now).research.zhida).toEqual(snapshot.research.zhida);
+    const result = await executeM3Replay(snapshot, { live: false }, { now: () => now });
+    expect(result.report.failureCode).toBeUndefined();
+    expect(result.report).toMatchObject({ status: "structural_pass", evidenceCount: 0, routeCount: 1,
+      reviewStatus: "needs_human_review", calls: { zhihu: 0, roadmapper: 0, offlineFixture: 1 } });
+    expect(result.proposal!.researchRun.zhida).toEqual(snapshot.research.zhida);
+    expect(result.proposal!.previews[0]!.plan.research!.zhida).toEqual(snapshot.research.zhida);
+    expect(result.proposal!.previews[0]!.plan.evidence.filter(card => card.sourceType === "zhihu")).toEqual([]);
+    expect(result.report.warnings).not.toContain("two_evidence_backed_routes_not_met");
+    expect(snapshot).toEqual(before);
+  });
+
+  it("preserves the answer as research input without promoting source cards to evidence", async () => {
+    const snapshot = directAnswerSnapshot();
+    const generate = vi.fn(async input => roadmapperDraftFixture(input as RoadmapperInput));
+    const result = await executeM3Replay(snapshot, { live: true }, { createProvider: () => ({ generate }), now: () => now });
+    expect(result.report).toMatchObject({ status: "structural_pass", calls: { zhihu: 0, roadmapper: 1, offlineFixture: 0 }, evidenceCount: 0 });
+    expect(generate.mock.calls[0]![0].context).toMatchObject({ evidence: [], zhidaResearch: { answer: snapshot.research.zhida!.answer,
+      sources: snapshot.research.zhida!.sources } });
+  });
+
+  it.each([
+    ["empty answer", (z: ZhidaResearch) => { z.answer = " "; }],
+    ["oversized answer", (z: ZhidaResearch) => { z.answer = "长".repeat(100001); }],
+    ["credential URL", (z: ZhidaResearch) => { z.sources[0]!.url = "https://user:secret@example.com/a"; }],
+    ["script URL", (z: ZhidaResearch) => { z.sources[0]!.url = "javascript:alert(1)"; }],
+    ["oversized source summary", (z: ZhidaResearch) => { z.sources[0]!.summary = "a".repeat(1001); }],
+    ["too many sources", (z: ZhidaResearch) => { z.sources = Array.from({ length: 13 }, (_, i) => ({ id: String(i), title: "资料", url: `https://example.com/${i}` })); }],
+    ["duplicate source ID", (z: ZhidaResearch) => { z.sources.push({ id: "1", title: "其他", url: "https://example.com/b" }); }],
+    ["duplicate source URL", (z: ZhidaResearch) => { z.sources.push({ id: "2", title: "其他", url: z.sources[0]!.url }); }],
+    ["future generation", (z: ZhidaResearch) => { z.generatedAt = "2027-09-13T00:00:00Z"; }],
+    ["invalid duration", (z: ZhidaResearch) => { z.durationMs = -1; }],
+  ])("rejects %s before model invocation", async (_name, mutate) => {
+    const snapshot = directAnswerSnapshot();
+    mutate(snapshot.research.zhida!);
+    const createProvider = vi.fn();
+    const result = await executeM3Replay(snapshot, { live: true }, { createProvider, now: () => now });
+    expect(result.report).toMatchObject({ status: "failed", calls: { roadmapper: 0, zhihu: 0 } });
+    expect(createProvider).not.toHaveBeenCalled();
+  });
+
+  it("does not allow direct-answer metadata to bypass legacy evidence validation", () => {
+    const snapshot = transportSnapshot();
+    snapshot.research.zhida = directAnswerSnapshot().research.zhida!;
+    expect(() => validateM3Snapshot(snapshot, now)).toThrow();
+    const empty = directAnswerSnapshot();
+    delete empty.research.zhida;
+    expect(() => validateM3Snapshot(empty, now)).toThrow();
+  });
+});
 
 describe("M3 replay explicit network boundary", () => {
   it("defaults to an offline fixture, with no HTTP/provider initialization or formal writes", async () => {

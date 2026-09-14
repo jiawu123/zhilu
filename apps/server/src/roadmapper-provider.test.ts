@@ -38,6 +38,23 @@ describe("Roadmapper scheduling tolerance configuration", () => {
 });
 
 describe("Roadmapper model transport", () => {
+  it("cancels an in-flight plan when its caller disconnects", async () => {
+    vi.useFakeTimers();
+    const request = vi.fn<typeof fetch>().mockImplementation(() => new Promise(() => {}));
+    const p = createRoadmapperProvider({ ...config, timeoutMs: 50 }, { fetch: request });
+    const abort = new AbortController();
+    const result = expect(p.generate(input, { signal: abort.signal })).rejects.toMatchObject({ code: "cancelled" });
+    abort.abort();
+    await vi.advanceTimersByTimeAsync(50);
+    await result;
+    expect(request.mock.calls[0]![1]!.signal!.aborted).toBe(true);
+  });
+  it("does not start a request for an already cancelled caller", async () => {
+    const { p, request } = provider(response());
+    const abort = new AbortController(); abort.abort();
+    await expect(p.generate(input, { signal: abort.signal })).rejects.toMatchObject({ code: "cancelled" });
+    expect(request).not.toHaveBeenCalled();
+  });
   it("sends one bounded JSON-object request without tools or redirects", async () => {
     const { p, request } = provider(response({ routes: [{ id: "route-one" }] }));
     expect(await p.generate(input)).toEqual({ routes: [{ id: "route-one" }] });

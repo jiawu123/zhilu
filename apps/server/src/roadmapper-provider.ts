@@ -6,7 +6,7 @@ export interface RoadmapperInput {
   context: unknown;
 }
 export interface RoadmapperProvider {
-  generate(input: RoadmapperInput): Promise<unknown>;
+  generate(input: RoadmapperInput, options?: { signal?: AbortSignal }): Promise<unknown>;
 }
 export interface RoadmapperConfig {
   apiUrl: string;
@@ -24,6 +24,7 @@ const messages = {
   network_failed: "Roadmapper 模型连接失败，请检查服务和网络。",
   upstream_failed: "Roadmapper 模型服务请求失败，请检查授权、额度和服务状态。",
   timeout: "Roadmapper 生成超时，本次未自动重试。",
+  cancelled: "本次计划生成已取消。",
   output_limit: "Roadmapper 模型响应超过允许大小。",
   invalid_response: "Roadmapper 模型未返回完整、有效的 JSON 对象。",
 } as const;
@@ -33,7 +34,7 @@ export class RoadmapperProviderError extends Error {
   constructor(public readonly code: keyof typeof messages) {
     super(messages[code]);
     this.name = "RoadmapperProviderError";
-    this.status = code === "timeout" ? 504 : code === "invalid_input" ? 422 : code === "invalid_configuration" ? 503 : 502;
+    this.status = code === "cancelled" ? 499 : code === "timeout" ? 504 : code === "invalid_input" ? 422 : code === "invalid_configuration" ? 503 : 502;
   }
 }
 
@@ -98,7 +99,8 @@ export function createRoadmapperProvider(
   const settings = validateConfig(config);
   const request = dependencies.fetch ?? fetch;
   return {
-    async generate(input) {
+    async generate(input, options = {}) {
+      if (options.signal?.aborted) throw new RoadmapperProviderError("cancelled");
       let body: string;
       try {
         if (!input || typeof input.systemPrompt !== "string" || !input.systemPrompt.trim()) throw new Error();
@@ -121,6 +123,7 @@ export function createRoadmapperProvider(
       const controller = new AbortController();
       let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
       let timer: ReturnType<typeof setTimeout> | undefined;
+      let onAbort: (() => void) | undefined;
       const work = async () => {
         const response = await request(settings.apiUrl, {
           method: "POST", redirect: "error", signal: controller.signal,
@@ -157,6 +160,12 @@ export function createRoadmapperProvider(
         } catch { throw new RoadmapperProviderError("invalid_response"); }
       };
       const deadline = new Promise<never>((_resolve, reject) => {
+        onAbort = () => {
+          reject(new RoadmapperProviderError("cancelled"));
+          controller.abort();
+          void reader?.cancel().catch(() => {});
+        };
+        options.signal?.addEventListener("abort", onAbort, { once: true });
         timer = setTimeout(() => {
           reject(new RoadmapperProviderError("timeout"));
           controller.abort();
@@ -169,7 +178,10 @@ export function createRoadmapperProvider(
         void reader?.cancel().catch(() => {});
         if (error instanceof RoadmapperProviderError) throw error;
         throw new RoadmapperProviderError("network_failed");
-      } finally { clearTimeout(timer); }
+      } finally {
+        clearTimeout(timer);
+        if (onAbort) options.signal?.removeEventListener("abort", onAbort);
+      }
     },
   };
 }

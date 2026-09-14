@@ -24,6 +24,7 @@ import {
   createResearchReadyPlan,
   decideWorkflow,
   validateProjectCreationInput,
+  type LiveResearchInput,
 } from "@zhilu/agent-runtime";
 import {
   PlanEngineError,
@@ -44,6 +45,7 @@ import { runResearchController, ResearchControllerError } from "./research-contr
 import { acceptInterviewAnswers, generateInterviewBatch, InterviewError } from "./interview";
 import { reviseBaseline } from "./baseline-revision";
 import { compileRoadmapperWithCorrection } from "./roadmapper-generation";
+import { createZhidaProvider, readZhidaConfig, ZhidaProviderError, type ZhidaProvider } from "./zhida-provider";
 
 const repoRoot = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const repository = new PlanRepository(
@@ -52,12 +54,16 @@ const repository = new PlanRepository(
 );
 const port = Number(process.env.PORT ?? 8787);
 
-interface LiveEvidenceOptions { liveEnabled?: boolean; zhihuProvider?: ZhihuProvider; roadmapperProvider?: RoadmapperProvider }
-interface LiveServices { enabled: boolean; provider: ZhihuProvider | undefined; roadmapper: RoadmapperProvider | undefined; busy: Set<string> }
+interface LiveEvidenceOptions { liveEnabled?: boolean; zhihuProvider?: ZhihuProvider; zhidaProvider?: ZhidaProvider;
+  researchMode?: "zhida" | "evidence"; roadmapperProvider?: RoadmapperProvider }
+interface LiveServices { enabled: boolean; provider: ZhihuProvider | undefined; zhida: ZhidaProvider | undefined;
+  researchMode: "zhida" | "evidence"; roadmapper: RoadmapperProvider | undefined; busy: Set<string> }
 
 export function createZhiluServer(planRepository: PlanRepository, options: LiveEvidenceOptions = {}) {
   const live: LiveServices = { enabled: options.liveEnabled ?? process.env.ZHIHU_LIVE_ENABLED === "true",
-    provider: options.zhihuProvider, roadmapper: options.roadmapperProvider, busy: new Set<string>() };
+    provider: options.zhihuProvider, zhida: options.zhidaProvider,
+    researchMode: options.researchMode ?? (options.zhidaProvider ? "zhida" : options.zhihuProvider ? "evidence" : process.env.ZHIHU_RESEARCH_MODE === "evidence" ? "evidence" : "zhida"),
+    roadmapper: options.roadmapperProvider, busy: new Set<string>() };
   return createServer(async (request, response) => {
     setCors(response);
     if (request.method === "OPTIONS") {
@@ -151,7 +157,7 @@ async function route(
 
   const liveBaselineMatch = pathname.match(/^\/api\/projects\/([^/]+)\/research\/live\/baseline$/);
   if (request.method === "POST" && liveBaselineMatch) {
-    await liveBaseline(response, planRepository, requiredMatch(liveBaselineMatch, 1), live);
+    await liveBaseline(request, response, planRepository, requiredMatch(liveBaselineMatch, 1), live);
     return;
   }
 
@@ -547,12 +553,18 @@ async function replanEvent(
 }
 
 async function liveBaseline(
+  request: IncomingMessage,
   response: ServerResponse,
   repository: PlanRepository,
   encodedProjectId: string,
   live: LiveServices,
 ): Promise<void> {
   let lockedId: string | undefined;
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  const abort = new AbortController();
+  const disconnected = () => { if (!response.writableEnded) abort.abort(); };
+  response.on("close", disconnected);
+  const checkConnection = () => { if (abort.signal.aborted) throw new HttpError(499, "连接已关闭，本次生成已停止。"); };
   try {
     if (!live.enabled) throw new HttpError(503, "真实研究尚未启用，请先配置知乎 CLI 与模型。");
     const { projectId, plan } = await existingLivePlan(repository, encodedProjectId);
@@ -564,17 +576,36 @@ async function liveBaseline(
     if (live.busy.has(projectId)) throw new HttpError(409, "当前项目已有研究正在执行。");
     live.busy.add(projectId);
     lockedId = projectId;
-    live.provider ??= createZhihuProvider(readZhihuProviderConfig());
     // 在检索产生调用成本之前确认 Roadmapper 配置可用。
     live.roadmapper ??= createRoadmapperProvider(readRoadmapperConfig());
-
-    const research = await runResearchController(plan, live.provider, { evidencePolicy: "allow_insufficient" });
+    let research: LiveResearchInput;
+    if (live.researchMode === "zhida") {
+      live.zhida ??= createZhidaProvider(readZhidaConfig());
+      const context = buildM2Context(plan);
+      if (request.headers.accept?.includes("text/event-stream")) {
+        response.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-transform", "x-accel-buffering": "no" });
+        response.flushHeaders();
+        sendResearchEvent(response, "progress", { stage: "research", message: "知乎直答正在整理你的目标与参考内容…" });
+        heartbeat = setInterval(() => { if (!response.destroyed && !response.writableEnded) response.write(": heartbeat\n\n"); }, 15000);
+      }
+      const zhida = await live.zhida.research(context, { signal: abort.signal, onText: text => sendResearchEvent(response, "answer", { text }) });
+      checkConnection();
+      research = { runId: uniqueId("zhida"), proposalId: uniqueId("baseline"), now: new Date().toISOString(),
+        questions: [], requests: [], evidencePacks: [], zhida };
+      sendResearchEvent(response, "research", zhida);
+      sendResearchEvent(response, "progress", { stage: "planning", message: "回答已完成，正在安排你的行动与时间…" });
+    } else {
+      live.provider ??= createZhihuProvider(readZhihuProviderConfig());
+      research = await runResearchController(plan, live.provider, { evidencePolicy: "allow_insufficient" });
+    }
     research.planningBudget = planningBudget;
     const modelInput = prepareRoadmapperInput(plan, research, uniqueId("roadmapper"));
     // A failed M3 can be retried offline/from a snapshot without paying for M2 again.
     await repository.saveResearchSnapshot(plan, research);
-    const modelOutput = await live.roadmapper.generate(modelInput);
-    const proposal = await compileRoadmapperWithCorrection(plan, research, modelInput, modelOutput, live.roadmapper);
+    const modelOutput = await live.roadmapper.generate(modelInput, { signal: abort.signal });
+    checkConnection();
+    const proposal = await compileRoadmapperWithCorrection(plan, research, modelInput, modelOutput, live.roadmapper, { signal: abort.signal });
+    checkConnection();
     for (const preview of proposal.previews) {
       const validation = validatePlan(preview.plan);
       if (!validation.valid) throw new PlanEngineError(validation.issues);
@@ -583,9 +614,12 @@ async function liveBaseline(
       throw new HttpError(409, "规划期间项目已被修改，请刷新后重新规划。");
     }
     const existing = await repository.getBaselineProposals(projectId);
+    checkConnection();
+    // Once persistence begins, finish replacing the pending draft; formal application remains a separate user action.
     await repository.saveBaselineProposal(projectId, proposal);
     for (const stale of existing) await repository.removeBaselineProposal(projectId, stale.id);
-    sendJson(response, 202, proposal);
+    if (response.headersSent) { sendResearchEvent(response, "proposal", proposal); response.end(); }
+    else sendJson(response, 202, proposal);
   } catch (error) {
     if (lockedId && error instanceof ResearchControllerError) {
       try {
@@ -596,6 +630,8 @@ async function liveBaseline(
     }
     sendLiveError(response, error);
   } finally {
+    clearInterval(heartbeat);
+    response.off("close", disconnected);
     if (lockedId !== undefined) live.busy.delete(lockedId);
   }
 }
@@ -637,6 +673,7 @@ async function existingLivePlan(repository: PlanRepository, encodedProjectId: st
 
 function sendLiveError(response: ServerResponse, error: unknown): void {
   if (error instanceof HttpError) sendJson(response, error.status, { error: error.message });
+  else if (error instanceof ZhidaProviderError) sendJson(response, error.status, { error: error.message, code: error.code });
   else if (error instanceof ResearchControllerError) sendJson(response, error.status, {
     error: error.message, code: error.code, controller: error.report,
     ...(error.cleanupError ? { cleanupError: error.cleanupError } : {}),
@@ -685,8 +722,19 @@ async function readBody<T>(request: IncomingMessage): Promise<T> {
 }
 
 function sendJson(response: ServerResponse, status: number, body: unknown): void {
+  if (response.destroyed || response.writableEnded) return;
+  if (response.headersSent && response.getHeader("content-type")?.toString().startsWith("text/event-stream")) {
+    sendResearchEvent(response, "error", body);
+    response.end();
+    return;
+  }
   response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(body));
+}
+
+function sendResearchEvent(response: ServerResponse, event: string, value: unknown): void {
+  if (!response.headersSent || response.destroyed || response.writableEnded || !response.getHeader("content-type")?.toString().startsWith("text/event-stream")) return;
+  response.write(`event: ${event}\ndata: ${JSON.stringify(value)}\n\n`);
 }
 
 function sendDownload(response: ServerResponse, contentType: string, filename: string, body: string | Uint8Array): void {

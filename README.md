@@ -10,6 +10,12 @@
 - Plan Engine：校验、影响分析、应用用户批准的修改并创建 Commit；
 - Plan Bundle：保存正式计划、待确认修改和历史版本。
 
+### 知乎直答计划体验
+
+开启真实调用后，新计划默认使用知乎 `zhida-agent` 整理研究回答，再由现有 Roadmapper 安排行动与时间。当前保留原有前端，用户仍在查看和调整草稿后确认生成路线图。后端同时支持 JSON 响应和 SSE 流式响应，并保留直答正文与参考来源数据；当前页面尚未展示直答正文、引用卡片或来源列表。没有来源链接也可以生成计划，来源摘要仅用于阅读参考，不计为已核验的 EvidenceCard。
+
+这条默认路径需要知乎 CLI 已登录和 Roadmapper 模型配置，不再需要 Python 研究环境。CLI 路径优先读取 `ZHIHU_CLI_BIN` 或 `ZHIHU_CLI_PATH`；Windows 自动查找当前用户安装目录，其余情况使用 PATH 中的 `zhihu-cli`。保留各自本机的 `.env.local`，不要复制其他系统的绝对路径。旧证据研究路径可通过服务端环境变量 `ZHIHU_RESEARCH_MODE=evidence` 选择；知识缺口事件仍使用原有搜索接口。
+
 ## 仓库结构
 
 ```text
@@ -63,7 +69,8 @@ test -f apps/server/.env.local || cp apps/server/.env.example apps/server/.env.l
 
 - **只看演示 Roadmap**：无需模型、Python 或知乎凭据，保持 `ZHIHU_LIVE_ENABLED=false`。
 - **测试目标访谈、生成背景问题**：填写 `ROADMAP_API_KEY`、`ROADMAP_API_URL` 和 `ROADMAP_MODEL`。URL 必须是完整的 Chat Completions 地址；没有模型配置时，访谈会提示错误，不回退固定题库。
-- **测试真实知乎研究与计划生成**：另外配置 `ZHIHU_LIVE_ENABLED=true`、`ZHIHU_PYTHON_BIN` 和 `ZHIHU_PYTHON_CWD`（后两项为本机绝对路径），并准备 Python 依赖、知乎 CLI 和 Access Secret。具体步骤见 [知乎模块配置](packages/zhihu/README.md#p0-server-真实证据接入) 与 [后端模型配置](apps/server/README.md#roadmapper-模型配置)。Python 的 `packages/zhihu/.env` 与 Node 的配置分开，不能互相替代。
+- **测试直答与计划生成**：另外配置 `ZHIHU_LIVE_ENABLED=true`，准备已登录的知乎 CLI；默认使用 `zhida-agent`，可用 `ZHIDA_TIMEOUT_MS` 调整客户端等待上限（默认 95000 毫秒）。模型配置见 [后端模型配置](apps/server/README.md#roadmapper-模型配置)。
+- **使用旧证据研究或知识缺口搜索**：还需准备 Python 依赖，以及本机绝对路径 `ZHIHU_PYTHON_BIN` 和 `ZHIHU_PYTHON_CWD`。配置方式见 [知乎模块配置](packages/zhihu/README.md#p0-server-真实证据接入)。Python 的 `packages/zhihu/.env` 与 Node 配置分开。
 
 密钥只放本地环境文件，不写入 `VITE_*` 或提交 Git。
 
