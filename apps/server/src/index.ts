@@ -14,7 +14,6 @@ import type {
 } from "@zhilu/contracts";
 import {
   ResearchRequestValidationError,
-  compileRoadmapperBaseline,
   compileEventReplan,
   prepareEventReplanInput,
   EventReplanValidationError,
@@ -44,6 +43,7 @@ import { createRoadmapperProvider, readRoadmapperConfig, readRoadmapperPlanningB
 import { runResearchController, ResearchControllerError } from "./research-controller";
 import { acceptInterviewAnswers, generateInterviewBatch, InterviewError } from "./interview";
 import { reviseBaseline } from "./baseline-revision";
+import { compileRoadmapperWithCorrection } from "./roadmapper-generation";
 
 const repoRoot = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const repository = new PlanRepository(
@@ -203,7 +203,7 @@ async function route(
       plan,
       view: projectView(plan),
       history: await planRepository.getHistory(projectId),
-      pending: await planRepository.getPending(projectId),
+      pending: await planRepository.getActivePending(plan),
       baselineProposals: await planRepository.getBaselineProposals(projectId),
     });
     return;
@@ -261,7 +261,7 @@ async function route(
         plan: next,
         view: projectView(next),
         history: await planRepository.getHistory(projectId),
-        pending: await planRepository.getPending(projectId),
+        pending: await planRepository.getActivePending(next),
         baselineProposals: [],
       });
     } finally { live.busy.delete(projectId); }
@@ -408,7 +408,8 @@ async function route(
   const diffMatch = pathname.match(/^\/api\/projects\/([^/]+)\/diff$/);
   if (request.method === "GET" && diffMatch) {
     const projectId = decodeURIComponent(requiredMatch(diffMatch, 1));
-    sendJson(response, 200, { pending: await planRepository.getPending(projectId) });
+    const plan = await planRepository.getPlan(projectId);
+    sendJson(response, 200, { pending: await planRepository.getActivePending(plan) });
     return;
   }
 
@@ -425,6 +426,7 @@ async function route(
     const { patchId } = await readBody<{ patchId: string }>(request);
     const pending = (await planRepository.getPending(projectId)).find((item) => item.patch.id === patchId);
     if (!pending) throw new HttpError(404, `待确认 Patch 不存在：${patchId}`);
+    if (pending.afterPreview.projectId !== projectId) throw new HttpError(409, "这份预演不属于当前项目，请基于当前计划重新记录事件。");
     if (!pending.event.confirmed) throw new HttpError(400, "Event 尚未确认");
     const plan = await planRepository.getPlan(projectId);
     const next = await commitPatch(planRepository, plan, pending.patch, pending.patch.reason, pending.event.id, pending.processing);
@@ -509,6 +511,7 @@ async function replanEvent(
       || !("patchId" in body) || typeof body.patchId !== "string") throw new HttpError(400, "请求只能包含 patchId。");
     const pending = (await repository.getPending(projectId)).find(item => item.patch.id === body.patchId);
     if (!pending) throw new HttpError(404, "待确认提案不存在，请刷新后重试。");
+    if (pending.afterPreview.projectId !== projectId) throw new HttpError(409, "这份预演不属于当前项目，请基于当前计划重新记录事件。");
     if (pending.patch.baseVersion !== plan.version) throw new HttpError(409, "计划已变化，请基于当前版本重新提出事件。");
     const impact = calculateImpact(plan, pending.event);
     const input = prepareEventReplanInput(plan, pending.event, impact);
@@ -520,9 +523,13 @@ async function replanEvent(
     const result = compileEventReplan(plan, pending.event, impact, input, output, {
       patchId: uniqueId("replan"), runId: uniqueId("event-roadmapper"),
     });
-    const afterPreview = applyPatch(plan, result.patch, new Date().toISOString());
     const current = await repository.getExistingPlan(projectId);
     if (current.version !== plan.version) throw new HttpError(409, "生成期间计划已变化，结果未保存；请重新提出事件。");
+    if (result.patch.operations.length === 0) {
+      sendJson(response, 200, { unchanged: true, processing: result.processing });
+      return;
+    }
+    const afterPreview = applyPatch(plan, result.patch, new Date().toISOString());
     const proposal = { event: pending.event, impact, afterPreview, ...result };
     await repository.savePending(projectId, proposal);
     // 使用新提案 ID，防止旧页面未经查看就批准了新模型方案。
@@ -567,7 +574,7 @@ async function liveBaseline(
     // A failed M3 can be retried offline/from a snapshot without paying for M2 again.
     await repository.saveResearchSnapshot(plan, research);
     const modelOutput = await live.roadmapper.generate(modelInput);
-    const proposal = compileRoadmapperBaseline(plan, research, modelInput, modelOutput);
+    const proposal = await compileRoadmapperWithCorrection(plan, research, modelInput, modelOutput, live.roadmapper);
     for (const preview of proposal.previews) {
       const validation = validatePlan(preview.plan);
       if (!validation.valid) throw new PlanEngineError(validation.issues);

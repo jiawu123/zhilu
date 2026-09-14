@@ -10,6 +10,9 @@ export function roadmapperDraftFixture(input: RoadmapperInput) {
       id, title: index ? "先演练写作方法" : "先试写章节", summary: "用章节产出与读者反馈持续验证写作路线。",
       applicableWhen: [index ? "尚需建立稳定写作习惯" : "已有选题和读者反馈渠道"], evidenceIds,
       risks: ["读者可能无法按期提供反馈"], assumptions: ["每周能找到一位读者评价"],
+      evidenceApplications: evidenceIds.map(evidenceId => ({ evidenceId,
+        taskIds: weeks.map(week => `t${week.week}`),
+        application: "采用先试写再收集反馈的建议，将章节草稿和回应读者意见作为产出；读者反馈延迟时先记录待确认的问题。" })),
       milestones: [
         { id: "m1", title: "确定选题与试写", startWeek: 1, endWeek: boundary1, evidenceIds },
         { id: "m2", title: "完成中段章节", startWeek: boundary1 + 1, endWeek: boundary2, evidenceIds },

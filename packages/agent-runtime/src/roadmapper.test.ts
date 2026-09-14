@@ -70,7 +70,7 @@ describe("model Roadmapper", () => {
     plan.goalContract!.targetDate = "2026-12-05";
     const input = prepareRoadmapperInput(plan, research, "partial-week"), draft = roadmapperDraftFixture(input);
     const last = input.context.weeks.at(-1)!;
-    expect(last).toMatchObject({ capacityHours: 1.71, toleranceHours: 0.14, maxTotalHours: 1.85 });
+    expect(last).toMatchObject({ capacityHours: 1.71, toleranceHours: 0.14, maxTotalHours: 1.85, maxTaskHours: 1.68 });
     draft.routes[0]!.tasks.at(-1)!.hours = 1.85 - last.reviewHours;
     const proposal = compileRoadmapperBaseline(plan, research, input, draft);
     const nextResearch = { ...research, ...proposal.researchRun, runId: research.runId };
@@ -98,6 +98,7 @@ describe("model Roadmapper", () => {
     first.hours = 1;
     first.dependsOn = ["verify-first"];
     route.tasks.push({ ...structuredClone(first), id: "verify-first", title: "先核实原始信息", dependsOn: [] });
+    route.evidenceApplications[0]!.taskIds.push("verify-first");
     const before = structuredClone({ plan, draft });
     const proposal = compileRoadmapperBaseline(plan, research, input, draft);
     const preview = proposal.previews[0]!.plan;
@@ -223,6 +224,7 @@ function insufficientFixture(count = 0) {
   research.evidencePacks.forEach(pack => { pack.routeCandidates = []; });
   draft.routes = draft.routes.slice(0, 1);
   draft.routes[0]!.evidenceIds = [];
+  draft.routes[0]!.evidenceApplications = [];
   draft.routes[0]!.tasks.forEach(task => { task.evidenceIds = []; });
   draft.routes[0]!.milestones.forEach(milestone => { milestone.evidenceIds = []; });
   draft.recommendationEvidenceIds = [];
@@ -230,7 +232,7 @@ function insufficientFixture(count = 0) {
 }
 
 describe("Roadmapper with insufficient research", () => {
-  it.each([0, 1])("plans from confirmed facts with %i valid cards and explicit inference labels", count => {
+  it.each([0])("plans from confirmed facts with %i valid cards and explicit inference labels", count => {
     const { plan, research, draft } = insufficientFixture(count), before = structuredClone(plan);
     const input = prepareRoadmapperInput(plan, research, "provisional-model");
     expect(input.context.evidenceStatus).toBe("insufficient");
@@ -321,10 +323,59 @@ describe("Roadmapper with insufficient research", () => {
     expect(() => compileRoadmapperBaseline(plan, research, input, draft)).toThrow("弹性上限");
   });
 
-  it("still requires references for sufficient source-backed plans", () => {
+  it("allows AI scheduling tasks alongside evidence-backed actions even with sufficient research", () => {
     const { plan, research, input, draft } = fixture();
     expect(input.context.evidenceStatus).toBe("sufficient");
     draft.routes[0]!.tasks[0]!.evidenceIds = [];
-    expect(() => compileRoadmapperBaseline(plan, research, input, draft)).toThrow("文本条目数量");
+    draft.routes[0]!.evidenceApplications[0]!.taskIds.shift();
+    expect(() => compileRoadmapperBaseline(plan, research, input, draft)).not.toThrow();
+  });
+
+  it.each([1, 5])("does not silently discard %i accepted cards because coverage is insufficient", count => {
+    const { plan, research, draft } = insufficientFixture(count);
+    const input = prepareRoadmapperInput(plan, research, "partial-unused");
+    expect(input.context.evidenceStatus).toBe("insufficient");
+    expect(() => compileRoadmapperBaseline(plan, research, input, draft)).toThrow("已有知乎证据");
+    const userId = input.context.userFacts[0]!.id;
+    draft.routes[0]!.evidenceIds = [userId];
+    draft.routes[0]!.tasks[0]!.evidenceIds = [userId];
+    expect(() => compileRoadmapperBaseline(plan, research, input, draft)).toThrow("已有知乎证据");
+  });
+
+  it("retains a source's concrete application, without forcing all cards or all tasks to use citations", () => {
+    const { plan, research } = insufficientFixture(5);
+    const input = prepareRoadmapperInput(plan, research, "partial-used"), draft = roadmapperDraftFixture(input);
+    const route = draft.routes[0]!;
+    route.tasks.slice(1).forEach(task => { task.evidenceIds = []; });
+    route.evidenceApplications[0]!.taskIds = [route.tasks[0]!.id];
+    const before = structuredClone({ plan, research, draft });
+    const proposal = compileRoadmapperBaseline(plan, research, input, draft);
+    const applications = [{ routeId: route.id, ...route.evidenceApplications[0]! }];
+    expect(proposal.roadmapper).toMatchObject({ evidenceApplications: applications });
+    expect(proposal.previews[0]!.plan.research!.roadmapper).toMatchObject({ evidenceApplications: applications });
+    expect(proposal.roadmapper!.warnings.join()).toContain("11 个任务");
+    expect(proposal.roadmapper!.warnings.join()).toContain("AI 规划");
+    expect({ plan, research, draft }).toEqual(before);
+  });
+
+  it("accepts original source IDs without applying model-created task ID restrictions", () => {
+    const { plan, research } = insufficientFixture(1);
+    research.evidencePacks[0]!.evidence[0]!.id = "zhihu:accepted-evidence:42";
+    const input = prepareRoadmapperInput(plan, research, "original-source-id"), draft = roadmapperDraftFixture(input);
+    expect(() => compileRoadmapperBaseline(plan, research, input, draft)).not.toThrow();
+  });
+
+  it.each(["missing", "unknown", "unbound", "empty reason", "duplicate source", "duplicate task", "wrong task", "omitted task"])("rejects %s source applications", failure => {
+    const { plan, research, input, draft } = fixture(), route = draft.routes[0]!;
+    const application = route.evidenceApplications[0]!;
+    if (failure === "missing") route.evidenceApplications = [];
+    if (failure === "unknown") application.evidenceId = "invented";
+    if (failure === "unbound") application.evidenceId = input.context.evidence.at(-1)!.id;
+    if (failure === "empty reason") application.application = " ";
+    if (failure === "duplicate source") route.evidenceApplications.push(structuredClone(application));
+    if (failure === "duplicate task") application.taskIds.push(application.taskIds[0]!);
+    if (failure === "wrong task") application.taskIds[0] = "absent";
+    if (failure === "omitted task") application.taskIds.shift();
+    expect(() => compileRoadmapperBaseline(plan, research, input, draft)).toThrow(RoadmapperValidationError);
   });
 });

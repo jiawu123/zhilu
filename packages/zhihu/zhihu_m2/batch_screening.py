@@ -21,6 +21,7 @@ from zhihu_m2.models import ZhihuResult
 
 BATCH_VERSION = 'm2-batch-v1'
 MAX_CANDIDATES = 24
+MAX_CARDS_PER_CANDIDATE = 3
 MAX_PROMPT_BYTES = 256 * 1024
 LABELS = {
     'relevance': ('strongly', 'partially', 'unrelated'),
@@ -215,7 +216,8 @@ def _research_candidates(value, evidence_by_candidate):
                 or any(type(index) is not int or index not in evidence_by_candidate for index in indices)
                 or len(set(indices)) != len(indices)):
             _invalid()
-        evidence_ids = list(dict.fromkeys(evidence_by_candidate[index] for index in indices))
+        evidence_ids = list(dict.fromkeys(card_id for index in indices
+                                          for card_id in evidence_by_candidate[index]))
         identity = json.dumps([proposed['title'], evidence_ids], ensure_ascii=False).encode('utf-8')
         group_id = 'research_' + hashlib.sha256(identity).hexdigest()[:16]
         if group_id in seen:
@@ -228,13 +230,42 @@ def _research_candidates(value, evidence_by_candidate):
     return groups
 
 
+def _compile_candidate(compilation, result, timestamp):
+    """Tolerate a bounded multi-card array without relaxing the single-card validator."""
+    if (not isinstance(compilation, dict) or compilation.get('status') != 'ok'
+            or not isinstance(compilation.get('evidence_cards'), list)
+            or len(compilation['evidence_cards']) <= 1):
+        return [evidence_compiler.validate_evidence_response(
+            compilation, result, retrieved_at=timestamp)], None
+
+    outputs, first_error = [], None
+    cards = compilation['evidence_cards']
+    for card in cards[:MAX_CARDS_PER_CANDIDATE]:
+        try:
+            compiled = evidence_compiler.validate_evidence_response(
+                {**compilation, 'evidence_cards': [card]}, result, retrieved_at=timestamp)
+        except (ValueError, TypeError, KeyError, UnicodeError) as error:
+            if first_error is None:
+                first_error = error
+        else:
+            # Identical repeated cards carry no additional support. Different
+            # outputs sharing an ID still reach the existing conflict check.
+            if compiled not in outputs:
+                outputs.append(compiled)
+    if len(cards) > MAX_CARDS_PER_CANDIDATE and first_error is None:
+        first_error = evidence_compiler.EvidenceValidationError(
+            'Candidate card limit exceeded; only the first three cards were checked.')
+    return outputs, first_error
+
+
 def compile_batch(candidates: list[dict], *, goal: str, user_context: dict,
                   research_question: str, retrieved_at: str | None = None,
                   diagnostic_dir: Path | None = None,
                   diagnostics: list[dict] | None = None) -> dict[str, Any]:
     """Classify/compile at most 24 original variants in exactly one model attempt.
 
-    Valid item outputs are in candidate order, with parallel assessments. Invalid
+    Valid cards expand into single-card outputs in candidate order, with parallel
+    assessments. Up to three cards per candidate are checked independently. Invalid
     or missing items create bounded issues; an entirely invalid batch raises.
     Legitimate no_evidence outputs preserve the original model reason. Optional
     hypothesis groups require validated evidence references and human review.
@@ -350,19 +381,24 @@ def _validate_batch_payload(payload, prepared, diagnostic, diagnostics=None):
             issues.append({'code': 'batch_item_missing', 'candidateIndex': index})
             continue
         proposed = proposed_by_index[index]
+        compiled_items, candidate_complete = [], True
         try:
             if (counts[index] != 1 or set(proposed) != _ITEM_FIELDS
                     or any(not isinstance(proposed[key], str) or proposed[key] not in labels
                            for key, labels in LABELS.items())):
                 raise ValueError
-            compiled = evidence_compiler.validate_evidence_response(
-                proposed['compilation'], result, retrieved_at=timestamp)
+            compiled_items, card_error = _compile_candidate(
+                proposed['compilation'], result, timestamp)
             excluded = (proposed['relevance'] == 'unrelated'
                         or proposed['applicability'] == 'inapplicable'
                         or proposed['support'] == 'none')
-            if excluded and compiled['status'] != 'no_evidence':
+            if excluded and any(compiled['status'] != 'no_evidence' for compiled in compiled_items):
+                compiled_items = []
                 raise ValueError
+            if card_error is not None:
+                raise card_error
         except (ValueError, TypeError, KeyError, UnicodeError) as error:
+            candidate_complete = False
             diagnostic['item_errors'].append({'candidate_index': index,
                 'reason': str(error) if isinstance(error, evidence_compiler.EvidenceValidationError)
                 else 'Invalid item fields, labels or exclusion consistency.'})
@@ -394,12 +430,15 @@ def _validate_batch_payload(payload, prepared, diagnostic, diagnostics=None):
                 'code': 'batch_item_invalid',
                 'candidateIndex': index,
             })
-            continue
-        outputs.append(compiled)
-        assessments.append({'candidateIndex': index, 'sourceId': source['id'],
-                            **{key: proposed[key] for key in LABELS}})
-        if compiled['evidence_cards']:
-            evidence_by_candidate[index] = compiled['evidence_cards'][0]['id']
+        for compiled in compiled_items:
+            outputs.append(compiled)
+            assessments.append({'candidateIndex': index, 'sourceId': source['id'],
+                                **{key: proposed[key] for key in LABELS}})
+        # Candidate-level summaries may depend on every proposed card. A partial
+        # candidate retains its good cards but cannot support a whole summary.
+        if candidate_complete and compiled_items and compiled_items[0]['evidence_cards']:
+            evidence_by_candidate[index] = [compiled['evidence_cards'][0]['id']
+                                            for compiled in compiled_items]
     _debug(
         'items_validated',
         diagnostics=diagnostics,

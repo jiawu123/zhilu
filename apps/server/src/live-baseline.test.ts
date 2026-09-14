@@ -301,13 +301,13 @@ describe("live research Baseline orchestration", () => {
     expect(await fixture.repository.getBaselineProposals(fixture.projectId)).toHaveLength(0);
   });
 
-  it("keeps the old proposal and official plan intact when model output fails validation", async () => {
+  it("keeps the old proposal and official plan intact when model output and its correction fail validation", async () => {
     const generate = vi.fn(async (input: Parameters<RoadmapperProvider["generate"]>[0]) => roadmapperDraftFixture(input as RoadmapperInput));
     const fixture = await setup(readyResearch(), { generate });
     const endpoint = `${fixture.origin}/api/projects/${fixture.projectId}/research/live/baseline`;
     expect((await fetch(endpoint, { method: "POST" })).status).toBe(202);
     const previous = await fixture.repository.getBaselineProposals(fixture.projectId);
-    generate.mockImplementationOnce(async input => {
+    for (let attempt = 0; attempt < 2; attempt++) generate.mockImplementationOnce(async input => {
       const draft = roadmapperDraftFixture(input as RoadmapperInput);
       draft.routes[0]!.tasks[0]!.evidenceIds = ["fabricated-source"];
       return draft;
@@ -318,8 +318,10 @@ describe("live research Baseline orchestration", () => {
     expect(await fixture.repository.getBaselineProposals(fixture.projectId)).toEqual(previous);
     expect((await fixture.repository.getPlan(fixture.projectId)).version).toBe(1);
     expect(await fixture.repository.getHistory(fixture.projectId)).toHaveLength(0);
+    expect(generate).toHaveBeenCalledTimes(3);
     // 错误退出后项目锁释放。
     expect((await fetch(endpoint, { method: "POST" })).status).toBe(202);
+    expect(generate).toHaveBeenCalledTimes(4);
   });
 
   it("keeps replayable research after model failure without a rules or Mock proposal", async () => {

@@ -1,11 +1,11 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, describe, expect, it, vi } from "vitest";
-import type { BaselineProposal, InsufficientResearchSource, PlanState } from "@zhilu/contracts";
+import type { BaselineProposal, EvidenceCard, InsufficientResearchSource, PlanState } from "@zhilu/contracts";
 
 // App reads the initial route when imported; rendering these pure views does not use a browser.
 vi.stubGlobal("window", { location: { search: "" } });
-const { ResearchStudio, Sidebar } = await import("./App");
+const { ResearchStudio, Sidebar, Inspector } = await import("./App");
 afterAll(() => vi.unstubAllGlobals());
 
 const source: InsufficientResearchSource = {
@@ -24,6 +24,200 @@ const renderProposal = (value: BaselineProposal, selectedRouteId = route.id) => 
   proposal: value, selectedRouteId, busy: false, error: null,
   onClose() {}, onRunLive() {}, onRunMock() {}, onSelectRoute() {}, onApply() {}, onRevise() {},
 }));
+
+function appliedEvidenceProposal(): BaselineProposal {
+  const value = proposal([]);
+  const original: EvidenceCard = { id: "e-source", title: "先做小规模试写", summary: "先收集读者反馈，再扩大写作规模。",
+    sourceType: "zhihu", contentType: "advice", verificationStatus: "unverified", sourceUrl: "https://www.zhihu.com/answer/123",
+    supportingQuote: "先做小样本，再检验反馈。", applicableWhen: ["已有试写条件"], caveats: ["反馈可能延迟"], riskTags: [], adoptionReason: "研究阶段的采用理由" };
+  const inference: EvidenceCard = { id: "e-ai", title: "模型安排", summary: "工时和排期由模型提出。", sourceType: "ai",
+    contentType: "ai_inference", verificationStatus: "unverified", applicableWhen: [], caveats: [], riskTags: [], adoptionReason: "待用户确认" };
+  const extra: EvidenceCard = { ...original, id: "e-other", title: "另一项来源", supportingQuote: "另一任务的原文。" };
+  value.researchRun.evidencePacks[0]!.evidence = [original, extra];
+  value.researchRun.routeCandidates = [{ ...route, evidenceIds: [original.id] }];
+  value.roadmapper!.evidenceApplications = [
+    { routeId: route.id, evidenceId: original.id, taskIds: ["t-source"], application: "先写一篇样稿并收集三条反馈，再决定后续选题。<待确认>" },
+    { routeId: route.id, evidenceId: extra.id, taskIds: ["t-other"], application: "另一任务专属的采用说明。" },
+    { routeId: "route-2", evidenceId: original.id, taskIds: ["t-source"], application: "另一条路线的采用说明。" },
+  ];
+  const plan: PlanState = { schemaVersion: "bundle@1", projectId: value.projectId, title: "写作计划", goal: "完成作品", version: 1,
+    currentCommitId: "commit-1", weeklyHours: 5, updatedAt: value.createdAt, relations: [], evidence: [original, extra, inference],
+    nodes: [
+      { id: "t-source", type: "task", title: "写一篇样稿并访谈读者", status: "todo", evidenceIds: [original.id, inference.id], manualFields: [] },
+      { id: "t-ai", type: "task", title: "整理每周日历", status: "todo", evidenceIds: [inference.id], manualFields: [] },
+      { id: "t-other", type: "task", title: "另一项有来源的任务", status: "todo", evidenceIds: [extra.id, inference.id], manualFields: [] },
+    ], research: { mode: "live", runId: value.researchRun.id, selectedRouteId: route.id,
+      routeCandidates: value.researchRun.routeCandidates, roadmapper: value.roadmapper! } };
+  value.previews = [{ routeId: route.id, plan }];
+  return value;
+}
+
+const renderInspector = (plan: PlanState, taskId: string) => {
+  const node = plan.nodes.find(item => item.id === taskId)!;
+  return renderToStaticMarkup(createElement(Inspector, { node, plan, evidence: plan.evidence.filter(card => node.evidenceIds.includes(card.id)),
+    busy: false, onClose() {}, onSave() {}, onComplete() {}, onReportChange() {}, onArchive() {} }));
+};
+
+describe("model evidence applications remain distinct from source material", () => {
+  it("shows selected-route application explanations beside the original card and affected task titles", () => {
+    const value = appliedEvidenceProposal(), before = structuredClone(value);
+    const html = renderProposal(value);
+    expect(html).toContain("模型的采用说明 · 待核实");
+    expect(html).toContain("先写一篇样稿并收集三条反馈，再决定后续选题。&lt;待确认&gt;");
+    expect(html).toContain("对应任务：写一篇样稿并访谈读者");
+    expect(html).toContain("先做小样本，再检验反馈。");
+    expect(html).toContain("研究阶段的采用理由");
+    expect(html).toContain('href="https://www.zhihu.com/answer/123"');
+    expect(html).not.toContain("另一条路线的采用说明。");
+    expect(html).not.toContain("尚未取得可展示的知乎原帖");
+    expect(value).toEqual(before);
+  });
+
+  it("marks only the preview task without an actual Zhihu card as AI planning despite its AI evidence ID", () => {
+    const html = renderProposal(appliedEvidenceProposal());
+    expect(html.match(/AI规划／待验证/g) ?? []).toHaveLength(1);
+    expect(html).toMatch(/整理每周日历[\s\S]*?AI规划／待验证/);
+  });
+
+  it("shows only the selected formal task's application and preserves its source card", () => {
+    const plan = appliedEvidenceProposal().previews[0]!.plan, before = structuredClone(plan);
+    const html = renderInspector(plan, "t-source");
+    expect(html).toContain("模型的采用说明 · 待核实");
+    expect(html).toContain("先写一篇样稿并收集三条反馈，再决定后续选题。");
+    expect(html).toContain("先做小样本，再检验反馈。");
+    expect(html).not.toContain("另一任务专属的采用说明。");
+    expect(html).not.toContain("另一条路线的采用说明。");
+    expect(html).not.toContain("AI规划／待验证");
+    expect(plan).toEqual(before);
+  });
+
+  it("labels an AI-only task while showing collected material without adoption explanations", () => {
+    const html = renderInspector(appliedEvidenceProposal().previews[0]!.plan, "t-ai");
+    expect(html).toContain("AI规划／待验证");
+    expect(html).not.toContain("模型的采用说明 · 待核实");
+    expect(html).toContain("先做小样本，再检验反馈。");
+    expect(html).toContain("另一任务的原文。");
+    expect(html).toContain("当前路标未采用");
+    expect(html).not.toContain("另一任务专属的采用说明。");
+    expect(html).not.toContain("另一条路线的采用说明。");
+    expect(html).not.toContain("尚未取得可展示的知乎原帖");
+  });
+
+  it("keeps old source-backed proposals and formal tasks readable without application metadata", () => {
+    const value = appliedEvidenceProposal();
+    delete value.roadmapper!.evidenceApplications;
+    const preview = renderProposal(value), inspector = renderInspector(value.previews[0]!.plan, "t-source");
+    for (const html of [preview, inspector]) {
+      expect(html).toContain("先做小样本，再检验反馈。");
+      expect(html).not.toContain("模型的采用说明 · 待核实");
+    }
+    expect(inspector).not.toContain("AI规划／待验证");
+  });
+
+  it("does not describe a partially sourced formal plan as having no viewable posts", () => {
+    const plan = appliedEvidenceProposal().previews[0]!.plan;
+    const html = renderToStaticMarkup(createElement(Sidebar, { open: true, plan, projectId: plan.projectId, history: [],
+      focusTasks: [], pendingCount: 0, busy: false, onClose() {}, onAddTask() {}, onNewProject() {}, onSelectTask() {} }));
+    expect(html).toContain("证据不足");
+    expect(html).not.toContain("尚未取得可展示的知乎原帖");
+  });
+});
+
+describe("Inspector keeps research material visible for the user to verify", () => {
+  it("keeps insufficient-source snippets collapsed for optional reading without changing the plan", () => {
+    const plan = appliedEvidenceProposal().previews[0]!.plan;
+    const sources = [source, ...Array.from({ length: 4 }, (_, index) => ({ ...source,
+      source: { ...source.source, id: `post-${index + 2}`, title: `补充原帖 ${index + 2}`,
+        url: `https://www.zhihu.com/answer/${index + 1000}`, snippet: `第${index + 2}条原始片段` } }))];
+    plan.research!.insufficientSources = sources;
+    plan.evidence.find(card => card.id === "e-ai")!.summary = "较长的AI证据说明应出现在参考原文之后。";
+    const before = structuredClone(plan), html = renderInspector(plan, "t-ai");
+    const disclosure = html.match(/<details(?=[^>]*\binsufficient-sources\b)[^>]*>[\s\S]*?<\/details>/)?.[0];
+    expect(disclosure).toBeDefined();
+    expect(disclosure).not.toMatch(/^<details[^>]*\bopen(?:=|[ >])/);
+    expect(disclosure).toContain("第一天🗾\r\n第二天 &lt;注意&gt;");
+    expect(disclosure).toContain('style="white-space:pre-wrap"');
+    expect(disclosure).not.toContain("<注意>");
+    expect(disclosure).toContain("旅行者");
+    expect(disclosure).toContain("2026-09-13T12:34:56Z");
+    expect(disclosure).toContain("search_snippet_only");
+    expect(disclosure).toContain("not_independently_verified");
+    expect(disclosure).toContain("自定义风险🧭");
+    expect(disclosure).toMatch(/本次研究[\s\S]*?不代表[^<]*支持当前路标/);
+    for (const item of sources) expect(disclosure).toContain(`href="${item.source.url}"`);
+    expect(html.indexOf("第一天🗾")).toBeLessThan(html.indexOf("较长的AI证据说明应出现在参考原文之后。"));
+    expect(html).toContain("AI规划／待验证");
+    expect(html).not.toContain("模型的采用说明 · 待核实");
+    expect(plan).toEqual(before);
+  });
+
+  it("shows other collected quotes and source links without duplicating the selected task's adopted source", () => {
+    const plan = appliedEvidenceProposal().previews[0]!.plan;
+    const extra = plan.evidence.find(card => card.id === "e-other")!;
+    extra.supportingQuote = "其他原文🧭\r\n保留 <引文> 和换行";
+    extra.sourceUrl = "https://www.zhihu.com/answer/other-collected";
+    extra.author = "参考资料作者";
+    extra.retrievedAt = "2026-09-14T10:00:00Z";
+    extra.riskTags = ["search_snippet_only", "needs_human_review"];
+    plan.evidence.push({ ...extra, id: "e-unrelated-user", sourceType: "user", supportingQuote: "未被当前路标引用的用户资料不应作为知乎材料展示" });
+    plan.evidence.find(card => card.id === "e-ai")!.summary = "当前路标的AI证据长说明。";
+    const before = structuredClone(plan), html = renderInspector(plan, "t-source");
+    const collected = html.match(/<details(?=[^>]*\bcollected-sources\b)[^>]*>[\s\S]*?<\/details>/)?.[0];
+    expect(collected).toBeDefined();
+    expect(collected).not.toMatch(/^<details[^>]*\bopen(?:=|[ >])/);
+    expect(collected).toContain("已保存的原文摘录");
+    expect(collected).not.toContain("先做小样本，再检验反馈。");
+    expect(html).toContain("其他原文🧭\r\n保留 &lt;引文&gt; 和换行");
+    expect(html).not.toContain("<引文>");
+    expect(html).toContain(`href="${extra.sourceUrl}"`);
+    expect(html).toContain("参考资料作者");
+    expect(html).toContain("2026-09-14T10:00:00Z");
+    expect(html).toContain("search_snippet_only");
+    expect(html).toContain("needs_human_review");
+    expect(html).toContain("当前路标未采用");
+    expect(html.indexOf("其他原文🧭")).toBeLessThan(html.indexOf("当前路标的AI证据长说明。"));
+    expect(html.match(/先做小样本，再检验反馈。/g)).toHaveLength(1);
+    expect(html.match(/href="https:\/\/www.zhihu.com\/answer\/123"/g)).toHaveLength(1);
+    expect(html.match(/先写一篇样稿并收集三条反馈，再决定后续选题。/g)).toHaveLength(1);
+    expect(html).not.toContain("另一任务专属的采用说明。");
+    expect(html).not.toContain("另一条路线的采用说明。");
+    expect(html).not.toContain("未被当前路标引用的用户资料不应作为知乎材料展示");
+    expect(html).not.toContain("尚未取得可展示的知乎原帖");
+    expect(plan).toEqual(before);
+  });
+
+  it("labels a missing collected quote instead of presenting a model summary as original text", () => {
+    const plan = appliedEvidenceProposal().previews[0]!.plan;
+    const extra = plan.evidence.find(card => card.id === "e-other")!;
+    delete extra.supportingQuote;
+    delete extra.retrievedAt;
+    extra.summary = "模型概括不能冒充原文片段";
+    extra.sourceUrl = "https://www.zhihu.com/answer/missing-quote";
+    const before = structuredClone(plan), html = renderInspector(plan, "t-ai");
+    expect(html).toMatch(/(?:未保存[^<]*原文|原文[^<]*未保存)/);
+    expect(html).not.toMatch(/<blockquote[^>]*>模型概括不能冒充原文片段<\/blockquote>/);
+    expect(html).toContain('href="https://www.zhihu.com/answer/missing-quote"');
+    expect(html).toContain("检索时间未提供");
+    expect(html).not.toContain("尚未取得可展示的知乎原帖");
+    expect(plan).toEqual(before);
+  });
+
+  it("keeps older no-plan and no-source Inspector callers renderable", () => {
+    const plan = appliedEvidenceProposal().previews[0]!.plan, node = plan.nodes.find(item => item.id === "t-ai")!;
+    const props = { node, evidence: plan.evidence.filter(card => node.evidenceIds.includes(card.id)), busy: false,
+      onClose() {}, onSave() {}, onComplete() {}, onReportChange() {}, onArchive() {} };
+    const withoutPlan = renderToStaticMarkup(createElement(Inspector, props));
+    expect(withoutPlan).toContain("AI规划／待验证");
+    expect(withoutPlan).not.toContain("先做小样本，再检验反馈。");
+    expect(withoutPlan).not.toContain("当前路标未采用");
+    plan.evidence = props.evidence;
+    const before = structuredClone(plan), withoutSources = renderInspector(plan, "t-ai");
+    expect(withoutSources).toContain("AI规划／待验证");
+    expect(withoutSources).not.toContain("当前路标未采用");
+    expect(withoutSources).not.toContain("模型的采用说明 · 待核实");
+    expect(plan).toEqual(before);
+  });
+});
 
 describe("insufficient research remains visible without becoming adopted evidence", () => {
   it("shows a prominent model planning warning even when no posts returned", () => {

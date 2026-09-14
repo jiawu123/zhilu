@@ -151,6 +151,8 @@ export interface RoadmapperRun {
   recommendationEvidenceIds: string[];
   warnings: string[];
   evidenceStatus?: "sufficient" | "insufficient";
+  /** Model explanations of how source claims affect tasks; not independent verification. */
+  evidenceApplications?: Array<{ routeId: string; evidenceId: string; taskIds: string[]; application: string }>;
   planningBudget?: RoadmapperPlanningBudget;
   weeklyOverruns?: Array<{ routeId: string; week: number; capacityHours: number; plannedHours: number; toleranceHours: number }>;
 }

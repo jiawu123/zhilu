@@ -23,7 +23,7 @@ Server 调用 `createZhihuProvider(readZhihuProviderConfig())`；配置来自 No
 
 在 Node 启动环境配置 `ROADMAP_API_KEY`、`ROADMAP_API_URL`（完整 Chat Completions endpoint）及 `ROADMAP_MODEL`。可回落到 `LLM_API_KEY/LLM_API_URL/LLM_MODEL`；沿用现有 DeepSeek 时可设置 `DEEPSEEK_API_KEY`，默认 endpoint/model 与 Python 模块一致。仅在 `packages/zhihu/.env` 设置 Key 不会自动给 Node 配置。示例见 [.env.example](.env.example)，不要把 Key 传给浏览器。
 
-`ROADMAP_TIMEOUT_MS` 默认 120000，`ROADMAP_MAX_TOKENS` 默认 16384。每次调用只发 JSON Context，没有工具权限，也不自动重试或回落到规则草案。HTTP 503 表示未配置，504 表示模型超时，502 表示服务/协议失败，422 表示日期、容量或生成草案未通过校验。旧提案在新提案成功保存前保留。
+`ROADMAP_TIMEOUT_MS` 默认 120000，`ROADMAP_MAX_TOKENS` 默认 16384。每次调用只发 JSON Context，没有工具权限，不回落到规则草案。首次 live Baseline 的模型草稿若被 Roadmapper 结构校验拒绝，会携带相同上下文、未通过草稿和具体错误，至多调用一次模型纠正（合计最多两次模型调用，每次独立受上述超时限制）；不重新运行 Planner 或知乎检索，第二次仍须通过全部校验。网络、超时、模型协议错误不触发此纠正；草稿对话修订及独立诊断回放仍为单次模型调用。HTTP 503 表示未配置，504 表示模型超时，502 表示服务/协议失败，422 表示日期、容量或生成草案未通过校验。旧提案在新提案成功保存前保留。
 
 M3 默认允许每周已确认预算的 **10% 浮动、最多 1 小时**，取两者较小值。配置为 `ROADMAP_WEEKLY_TOLERANCE_PERCENT=10`（范围 0–50）与 `ROADMAP_WEEKLY_TOLERANCE_HOURS=1`（范围 0–8），任一设为 `0` 恢复严格上限；不足七天的末周按天折算浮动额度。任务加复盘超出原预算但在额度内时，草稿保留实际估时并明确提示；超过额度仍拒绝。不增加已确认的 `plan.weeklyHours`，不缩小模型估时，不凑满较低工时。
 
@@ -61,6 +61,10 @@ node --env-file=apps/server/.env.local --import tsx apps/server/src/index.ts
 
 ## M3 独立回放与验收
 
+覆盖不足和零证据分别处理：只要输入仍有已接纳的知乎卡，每条 M3 路线都须把至少一条适用主张用于具体任务。模型先输出 `evidenceApplications`（知乎 ID、对应任务 ID、如何影响行动/产出/验收），再拆解与排期；路线、任务和采用说明双向对应，未知来源、空说明及装饰性引用被拒绝。用户事实不能替代这一来源要求，不强迫用完所有卡片，也不强迫 AI 排期任务引用知乎。只有零张卡时才允许全 AI 暂定安排。
+
+采用说明持久化在 `roadmapper.evidenceApplications`，预览及任务详情并列展示原文与“模型的采用说明 · 待核实”；无直接知乎依据的任务标为 AI 规划／待验证。该结构检查不证明引用的语义相关或事实真实。提示要求遵守用户确认频率，并将缺乏数据支持的经验建议先作为试验，不能直接变成硬性验收。首次生成仍最多一次纠错，不增加研究或独立模型评审调用。
+
 真实 Baseline 在初始研究结果通过协议校验后、调用 M3 前保存 `{plan, research}` 到 `<数据目录>/<项目ID>/.plan/research-snapshots/<研究RunID>.json`。模型失败也保留快照。快照最多 2 MiB，含用户确认背景和证据，不含 Provider 配置；目录 0700、文件 0600，独占新建。不得提交 Git 或作为公开分享内容；当前需手动管理保留周期。正式 Plan/History 不因保存快照而改变。
 
 从仓库根目录运行：
@@ -84,9 +88,13 @@ node --env-file=apps/server/.env.local --import tsx apps/server/scripts/verify_m
 
 ## 时间变化的局部排期
 
+项目读取、`GET /api/projects/:projectId/diff` 和基线确认响应中的 `pending` 只包含同项目、与返回的正式计划版本一致的预演，按事件时间从新到旧排列（无效时间置后，同时间按 Patch ID 升序）。页面恢复最新事件的有效预演，并在切换项目或确认基线时同步清理旧预演状态。旧版本 JSON 保留；按 ID 应用或重新排期仍会拒绝过期或跨项目预演，不会自动改写版本、重排或写入正式计划。
+
 `POST /api/projects/:projectId/diff/replan` 只接受 `{ "patchId": "已有待确认提案ID" }`。读取已保存的时间约束事件与正式计划，预检通过后复用 Roadmapper 传输，不初始化或调用知乎 Provider。仍需 `ZHIHU_LIVE_ENABLED=true` 和 Node 模型配置，但这个接口不需要 Python/知乎 CLI。
 
-成功后生成新 Patch ID，替换旧 pending，返回 `processing`（模型判断、无需检索的原因、既有证据 ID、提醒）；不修改正式计划。模型执行期间禁止批准旧方案，生成期间版本变化则拒绝结果，失败保留原方案。用户通过 `/diff/apply` 确认后，处理记录随 Commit 保存。规则事件入口继续可离线运行，并明确没有自动改期。后续 M2 读取已确认的 `plan.weeklyHours`，不再使用访谈时的旧预算。
+存在实际变化时返回 HTTP 202，生成新 Patch ID，替换旧 pending，返回 `processing`（模型判断、无需检索的原因、既有证据 ID、提醒）；不修改正式计划。若预算和日期均无需变化，返回 HTTP 200 `{ unchanged: true, processing }`，不保存空 Patch，不替换原 pending，不写历史；界面显示无需调整并禁用此次无效确认。仅工时预算改变、日期不变仍是有效变更，走 202。模型执行期间禁止批准旧方案，生成期间版本变化则拒绝结果（包括无变化结果），失败保留原方案。用户通过 `/diff/apply` 确认后，处理记录随 Commit 保存。规则事件入口继续可离线运行，并明确没有自动改期。后续 M2 读取已确认的 `plan.weeklyHours`，不再使用访谈时的旧预算。
+
+M3 原本共享同一周执行窗口的 task→task 依赖，在局部排期输入中标为 `windowKind: "shared_week"`：允许保留或共同移动到起止完全相同、至多七天的窗口，窗口内仍先做前置任务；也可改为严格先后日期。此例外仅由已保存的 live/model 计划中既有同窗关系识别，不根据模型新日期授予。不放宽普通依赖、部分重叠、倒置、多周重叠、里程碑依赖；手工锁定、固定节点、预算、循环与硬依赖状态检查保持生效。
 
 新版 Baseline Controller 显式采用 `queryPolicy: "initial"` 对齐 Kyle 的 `m2-initial`；全局结构覆盖与补检索已接入，但真证据的语义覆盖与 M3/M4 实际模型效果仍待联合验收。
 

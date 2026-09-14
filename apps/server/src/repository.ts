@@ -92,6 +92,18 @@ export class PlanRepository {
     }
   }
 
+  /** Restore actionable proposals without deleting older records needed for conflict checks. */
+  async getActivePending(plan: Pick<PlanState, "projectId" | "version">): Promise<PendingChange[]> {
+    const eventTime = (pending: PendingChange) => {
+      const parsed = Date.parse(pending.event.occurredAt);
+      return Number.isFinite(parsed) ? parsed : -Infinity;
+    };
+    return (await this.getPending(plan.projectId))
+      .filter(pending => pending.patch.baseVersion === plan.version && pending.afterPreview.projectId === plan.projectId)
+      .sort((left, right) => eventTime(right) - eventTime(left)
+        || (left.patch.id < right.patch.id ? -1 : left.patch.id > right.patch.id ? 1 : 0));
+  }
+
   async removePending(projectId: string, patchId: string): Promise<void> {
     await rm(join(this.projectRoot(projectId), "pending", `${patchId}.json`), { force: true });
   }

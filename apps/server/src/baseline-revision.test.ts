@@ -39,6 +39,7 @@ describe("plan conversation before confirmation", () => {
     const input = prepareRoadmapperInput(plan, research, "initial-model");
     const draft = roadmapperDraftFixture(input), userFactId = input.context.userFacts[0]!.id;
     draft.routes[0]!.tasks[0]!.evidenceIds = [userFactId];
+    draft.routes[0]!.evidenceApplications.forEach(application => { application.taskIds.shift(); });
     const proposal = compileRoadmapperBaseline(plan, research, input, draft);
     const before = structuredClone({ plan, proposal });
     const priorInference = proposal.previews[0]!.plan.evidence.find(card => card.sourceType === "ai")!.id;

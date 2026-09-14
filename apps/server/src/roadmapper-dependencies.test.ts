@@ -27,6 +27,7 @@ function addSameWeekPrerequisite(input: RoadmapperInput): Draft {
   first.dependsOn = [prerequisite.id];
   // Deliberately place the prerequisite after its dependent in untrusted model output.
   route.tasks.push(prerequisite);
+  route.evidenceApplications.forEach(application => { application.taskIds.push(prerequisite.id); });
   return draft;
 }
 
@@ -59,9 +60,9 @@ async function setup(makeDraft: (input: RoadmapperInput) => Draft = roadmapperDr
   return { repository, plan: snapshot.plan, questions: snapshot.research.questions, base, post, planForBaseline, researchOne, generate };
 }
 
-function assertOneBoundedResearch(fixture: Awaited<ReturnType<typeof setup>>) {
+function assertOneBoundedResearch(fixture: Awaited<ReturnType<typeof setup>>, modelCalls = 1) {
   expect(fixture.planForBaseline).toHaveBeenCalledTimes(1);
-  expect(fixture.generate).toHaveBeenCalledTimes(1);
+  expect(fixture.generate).toHaveBeenCalledTimes(modelCalls);
   expect(fixture.researchOne).toHaveBeenCalledTimes(fixture.questions.length);
   expect(fixture.researchOne.mock.calls.flatMap(([value]) => value.request.searchQueries))
     .toEqual(fixture.questions.flatMap(question => question.searchQueries));
@@ -103,14 +104,14 @@ describe("Roadmapper dependency HTTP boundary", () => {
     assertOneBoundedResearch(fixture);
   });
 
-  it.each(["cycle", "dangling", "future"])("rejects a %s dependency without replacing the old pending draft or formal state", async failure => {
+  it.each(["cycle", "dangling", "future"])("rejects a %s dependency that remains after correction without replacing the old pending draft or formal state", async failure => {
     const fixture = await setup();
     expect((await fixture.post("research/live/baseline")).status).toBe(202);
     const before: PlanState = await fixture.repository.getPlan(fixture.plan.projectId);
     const pending = await fixture.repository.getBaselineProposals(fixture.plan.projectId);
     const history = await fixture.repository.getHistory(fixture.plan.projectId);
     fixture.generate.mockClear(); fixture.planForBaseline.mockClear(); fixture.researchOne.mockClear();
-    fixture.generate.mockImplementationOnce(async value => {
+    for (let attempt = 0; attempt < 2; attempt++) fixture.generate.mockImplementationOnce(async value => {
       const draft = addSameWeekPrerequisite(value as RoadmapperInput), route = draft.routes[0]!;
       if (failure === "cycle") route.tasks.find(task => task.id === "prepare-first")!.dependsOn = ["t1"];
       if (failure === "dangling") route.tasks[0]!.dependsOn = ["missing-task"];
@@ -123,6 +124,6 @@ describe("Roadmapper dependency HTTP boundary", () => {
     expect(await fixture.repository.getBaselineProposals(fixture.plan.projectId)).toEqual(pending);
     expect(await fixture.repository.getPlan(fixture.plan.projectId)).toEqual(before);
     expect(await fixture.repository.getHistory(fixture.plan.projectId)).toEqual(history);
-    assertOneBoundedResearch(fixture);
+    assertOneBoundedResearch(fixture, 2);
   });
 });

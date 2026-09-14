@@ -98,15 +98,15 @@ describe("Roadmapper weekly tolerance HTTP configuration", () => {
     expect(response.status).toBe(422);
     expect(await fixture.repository.getBaselineProposals(fixture.snapshot.plan.projectId)).toHaveLength(0);
     expect(await fixture.repository.getPlan(fixture.snapshot.plan.projectId)).toEqual(fixture.snapshot.plan);
-    expect(fixture.generate).toHaveBeenCalledTimes(1);
+    expect(fixture.generate).toHaveBeenCalledTimes(2);
   });
 
-  it("rejects beyond the bounded tolerance without writing a proposal or shrinking model estimates", async () => {
+  it("rejects an overrun that remains beyond tolerance after correction without writing a proposal or shrinking model estimates", async () => {
     const fixture = await setup(0.61), response = await fixture.post();
     expect(response.status).toBe(422);
     expect(await fixture.repository.getBaselineProposals(fixture.snapshot.plan.projectId)).toHaveLength(0);
     expect(await fixture.repository.getHistory(fixture.snapshot.plan.projectId)).toHaveLength(0);
-    expect(fixture.generate).toHaveBeenCalledTimes(1);
+    expect(fixture.generate).toHaveBeenCalledTimes(2);
   });
 
   it("rejects invalid local tolerance before any Planner, search or model call", async () => {

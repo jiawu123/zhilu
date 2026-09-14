@@ -265,12 +265,76 @@ describe("model event date replan", () => {
     expect(compile).toThrow("当前约束下无法排期：锁定日期无法满足新工时");
   });
 
-  it("does not invent date changes when only the weekly budget changes, nor create a truly empty patch", () => {
+  it("distinguishes a budget-only change from an unchanged valid schedule", () => {
     const { plan, event, output, compile } = fixture();
     event.changes!.weeklyHours = 10;
     output.changes = [{ nodeId: "t1", startDate: "2026-09-12", endDate: "2026-09-18", reason: "不需要调整" }];
     expect(compile().patch.operations).toEqual([{ op: "set_weekly_hours", weeklyHours: 10 }]);
     event.changes!.weeklyHours = plan.weeklyHours;
-    expect(compile).toThrow("不生成空 Patch");
+    expect(compile().patch.operations).toEqual([]);
+  });
+});
+
+function windowFixture() {
+  const f = fixture();
+  f.plan.research = { mode: "live", runId: "research-model", selectedRouteId: "route-a", routeCandidates: [],
+    roadmapper: { mode: "model", runId: "roadmapper-model", recommendationReason: "在周内依次执行", recommendationEvidenceIds: [], warnings: [] } };
+  const first = f.plan.nodes.find(node => node.id === "t1")!, second = f.plan.nodes.find(node => node.id === "t2")!;
+  Object.assign(second, { startDate: first.startDate, endDate: first.endDate });
+  first.estimatedHours = 2; second.estimatedHours = 2;
+  f.plan.relations.forEach(relation => { relation.hard = true; });
+  f.event.changes!.weeklyHours = 10;
+  f.output.changes = [];
+  return { ...f, first, second };
+}
+
+describe("existing Roadmapper weekly execution windows", () => {
+  it("preserves a source-backed same-window dependency when only the budget changes", () => {
+    const f = windowFixture(), before = structuredClone(f.plan);
+    const input = prepareEventReplanInput(f.plan, f.event, f.impact);
+    expect(input.context.dependencies).toContainEqual({ dependentId: "t2", prerequisiteId: "t1", windowKind: "shared_week" });
+    expect(f.compile().patch.operations).toEqual([{ op: "set_weekly_hours", weeklyHours: 10 }]);
+    expect(f.compile().processing.warnings.join()).toContain("同一执行窗口");
+    expect(f.plan).toEqual(before);
+  });
+
+  it("accepts moving the authorized pair together and leaves dependency/status enforcement intact", () => {
+    const f = windowFixture();
+    f.output.changes = ["t1", "t2"].map(nodeId => ({ nodeId, startDate: "2026-09-19", endDate: "2026-09-25", reason: "同一周内先完成前置任务，再完成后续任务" }));
+    const result = f.compile();
+    expect(result.patch.operations.filter(op => op.op === "update_node").map(op => op.nodeId)).toEqual(["t1", "t2", "m1"]);
+    f.second.status = "in_progress";
+    expect(f.compile).toThrow("硬依赖");
+  });
+
+  it("preserves locked same-window dates, but still rejects changing a locked date", () => {
+    const f = windowFixture();
+    f.first.manualFields = ["startDate", "endDate"]; f.second.manualFields = ["startDate", "endDate"];
+    expect(() => f.compile()).not.toThrow();
+    f.output.changes = ["t1", "t2"].map(nodeId => ({ nodeId, startDate: "2026-09-19", endDate: "2026-09-25", reason: "尝试移动锁定日期" }));
+    expect(f.compile).toThrow("已被用户锁定");
+  });
+
+  it("does not let shared windows hide insufficient capacity or cycles", () => {
+    const f = windowFixture();
+    f.event.changes!.weeklyHours = 3;
+    expect(f.compile).toThrow("超过 3 小时预算");
+    f.event.changes!.weeklyHours = 10;
+    f.plan.relations.push({ id: "reverse", type: "depends_on", sourceId: "t1", targetId: "t2", hard: true });
+    expect(f.compile).toThrow("循环依赖");
+  });
+
+  it.each(["non-model", "new-merge", "partial-overlap", "reversed", "long-window", "milestone"])("still rejects %s dependency overlap", kind => {
+    const f = windowFixture();
+    if (kind === "non-model") delete f.plan.research;
+    if (kind === "new-merge") {
+      Object.assign(f.second, { startDate: "2026-09-19", endDate: "2026-09-25" });
+      f.output.changes = [{ nodeId: "t2", startDate: f.first.startDate!, endDate: f.first.endDate!, reason: "未经授权合并不同窗口" }];
+    }
+    if (kind === "partial-overlap") f.output.changes = [{ nodeId: "t2", startDate: "2026-09-13", endDate: "2026-09-20", reason: "部分重叠" }];
+    if (kind === "reversed") f.output.changes = [{ nodeId: "t1", startDate: "2026-09-19", endDate: "2026-09-25", reason: "把前置任务放到后面" }];
+    if (kind === "long-window") f.output.changes = ["t1", "t2"].map(nodeId => ({ nodeId, startDate: "2026-09-12", endDate: "2026-09-25", reason: "不能借过长重叠窗口隐藏依赖" }));
+    if (kind === "milestone") f.plan.relations.push({ id: "parent", type: "depends_on", sourceId: "t2", targetId: "m1", hard: true });
+    expect(f.compile).toThrow("依赖排期冲突");
   });
 });
