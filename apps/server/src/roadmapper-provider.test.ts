@@ -55,6 +55,17 @@ describe("Roadmapper model transport", () => {
     await expect(p.generate(input, { signal: abort.signal })).rejects.toMatchObject({ code: "cancelled" });
     expect(request).not.toHaveBeenCalled();
   });
+  it("captures truncated model text before validation without copying credentials", async () => {
+    const diagnostic: Record<string, unknown> = {};
+    const { p } = provider(response({}, { content: '{"done":false,"questions":[' }, "length"));
+    await expect(p.generate({ ...input, diagnostic })).rejects.toMatchObject({ code: "invalid_response" });
+    expect(diagnostic.rawContent).toBe('{"done":false,"questions":[');
+    expect(diagnostic.finishReason).toBe("length");
+    expect(diagnostic.httpStatus).toBe(200);
+    expect(JSON.stringify(diagnostic)).not.toContain("private-key");
+    expect(JSON.stringify(diagnostic)).not.toContain("Authorization");
+  });
+
   it("sends one bounded JSON-object request without tools or redirects", async () => {
     const { p, request } = provider(response({ routes: [{ id: "route-one" }] }));
     expect(await p.generate(input)).toEqual({ routes: [{ id: "route-one" }] });

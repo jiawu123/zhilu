@@ -46,6 +46,10 @@ export function getPlanDiff(before: PlanState, after: PlanState): PlanDiffEntry[
     id: "weekly-hours", title: "全局约束", kind: "global",
     fields: [{ key: "weeklyHours", label: "每周可投入", before: `${before.weeklyHours} 小时`, after: `${after.weeklyHours} 小时` }],
   });
+  for (const [key, label, previous, next] of [
+    ["goal", "目标", before.goal, after.goal],
+    ["targetDate", "截止日期", before.goalContract?.targetDate, after.goalContract?.targetDate],
+  ]) if (previous !== next) entries.push({ id: key!, title: label!, kind: "global", fields: [{ key: key!, label: label!, before: previous ?? "未设置", after: next ?? "未设置" }] });
   const beforeNodes = new Map(before.nodes.map((node) => [node.id, node]));
   const afterNodes = new Map(after.nodes.map((node) => [node.id, node]));
   for (const id of new Set([...beforeNodes.keys(), ...afterNodes.keys()])) {

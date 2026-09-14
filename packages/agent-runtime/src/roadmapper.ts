@@ -55,10 +55,11 @@ risks 与 assumptions 只写影响执行的具体风险、取舍与假设。只�
 
 const COMMON_PLANNING_PROMPT = `每条路线 3–5 个里程碑，每周 1–4 个具体任务，覆盖 weeks 中每一周。任务包含可观察产出和验收标准；禁止只有“学习、了解、熟悉”的空任务。
 最后不足七天的一周也必须安排任务，并使用该周给定的工时上限；不要自行把总周数取整或遗漏最后一周。
-每周任务工时总和加该周 reviewHours 应优先控制在 capacityHours 内；必要时可使用该周 toleranceHours 弹性，但总和绝不能超过 maxTotalHours。
-每周 maxTaskHours 已扣除复盘，是该周所有 tasks.hours 之和的绝对上限，尤其最后不足一周时必须逐项相加检查。装不下的工作移到前面有余量且依赖允许的周，或缩小可选产出范围；不能只调低估时。最后短周只安排能在给定上限内完成的小量收尾工作。
-复盘计入上述总工时，由系统另行加入，请勿重复生成复盘任务。少于预算正常，不必凑满；弹性额度不能当作原预算，不要缩写或伪造任务估时来隐藏超额。
+每周任务工时总和 应优先控制在 capacityHours 内；必要时可使用该周 toleranceHours 弹性，但总和绝不能超过 maxTotalHours。
+每周 maxTaskHours 是该周所有 tasks.hours 之和的绝对上限，尤其最后不足一周时必须逐项相加检查。装不下的工作移到前面有余量且依赖允许的周，或缩小可选产出范围；不能只调低估时。最后短周只安排能在给定上限内完成的小量收尾工作。
+不生成固定的每周复盘节点，不预留复盘工时。少于预算正常，不必凑满；弹性额度不能当作原预算，不要缩写或伪造任务估时来隐藏超额。
 任务 week 必须在所属里程碑 startWeek/endWeek 内。每周是执行时间窗口，不表示任务必须占满整周。
+提前或推迟任务时，同步检查其 milestoneId 与里程碑周次范围；根据阶段成果调整归属或范围，不能只改任务 week 而保留冲突的里程碑安排。
 dependsOn 仅引用本路线 tasks 中实际存在的任务 ID，可以依赖同周或更早周的任务；同周必须先完成前置任务再执行后续任务，工时总和仍受该周容量约束。
 不得依赖自己、未来周任务、其他路线任务或里程碑 ID；禁止循环依赖，至少有一条真实关键依赖。输出前逐项核对引用 ID 与 week。
 推荐理由结合用户当前条件、目标取舍和被推荐路线的证据，列出 recommendationEvidenceIds。明确风险和未确认假设，不将它们说成事实。
@@ -191,9 +192,6 @@ export function compileRoadmapperBaseline(plan: PlanState, research: LiveResearc
         ...(route.weeklyOverruns.length ? ["工时弹性需确认"] : [])],
       adoptionReason: route.candidate.id === recommendedRouteId ? roadmapper.recommendationReason : "供用户比较此备选路线的执行方式与适用条件。" };
     const nodes: PlanNode[] = route.nodes.map(node => ({ ...node, evidenceIds: [...node.evidenceIds, inferenceId] }));
-    for (const week of input.context.weeks) nodes.push({ id: `review-${week.week}`, type: "checkpoint", title: `第 ${week.week} 周复盘`,
-      status: "todo", startDate: week.endDate, endDate: week.endDate, estimatedHours: week.reviewHours,
-      deliverable: "记录本周成果、未完成原因和下周调整", acceptanceCriteria: ["对照本周任务验收结果", "确认下一周是否需要调整"], evidenceIds: [inferenceId], manualFields: [] });
     route.assumptions.forEach((assumption, index) => nodes.push({ id: `assumption-${index + 1}`, type: "assumption", title: assumption,
       status: "draft", evidenceIds: [inferenceId], manualFields: [] }));
     return { routeId: route.candidate.id, plan: { ...structuredClone(plan), nodes, relations: route.relations,
@@ -234,7 +232,9 @@ function parseRoute(value: unknown, allowedIds: Set<string>, sourceIds: Set<stri
     const id = identifier(task.id), milestoneId = identifier(task.milestoneId);
     requireValue(!taskMap.has(id) && !milestoneMap.has(id) && !/^(review-|assumption-)/.test(id), "任务 ID 重复或使用了保留前缀。");
     const week = weekNumber(task.week, weeks.length), milestone = milestoneMap.get(milestoneId);
-    requireValue(milestone && week >= milestone.start && week <= milestone.end, "任务不在所属里程碑的时间范围内。");
+    requireValue(milestone, `任务「${text(task.title, 180)}」（${id}）引用了不存在的里程碑「${milestoneId}」。`);
+    requireValue(week >= milestone.start && week <= milestone.end,
+      `任务「${text(task.title, 180)}」（${id}）安排在第 ${week} 周，不在所属里程碑「${milestoneId}」的第 ${milestone.start}–${milestone.end} 周范围内。请同步检查任务周次、里程碑归属与范围。`);
     requireValue(typeof task.hours === "number" && Number.isFinite(task.hours) && task.hours > 0, "任务工时必须是正数。");
     weeklyHours[week - 1]! += task.hours as number;
     weeklyCounts[week - 1]! += 1;
@@ -253,7 +253,7 @@ function parseRoute(value: unknown, allowedIds: Set<string>, sourceIds: Set<stri
     requireValue(weeklyCounts[index]! >= 1 && weeklyCounts[index]! <= 4, `第 ${week.week} 周需要 1–4 个具体任务。`);
     const plannedHours = weeklyHours[index]!;
     requireValue(plannedHours <= week.maxTotalHours + 0.000001,
-      `第 ${week.week} 周的任务与复盘共 ${formatHours(plannedHours)} 小时，超过弹性上限 ${formatHours(week.maxTotalHours)} 小时（原预算 ${formatHours(week.capacityHours)} 小时）。该周所有任务工时相加不得超过 ${formatHours(Math.max(0, week.maxTotalHours - week.reviewHours))} 小时，已扣除复盘；请调整工作范围或移到有余量的较早周。`);
+      `第 ${week.week} 周的任务共 ${formatHours(plannedHours)} 小时，超过弹性上限 ${formatHours(week.maxTotalHours)} 小时（原预算 ${formatHours(week.capacityHours)} 小时）。该周所有任务工时相加不得超过 ${formatHours(Math.max(0, week.maxTotalHours - week.reviewHours))} 小时；请调整工作范围或移到有余量的较早周。`);
     if (plannedHours > week.capacityHours + 0.000001) {
       const overrun = { routeId: candidate.id, week: week.week, capacityHours: week.capacityHours,
         plannedHours, toleranceHours: week.toleranceHours };
@@ -350,7 +350,7 @@ export function validateRoadmapperPlanningBudget(value: unknown): RoadmapperPlan
 
 function formatHours(hours: number): string { return String(Math.round(hours * 100) / 100); }
 function budgetWarning(overrun: NonNullable<RoadmapperRun["weeklyOverruns"]>[number]): string {
-  return `第 ${overrun.week} 周计划 ${formatHours(overrun.plannedHours)} 小时（含复盘），原预算 ${formatHours(overrun.capacityHours)} 小时，使用 ${formatHours(overrun.plannedHours - overrun.capacityHours)} 小时工时弹性；请确认能否投入额外时间。`;
+  return `第 ${overrun.week} 周计划 ${formatHours(overrun.plannedHours)} 小时，原预算 ${formatHours(overrun.capacityHours)} 小时，使用 ${formatHours(overrun.plannedHours - overrun.capacityHours)} 小时工时弹性；请确认能否投入额外时间。`;
 }
 
 function planningWeeks(startDate: string, endDate: string, hours: number, budget = validateRoadmapperPlanningBudget(undefined)): PlanningWeek[] {
@@ -363,7 +363,7 @@ function planningWeeks(startDate: string, endDate: string, hours: number, budget
     const count = Math.min(7, days - index * 7), capacityHours = Math.floor(hours * count / 7 * 100) / 100;
     const toleranceHours = Math.floor((Math.min(hours * budget.weeklyToleranceRatio, budget.weeklyToleranceHours) * count / 7 + 1e-9) * 100) / 100;
     const maxTotalHours = Math.round((capacityHours + toleranceHours) * 100) / 100;
-    const reviewHours = Math.round(Math.min(0.5, capacityHours * 0.1) * 100) / 100;
+    const reviewHours = 0;
     return { week: index + 1, startDate: new Date(start + index * 7 * day).toISOString().slice(0, 10),
       endDate: new Date(start + (index * 7 + count - 1) * day).toISOString().slice(0, 10), capacityHours,
       toleranceHours, maxTotalHours, reviewHours, maxTaskHours: Math.round((maxTotalHours - reviewHours) * 100) / 100 };

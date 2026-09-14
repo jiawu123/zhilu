@@ -4,6 +4,8 @@ import { validateRoadmapperPlanningBudget } from "@zhilu/agent-runtime";
 export interface RoadmapperInput {
   systemPrompt: string;
   context: unknown;
+  /** Server-owned capture only; excludes HTTP authentication headers. */
+  diagnostic?: Record<string, unknown>;
 }
 export interface RoadmapperProvider {
   generate(input: RoadmapperInput, options?: { signal?: AbortSignal }): Promise<unknown>;
@@ -101,6 +103,10 @@ export function createRoadmapperProvider(
   return {
     async generate(input, options = {}) {
       if (options.signal?.aborted) throw new RoadmapperProviderError("cancelled");
+      const started = Date.now();
+      let responseWaitMs: number | undefined;
+      let usage: Record<string, unknown> | undefined;
+      let outcome = "failed";
       let body: string;
       try {
         if (!input || typeof input.systemPrompt !== "string" || !input.systemPrompt.trim()) throw new Error();
@@ -119,6 +125,10 @@ export function createRoadmapperProvider(
         });
         if (Buffer.byteLength(body, "utf8") > settings.maxInputBytes) throw new Error();
       } catch { throw new RoadmapperProviderError("invalid_input"); }
+      if (input.diagnostic) {
+        input.diagnostic.request = JSON.parse(body);
+        input.diagnostic.apiUrl = settings.apiUrl;
+      }
 
       const controller = new AbortController();
       let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
@@ -130,6 +140,8 @@ export function createRoadmapperProvider(
           headers: { Authorization: `Bearer ${settings.apiKey}`, "Content-Type": "application/json" },
           body,
         });
+        responseWaitMs = Date.now() - started;
+        if (input.diagnostic) input.diagnostic.httpStatus = response.status;
         if (!response.ok) {
           void response.body?.cancel().catch(() => {});
           throw new RoadmapperProviderError("upstream_failed");
@@ -156,7 +168,12 @@ export function createRoadmapperProvider(
         }
         try {
           const envelope: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
-          return parseMessage(envelope);
+          if (record(envelope) && record(envelope.usage)) {
+            const counts = envelope.usage;
+            usage = Object.fromEntries(["prompt_tokens", "completion_tokens", "total_tokens"]
+              .filter(key => Number.isSafeInteger(counts[key])).map(key => [key, counts[key]]));
+          }
+          return parseMessage(envelope, input.diagnostic);
         } catch { throw new RoadmapperProviderError("invalid_response"); }
       };
       const deadline = new Promise<never>((_resolve, reject) => {
@@ -172,7 +189,7 @@ export function createRoadmapperProvider(
           void reader?.cancel().catch(() => {});
         }, settings.timeoutMs);
       });
-      try { return await Promise.race([work(), deadline]); }
+      try { const result = await Promise.race([work(), deadline]); outcome = "complete"; return result; }
       catch (error) {
         controller.abort();
         void reader?.cancel().catch(() => {});
@@ -181,6 +198,9 @@ export function createRoadmapperProvider(
       } finally {
         clearTimeout(timer);
         if (onAbort) options.signal?.removeEventListener("abort", onAbort);
+        // Timing and sizes only: no prompts, model output, credentials or personal data.
+        console.info("[model-timing]", { durationMs: Date.now() - started, responseWaitMs,
+          inputBytes: Buffer.byteLength(body, "utf8"), usage, outcome });
       }
     },
   };
@@ -190,9 +210,17 @@ function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function parseMessage(envelope: unknown): unknown {
+function parseMessage(envelope: unknown, diagnostic?: Record<string, unknown>): unknown {
   if (!record(envelope) || !Array.isArray(envelope.choices)) throw new Error();
   const choice: unknown = envelope.choices[0];
+  if (diagnostic && record(choice)) {
+    diagnostic.rawContent = record(choice.message) && typeof choice.message.content === "string" ? choice.message.content : null;
+    diagnostic.finishReason = typeof choice.finish_reason === "string" ? choice.finish_reason : null;
+    diagnostic.responseId = typeof envelope.id === "string" ? envelope.id : null;
+    const usage = envelope.usage;
+    diagnostic.usage = record(usage) ? Object.fromEntries(["prompt_tokens", "completion_tokens", "total_tokens"]
+      .filter(key => Number.isSafeInteger(usage[key]) && (usage[key] as number) >= 0).map(key => [key, usage[key]])) : {};
+  }
   if (!record(choice) || choice.finish_reason !== "stop" || !record(choice.message)) throw new Error();
   const message = choice.message;
   if (message.role !== "assistant" || message.refusal || "tool_calls" in message || "function_call" in message ||

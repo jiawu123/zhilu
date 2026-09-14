@@ -5,10 +5,9 @@ export function shiftIsoDate(value: string, days: number): string {
   return date.toISOString().slice(0, 10);
 }
 
-export function weeksFromDragDistance(distance: number): number {
-  if (Math.abs(distance) < 28) return 0;
-  const weeks = Math.round(distance / 72) || Math.sign(distance);
-  return Math.min(4, Math.max(-4, weeks));
+export function weeksFromDragDistance(distance: number, pixelsPerWeek: number): number {
+  if (Math.abs(distance) < 8 || pixelsPerWeek <= 0) return 0;
+  return Math.round(distance / pixelsPerWeek);
 }
 
 export function positionDateInRange(value: string | undefined, start: string, end: string, left: number, right: number): number | null {

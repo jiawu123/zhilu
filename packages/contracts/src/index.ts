@@ -129,6 +129,29 @@ export interface PlanState {
   updatedAt: string;
 }
 
+export interface RoadmapChatMessage {
+  planEffect?: "unchanged" | "proposal" | "applied";
+  planVersion?: number;
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: string;
+  research?: ZhidaResearch;
+}
+
+export interface RoadmapChatProposal {
+  id: string;
+  baseVersion: number;
+  summary: string;
+  afterPreview: PlanState;
+  status: "pending" | "applied" | "discarded";
+}
+
+export interface RoadmapChatState {
+  messages: RoadmapChatMessage[];
+  proposal?: RoadmapChatProposal;
+}
+
 export interface PlanResearchState {
   mode: "mock" | "live";
   runId: string;
@@ -243,11 +266,15 @@ export interface GoalContract {
 }
 
 export interface CreateProjectInput {
+  interviewId?: string;
   userContext: UserContextCard;
   goalContract: GoalContract;
   adaptiveQuestion: string;
   adaptiveAnswer: string;
 }
+
+export const INTERVIEW_MAX_QUESTIONS = 30;
+export const INTERVIEW_GENERATION_ATTEMPTS = 3;
 
 export interface InterviewQuestion {
   id: string;
@@ -273,6 +300,13 @@ export interface InterviewSession {
   answers: InterviewAnswer[];
   status: "asking" | "complete";
   summary?: CreateProjectInput;
+  draftAnswers?: InterviewAnswer[];
+  createdAt?: string;
+  updatedAt?: string;
+  projectId?: string;
+  generationError?: string;
+  finishRequested?: boolean;
+  history?: Array<{ at: string; kind: "questions_generated" | "answers_submitted" | "summary_generated" | "generation_failed" | "project_created"; questionIds?: string[]; message?: string }>;
 }
 
 export interface ImpactDiff {

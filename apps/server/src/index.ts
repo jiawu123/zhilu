@@ -6,6 +6,7 @@ import type {
   BaselineProposal,
   CreateProjectInput,
   EventProcessingRecord,
+  InterviewSession,
   PatchProposal,
   PlanEvent,
   PlanNode,
@@ -42,10 +43,13 @@ import { BoundaryError, validateResearchInput } from "./zhihu-boundary";
 import { createZhihuProvider, readZhihuProviderConfig, ZhihuProviderError, type ZhihuProvider } from "./zhihu-provider";
 import { createRoadmapperProvider, readRoadmapperConfig, readRoadmapperPlanningBudget, RoadmapperProviderError, type RoadmapperProvider } from "./roadmapper-provider";
 import { runResearchController, ResearchControllerError } from "./research-controller";
-import { acceptInterviewAnswers, generateInterviewBatch, InterviewError } from "./interview";
+import { acceptInterviewAnswers, generateInterviewBatch, saveInterviewDraft, InterviewError } from "./interview";
 import { reviseBaseline } from "./baseline-revision";
 import { compileRoadmapperWithCorrection } from "./roadmapper-generation";
 import { createZhidaProvider, readZhidaConfig, ZhidaProviderError, type ZhidaProvider } from "./zhida-provider";
+import { createAuth, readAuthConfig, AuthError, type AuthConfig } from "./auth";
+import { OperationTracker, reportProgress } from "./operation-progress";
+import { RoadmapChatError, runRoadmapChat } from "./roadmap-chat";
 
 const repoRoot = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const repository = new PlanRepository(
@@ -54,7 +58,7 @@ const repository = new PlanRepository(
 );
 const port = Number(process.env.PORT ?? 8787);
 
-interface LiveEvidenceOptions { liveEnabled?: boolean; zhihuProvider?: ZhihuProvider; zhidaProvider?: ZhidaProvider;
+interface LiveEvidenceOptions { authConfig?: AuthConfig; oauthFetch?: typeof fetch; liveEnabled?: boolean; zhihuProvider?: ZhihuProvider; zhidaProvider?: ZhidaProvider;
   researchMode?: "zhida" | "evidence"; roadmapperProvider?: RoadmapperProvider }
 interface LiveServices { enabled: boolean; provider: ZhihuProvider | undefined; zhida: ZhidaProvider | undefined;
   researchMode: "zhida" | "evidence"; roadmapper: RoadmapperProvider | undefined; busy: Set<string> }
@@ -64,6 +68,8 @@ export function createZhiluServer(planRepository: PlanRepository, options: LiveE
     provider: options.zhihuProvider, zhida: options.zhidaProvider,
     researchMode: options.researchMode ?? (options.zhidaProvider ? "zhida" : options.zhihuProvider ? "evidence" : process.env.ZHIHU_RESEARCH_MODE === "evidence" ? "evidence" : "zhida"),
     roadmapper: options.roadmapperProvider, busy: new Set<string>() };
+  const auth = createAuth(options.authConfig ?? readAuthConfig(), options.oauthFetch);
+  const operations = new OperationTracker();
   return createServer(async (request, response) => {
     setCors(response);
     if (request.method === "OPTIONS") {
@@ -72,7 +78,29 @@ export function createZhiluServer(planRepository: PlanRepository, options: LiveE
     }
 
     try {
-      await route(request, response, planRepository, live);
+      if (await auth.handle(request, response)) return;
+      const path = new URL(request.url ?? "/", "http://local").pathname;
+      let scopedRepository = planRepository;
+      let owner = "local";
+      if (path.startsWith("/api/") && path !== "/api/health") {
+        auth.checkMutation(request);
+        response.setHeader("Cache-Control", "no-store");
+        if (auth.mode === "zhihu") {
+          owner = auth.requireIdentity(request).id;
+          scopedRepository = planRepository.forAccount(owner);
+        }
+      }
+      const operationMatch = path.match(/^\/api\/operations\/([a-f0-9-]{36})$/);
+      if (request.method === "GET" && operationMatch) {
+        const progress = operations.get(owner, operationMatch[1]!);
+        sendJson(response, progress ? 200 : 404, progress ?? { error: "尚未收到请求或进度已过期。" });
+        return;
+      }
+      const operationId = request.headers["x-zhilu-operation-id"];
+      if (typeof operationId === "string" && /^[a-f0-9-]{36}$/.test(operationId)) {
+        if (operations.get(owner, operationId)) throw new HttpError(409, "该请求标识已使用，请重新提交。");
+        await operations.run(owner, operationId, () => route(request, response, scopedRepository, live), () => response.statusCode < 400);
+      } else await route(request, response, scopedRepository, live);
     } catch (error) {
       handleError(response, error);
     }
@@ -96,39 +124,60 @@ async function route(
   const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
   const pathname = url.pathname;
 
+  if (request.method === "GET" && pathname === "/api/history") {
+    sendJson(response, 200, { interviews: await planRepository.listInterviews(), projects: await planRepository.listProjects() });
+    return;
+  }
   if (request.method === "POST" && pathname === "/api/interviews") {
     const input = await readBody<{ goal: string; backgroundNotes?: string }>(request);
     if (typeof input?.goal !== "string" || !input.goal.trim() || input.goal.length > 2000) throw new HttpError(400, "请输入 1–2000 字的目标。");
     if (input.backgroundNotes !== undefined && (typeof input.backgroundNotes !== "string" || input.backgroundNotes.length > 100000)) throw new HttpError(400, "背景材料最多 100,000 字符。");
-    live.roadmapper ??= createRoadmapperProvider(readRoadmapperConfig());
-    const session = await generateInterviewBatch({ id: `interview-${crypto.randomUUID()}`, goal: input.goal.trim(),
+    const now = new Date().toISOString();
+    const session: InterviewSession = { id: `interview-${crypto.randomUUID()}`, goal: input.goal.trim(),
       ...(input.backgroundNotes ? { backgroundNotes: input.backgroundNotes } : {}),
-      questions: [], answers: [], status: "asking" }, live.roadmapper, new Date().toISOString().slice(0, 10));
+      questions: [], answers: [], status: "asking", createdAt: now, updatedAt: now, history: [] };
     await planRepository.saveInterview(session);
-    sendJson(response, 201, session);
+    live.busy.add(session.id);
+    try { await advanceInterview(session, planRepository, live, response, 201); }
+    finally { live.busy.delete(session.id); }
     return;
   }
 
-  const interviewMatch = pathname.match(/^\/api\/interviews\/(interview-[a-f0-9-]{36})(\/answers)?$/);
+  const interviewMatch = pathname.match(/^\/api\/interviews\/(interview-[a-f0-9-]{36})(\/(answers|draft|next|finish))?$/);
   if (interviewMatch && (request.method === "GET" || request.method === "POST")) {
     const id = interviewMatch[1]!;
-    if (live.busy.has(id)) throw new HttpError(409, "正在生成下一轮问题，请稍候。");
+    if (live.busy.has(id)) throw new HttpError(409, "访谈正在保存或生成，请稍候。");
     live.busy.add(id);
     try {
       let session;
       try { session = await planRepository.getInterview(id); }
       catch (error) {
-        if (error instanceof Error && "code" in error && error.code === "ENOENT") throw new HttpError(404, "访谈不存在，请重新开始。");
+        if (error instanceof Error && "code" in error && error.code === "ENOENT") throw new HttpError(404, "访谈不存在，请从历史记录选择。");
         throw error;
       }
-      if (request.method === "POST" && interviewMatch[2]) {
+      const action = interviewMatch[3];
+      if (request.method === "GET" && !action) { sendJson(response, 200, session); return; }
+      if (request.method !== "POST" || !action) throw new HttpError(404, "接口不存在。");
+      if (action === "draft") {
         const input = await readBody<{ answers: unknown }>(request);
-        const answered = acceptInterviewAnswers(session, input?.answers);
-        live.roadmapper ??= createRoadmapperProvider(readRoadmapperConfig());
-        session = await generateInterviewBatch(answered, live.roadmapper, new Date().toISOString().slice(0, 10));
+        session = saveInterviewDraft(session, input?.answers);
         await planRepository.saveInterview(session);
-      } else if (request.method !== "GET" || interviewMatch[2]) throw new HttpError(404, "接口不存在。");
-      sendJson(response, 200, session);
+        sendJson(response, 200, session); return;
+      }
+      if (action === "finish" && session.status !== "asking") throw new HttpError(409, "访谈已结束，请确认背景摘要。");
+      if (action === "answers" || action === "finish") {
+        const input = await readBody<{ answers: unknown }>(request);
+        const hasPending = session.answers.length < session.questions.length;
+        if (!hasPending && action === "answers") throw new HttpError(409, "本轮已提交，请继续生成下一批。");
+        const answered = hasPending ? acceptInterviewAnswers(session, input?.answers) : session;
+        session = { ...answered, ...(action === "finish" ? { finishRequested: true } : {}), draftAnswers: [], updatedAt: new Date().toISOString(),
+          history: [...session.history ?? [], { kind: "answers_submitted" as const, at: new Date().toISOString(), questionIds: answered.answers.slice(session.answers.length).map(a => a.questionId) }] };
+        // Durable before API calls: a failed model or process restart must not lose answers.
+        await planRepository.saveInterview(session);
+      } else if (session.status !== "asking" || session.answers.length !== session.questions.length) {
+        throw new HttpError(409, "请先回答或跳过当前批次。");
+      }
+      await advanceInterview(session, planRepository, live, response, 200);
     } finally { live.busy.delete(id); }
     return;
   }
@@ -149,6 +198,7 @@ async function route(
       const next = await reviseBaseline(plan, proposal, input.routeId, input.message.trim(), live.roadmapper, new Date().toISOString());
       if ((await planRepository.getExistingPlan(projectId)).version !== plan.version) throw new HttpError(409, "调整期间计划已修改，请刷新。");
       // Rotate the public ID so a confirmation of the previous draft cannot apply this revision.
+      reportProgress("检查已通过，正在保存调整后的草稿，等待你确认…");
       await planRepository.replaceBaselineProposal(projectId, proposal.id, next);
       sendJson(response, 200, next);
     } finally { live.busy.delete(projectId); }
@@ -174,6 +224,15 @@ async function route(
 
   if (request.method === "POST" && pathname === "/api/projects") {
     const input = await readBody<CreateProjectInput>(request);
+    let interview: InterviewSession | undefined;
+    if (input.interviewId) {
+      try { interview = await planRepository.getInterview(input.interviewId); } catch { throw new HttpError(404, "访谈不存在。"); }
+      if (interview.status !== "complete") throw new HttpError(409, "请先完成访谈。");
+      if (interview.projectId) throw new HttpError(409, "该访谈已生成项目，请从历史记录打开。");
+      if (live.busy.has(interview.id)) throw new HttpError(409, "该访谈正在创建项目，请稍候。");
+      live.busy.add(interview.id);
+    }
+    try {
     const now = new Date().toISOString();
     const validation = validateProjectCreationInput(input, now.slice(0, 10));
     if (!validation.valid) throw new PlanEngineError(validation.issues);
@@ -189,6 +248,8 @@ async function route(
     });
     await planRepository.savePlan(plan);
     await planRepository.saveCommit(projectId, baseline);
+    if (interview) await planRepository.saveInterview({ ...interview, projectId, updatedAt: now,
+      history: [...interview.history ?? [], { kind: "project_created", at: now }] });
     sendJson(response, 201, {
       projectId,
       plan,
@@ -198,6 +259,77 @@ async function route(
       baselineProposals: [],
       workflow: decideWorkflow({ hasConfirmedGoal: true, hasConfirmedContext: true, plan: null }),
     });
+    } finally { if (interview) live.busy.delete(interview.id); }
+    return;
+  }
+
+  const chatMatch = pathname.match(/^\/api\/projects\/([^/]+)\/chat(?:\/(apply|discard))?$/);
+  if (chatMatch && (request.method === "GET" || request.method === "POST")) {
+    const projectId = decodeURIComponent(chatMatch[1]!);
+    let plan = await planRepository.getExistingPlan(projectId);
+    if (request.method === "GET" && !chatMatch[2]) {
+      sendJson(response, 200, await planRepository.getRoadmapChat(projectId));
+      return;
+    }
+    if (request.method !== "POST") throw new HttpError(404, "未找到聊天接口。");
+    if (live.busy.has(projectId)) throw new HttpError(409, "正在处理当前计划，请等待完成。");
+    const body = await readLiveBody(request) as Record<string, unknown>;
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new HttpError(400, "聊天请求无效。");
+    live.busy.add(projectId);
+    const abort = new AbortController();
+    const disconnect = () => { if (!response.writableEnded) abort.abort(); };
+    response.on("close", disconnect);
+    try {
+      plan = await planRepository.getExistingPlan(projectId);
+      const chat = await planRepository.getRoadmapChat(projectId);
+      if (chatMatch[2]) {
+        const proposal = chat.proposal;
+        if (!proposal || proposal.id !== body.proposalId) throw new HttpError(409, "这份方案已被更新，请查看最新对话。");
+        if (chatMatch[2] === "discard") {
+          if (proposal.status === "applied") throw new HttpError(409, "该方案已经应用。");
+          proposal.status = "discarded";
+          await planRepository.saveRoadmapChat(projectId, chat);
+          sendJson(response, 200, chat);
+          return;
+        }
+        if (proposal.status === "applied") { sendJson(response, 200, chat); return; }
+        if (proposal.status !== "pending" || proposal.baseVersion !== plan.version) throw new HttpError(409, "计划已发生变化，请在对话中重新生成方案。");
+        const now = new Date().toISOString();
+        const next = { ...proposal.afterPreview, updatedAt: now };
+        const validation = validatePlan(next);
+        if (!validation.valid) throw new PlanEngineError(validation.issues);
+        const commit = createCommit(plan, next, { id: next.currentCommitId, createdAt: now, actor: "user", reason: `对话调整：${proposal.summary}` });
+        await planRepository.savePlan(next);
+        await planRepository.saveCommit(projectId, commit);
+        proposal.status = "applied";
+        chat.messages.push({ id: crypto.randomUUID(), role: "assistant", content: "已按你确认的方案更新路线图。", createdAt: now, planEffect: "applied", planVersion: proposal.afterPreview.version });
+        await planRepository.saveRoadmapChat(projectId, chat);
+        sendJson(response, 200, chat);
+        return;
+      }
+      if (typeof body.message !== "string" || !body.message.trim() || body.message.length > 4000) throw new HttpError(400, "请输入 1–4000 字的消息。");
+      if (body.baseVersion !== plan.version) throw new HttpError(409, "计划版本已更新，请刷新后继续对话。");
+      if (!live.enabled) throw new HttpError(503, "AI 对话尚未启用，请检查服务配置。");
+      live.roadmapper ??= createRoadmapperProvider(readRoadmapperConfig());
+      chat.messages.push({ id: crypto.randomUUID(), role: "user", content: body.message.trim(), createdAt: new Date().toISOString() });
+      await planRepository.saveRoadmapChat(projectId, chat);
+      const nextChat = await runRoadmapChat(plan, chat, live.roadmapper, () => live.zhida ??= createZhidaProvider(readZhidaConfig()), abort.signal);
+      if (abort.signal.aborted) throw new HttpError(499, "本次对话已停止。");
+      if ((await planRepository.getExistingPlan(projectId)).version !== plan.version) throw new HttpError(409, "对话期间计划发生变化，请基于最新计划重试。");
+      await planRepository.saveRoadmapChat(projectId, nextChat);
+      sendJson(response, 200, nextChat);
+    } finally {
+      response.off("close", disconnect);
+      live.busy.delete(projectId);
+    }
+    return;
+  }
+
+  const planningHistoryMatch = pathname.match(/^\/api\/projects\/([^/]+)\/planning-history$/);
+  if (request.method === "GET" && planningHistoryMatch) {
+    const projectId = decodeURIComponent(planningHistoryMatch[1]!);
+    await planRepository.getExistingPlan(projectId);
+    sendJson(response, 200, await planRepository.getPlanningHistory(projectId));
     return;
   }
 
@@ -252,6 +384,7 @@ async function route(
       if (!proposal) throw new HttpError(404, `Baseline 提案不存在：${proposalId}`);
       const plan = await planRepository.getPlan(projectId);
       const now = new Date().toISOString();
+      reportProgress("正在确认当前草稿并保存路线图，无需再次调用模型…");
       const next = applyBaselineProposal(plan, proposal, routeId, now);
       const route = proposal.researchRun.routeCandidates.find((item) => item.id === routeId);
       const commit = createCommit(plan, next, {
@@ -326,6 +459,9 @@ async function route(
   const nodeMatch = pathname.match(/^\/api\/projects\/([^/]+)\/nodes\/([^/]+)$/);
   if (request.method === "PATCH" && nodeMatch) {
     const projectId = decodeURIComponent(requiredMatch(nodeMatch, 1));
+    if (live.busy.has(projectId)) throw new HttpError(409, "正在处理当前计划，请稍后编辑。");
+    live.busy.add(projectId);
+    try {
     const nodeId = decodeURIComponent(requiredMatch(nodeMatch, 2));
     const plan = await planRepository.getPlan(projectId);
     if (!plan.nodes.some((node) => node.id === nodeId)) throw new HttpError(404, `节点不存在：${nodeId}`);
@@ -339,11 +475,15 @@ async function route(
     };
     const next = await commitPatch(planRepository, plan, patch, "用户直接编辑 Roadmap 节点");
     sendJson(response, 200, { plan: next, view: projectView(next) });
+    } finally { live.busy.delete(projectId); }
     return;
   }
 
   if (request.method === "DELETE" && nodeMatch) {
     const projectId = decodeURIComponent(requiredMatch(nodeMatch, 1));
+    if (live.busy.has(projectId)) throw new HttpError(409, "正在处理当前计划，请稍后编辑。");
+    live.busy.add(projectId);
+    try {
     const nodeId = decodeURIComponent(requiredMatch(nodeMatch, 2));
     const plan = await planRepository.getPlan(projectId);
     const node = plan.nodes.find((item) => item.id === nodeId);
@@ -358,12 +498,16 @@ async function route(
     };
     const next = await commitPatch(planRepository, plan, patch, patch.reason);
     sendJson(response, 200, { plan: next, view: projectView(next) });
+    } finally { live.busy.delete(projectId); }
     return;
   }
 
   const nodesMatch = pathname.match(/^\/api\/projects\/([^/]+)\/nodes$/);
   if (request.method === "POST" && nodesMatch) {
     const projectId = decodeURIComponent(requiredMatch(nodesMatch, 1));
+    if (live.busy.has(projectId)) throw new HttpError(409, "正在处理当前计划，请稍后编辑。");
+    live.busy.add(projectId);
+    try {
     const plan = await planRepository.getPlan(projectId);
     const node = await readBody<PlanNode>(request);
     const patch: PatchProposal = {
@@ -375,6 +519,7 @@ async function route(
     };
     const next = await commitPatch(planRepository, plan, patch, "用户新增 Roadmap 节点");
     sendJson(response, 201, { plan: next, view: projectView(next) });
+    } finally { live.busy.delete(projectId); }
     return;
   }
 
@@ -429,6 +574,8 @@ async function route(
   if (request.method === "POST" && applyMatch) {
     const projectId = decodeURIComponent(requiredMatch(applyMatch, 1));
     if (live.busy.has(projectId)) throw new HttpError(409, "当前项目正在生成提案，请等待完成后检查并确认。");
+    live.busy.add(projectId);
+    try {
     const { patchId } = await readBody<{ patchId: string }>(request);
     const pending = (await planRepository.getPending(projectId)).find((item) => item.patch.id === patchId);
     if (!pending) throw new HttpError(404, `待确认 Patch 不存在：${patchId}`);
@@ -438,6 +585,7 @@ async function route(
     const next = await commitPatch(planRepository, plan, pending.patch, pending.patch.reason, pending.event.id, pending.processing);
     await planRepository.removePending(projectId, pending.patch.id);
     sendJson(response, 200, { plan: next, view: projectView(next), appliedPatchId: patchId });
+    } finally { live.busy.delete(projectId); }
     return;
   }
 
@@ -525,7 +673,9 @@ async function replanEvent(
     live.busy.add(projectId); lockedId = projectId;
     // 仅复用模型传输，时间变化不得初始化或调用 Zhihu Provider。
     live.roadmapper ??= createRoadmapperProvider(readRoadmapperConfig());
+    reportProgress("我正在根据变化，为受影响的任务重新安排时间…");
     const output = await live.roadmapper.generate(input);
+    reportProgress("正在检查新排期的依赖、日期和工时…");
     const result = compileEventReplan(plan, pending.event, impact, input, output, {
       patchId: uniqueId("replan"), runId: uniqueId("event-roadmapper"),
     });
@@ -602,6 +752,7 @@ async function liveBaseline(
     const modelInput = prepareRoadmapperInput(plan, research, uniqueId("roadmapper"));
     // A failed M3 can be retried offline/from a snapshot without paying for M2 again.
     await repository.saveResearchSnapshot(plan, research);
+    reportProgress("我正在结合知乎证据，生成路线、里程碑和每周任务…");
     const modelOutput = await live.roadmapper.generate(modelInput, { signal: abort.signal });
     checkConnection();
     const proposal = await compileRoadmapperWithCorrection(plan, research, modelInput, modelOutput, live.roadmapper, { signal: abort.signal });
@@ -785,11 +936,15 @@ function renderPlanMarkdown(plan: PlanState): string {
 function setCors(response: ServerResponse): void {
   response.setHeader("access-control-allow-origin", "http://127.0.0.1:5173");
   response.setHeader("access-control-allow-methods", "GET,POST,PATCH,DELETE,OPTIONS");
-  response.setHeader("access-control-allow-headers", "content-type");
+  response.setHeader("access-control-allow-headers", "content-type,x-zhilu-operation-id");
 }
 
 function handleError(response: ServerResponse, error: unknown): void {
-  if (error instanceof InterviewError || error instanceof RoadmapperProviderError) {
+  if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+    sendJson(response, 404, { error: "记录不存在，或不属于当前账号。" });
+    return;
+  }
+  if (error instanceof AuthError || error instanceof InterviewError || error instanceof RoadmapperProviderError || error instanceof RoadmapChatError || error instanceof ZhidaProviderError) {
     sendJson(response, error.status, { error: error.message });
     return;
   }
@@ -808,6 +963,28 @@ function handleError(response: ServerResponse, error: unknown): void {
   }
   console.error(error);
   sendJson(response, 500, { error: "本地服务发生未处理错误" });
+}
+
+async function advanceInterview(session: InterviewSession, repository: PlanRepository, live: LiveServices, response: ServerResponse, status: number) {
+  const at = new Date().toISOString();
+  try {
+    live.roadmapper ??= createRoadmapperProvider(readRoadmapperConfig());
+    const next = await generateInterviewBatch(session, live.roadmapper, at.slice(0, 10),
+      diagnostic => repository.saveInterviewDiagnostic(diagnostic));
+    delete next.generationError;
+    next.updatedAt = new Date().toISOString();
+    next.history = [...session.history ?? [], { at: next.updatedAt,
+      kind: next.status === "complete" ? "summary_generated" : "questions_generated",
+      questionIds: next.questions.slice(session.questions.length).map(q => q.id) }];
+    await repository.saveInterview(next);
+    sendJson(response, status, next);
+  } catch (error) {
+    const message = error instanceof InterviewError || error instanceof RoadmapperProviderError ? error.message : "模型生成失败；已保存目标和已提交的回答，可继续重试。";
+    const saved: InterviewSession = { ...session, updatedAt: new Date().toISOString(), generationError: message,
+      history: [...session.history ?? [], { kind: "generation_failed", at, message }] };
+    await repository.saveInterview(saved);
+    sendJson(response, error instanceof InterviewError || error instanceof RoadmapperProviderError ? error.status : 502, { error: message, session: saved });
+  }
 }
 
 function requiredMatch(match: RegExpMatchArray, index: number): string {

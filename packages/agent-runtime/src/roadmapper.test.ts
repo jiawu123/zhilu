@@ -28,7 +28,7 @@ function fixture() {
 }
 
 describe("model Roadmapper", () => {
-  it.each([5, 12])("accepts up to 10 percent capped at one hour for a %i hour week, including review", hours => {
+  it.each([5, 12])("accepts up to 10 percent capped at one hour for a %i hour week, without reserved review time", hours => {
     const { plan, research } = fixture();
     plan.weeklyHours = hours; plan.userContext!.weeklyHours = hours;
     const input = prepareRoadmapperInput(plan, research, "budget-model"), draft = roadmapperDraftFixture(input);
@@ -70,7 +70,7 @@ describe("model Roadmapper", () => {
     plan.goalContract!.targetDate = "2026-12-05";
     const input = prepareRoadmapperInput(plan, research, "partial-week"), draft = roadmapperDraftFixture(input);
     const last = input.context.weeks.at(-1)!;
-    expect(last).toMatchObject({ capacityHours: 1.71, toleranceHours: 0.14, maxTotalHours: 1.85, maxTaskHours: 1.68 });
+    expect(last).toMatchObject({ capacityHours: 1.71, toleranceHours: 0.14, maxTotalHours: 1.85, maxTaskHours: 1.85 });
     draft.routes[0]!.tasks.at(-1)!.hours = 1.85 - last.reviewHours;
     const proposal = compileRoadmapperBaseline(plan, research, input, draft);
     const nextResearch = { ...research, ...proposal.researchRun, runId: research.runId };
@@ -136,7 +136,7 @@ describe("model Roadmapper", () => {
     expect(proposal.roadmapper?.runId).not.toBe(proposal.researchRun.id);
     const next = proposal.previews[0]!.plan;
     expect(next.nodes.filter(node => node.type === "task")).toHaveLength(12);
-    expect(next.nodes.filter(node => node.type === "checkpoint")).toHaveLength(12);
+    expect(next.nodes.filter(node => node.type === "checkpoint")).toHaveLength(0);
     expect(next.nodes.filter(node => node.type === "milestone")).toHaveLength(3);
     expect(next.nodes.some(node => node.type === "assumption" && node.status === "draft")).toBe(true);
     expect(next.evidence.filter(card => card.sourceType === "zhihu").every(card => card.verificationStatus === "unverified")).toBe(true);
@@ -168,12 +168,12 @@ describe("model Roadmapper", () => {
     expect(() => prepareRoadmapperInput(plan, research, "mapper")).toThrow("输入上限");
   });
 
-  it("reserves review time and prorates the final partial week's capacity", () => {
+  it("does not reserve review time and prorates the final partial week's capacity", () => {
     const { plan, research } = fixture();
     plan.goalContract!.targetDate = "2026-12-05";
     const input = prepareRoadmapperInput(plan, research, "mapper");
     expect(input.context.weeks).toHaveLength(13);
-    expect(input.context.weeks[12]).toMatchObject({ startDate: "2026-12-05", endDate: "2026-12-05", capacityHours: 0.85, reviewHours: 0.09 });
+    expect(input.context.weeks[12]).toMatchObject({ startDate: "2026-12-05", endDate: "2026-12-05", capacityHours: 0.85, reviewHours: 0 });
   });
 
   it.each([
@@ -269,7 +269,7 @@ describe("Roadmapper with Zhida research", () => {
     expect(preview.evidence.find(card => card.sourceType === "ai")!.riskTags).toEqual(["需要用户确认"]);
     expect(preview.research!.routeCandidates[0]!.risks).toEqual(["读者可能无法按期提供反馈"]);
     expect(preview.nodes.filter(node => node.type === "task")).toHaveLength(12);
-    expect(preview.nodes.filter(node => node.type === "checkpoint")).toHaveLength(12);
+    expect(preview.nodes.filter(node => node.type === "checkpoint")).toHaveLength(0);
     expect(preview.nodes.find(node => node.id === "t12")!.endDate).toBe("2026-12-04");
     expect({ plan, research }).toEqual(before);
     preview.research!.zhida!.sources[0]!.title = "preview edit";
@@ -307,7 +307,7 @@ describe("Roadmapper with Zhida research", () => {
     expect(() => compileRoadmapperBaseline(plan, research, input, draft)).toThrow("未提供的证据");
   });
 
-  it("retains planning time, review and dependency constraints without an evidence gate", () => {
+  it("retains planning time and dependency constraints without an evidence gate", () => {
     const { plan, research, draft } = zhidaFixture();
     const input = prepareRoadmapperInput(plan, research, "zhida-roadmapper");
     draft.routes[0]!.tasks[0]!.hours = 100;
