@@ -830,6 +830,11 @@ export function Sidebar({ open, plan, projectId, history, focusTasks, pendingCou
 export function Inspector({ node, plan, evidence, busy, onClose, onSave, onComplete, onReportChange, onArchive }: { node: PlanNode | null; plan?: PlanState; evidence: EvidenceCard[]; busy: boolean; onClose: () => void; onSave: (changes: PlanNodeUpdate) => void; onComplete: () => void; onReportChange: () => void; onArchive: () => void }) {
   const [title, setTitle] = useState(""); const [startDate, setStartDate] = useState(""); const [endDate, setEndDate] = useState("");
   useEffect(() => { setTitle(node?.title ?? ""); setStartDate(node?.startDate ?? ""); setEndDate(node?.endDate ?? ""); }, [node]);
+  const visibleEvidence = evidence.filter(card => card.sourceType !== "ai" && card.contentType !== "ai_inference");
+  const collectedEvidence = plan?.evidence.filter(card => card.sourceType === "zhihu" && !node?.evidenceIds.includes(card.id)) ?? [];
+  const insufficientSources = plan?.research?.insufficientSources ?? [];
+  const showEmptySources = plan?.research?.mode === "live" && plan.research.roadmapper?.evidenceStatus === "insufficient" && !plan.evidence.some(card => card.sourceType === "zhihu");
+  const showEvidence = visibleEvidence.length > 0 || collectedEvidence.length > 0 || insufficientSources.length > 0 || showEmptySources;
   return (
     <aside className={`inspector-drawer ${node ? "is-open" : ""}`} aria-hidden={!node}>
       {node && <><div className="drawer-head"><div><span className="node-mini-dot" /><strong>{nodeTypeLabel(node.type)}详情</strong></div><button onClick={onClose}>×</button></div>
@@ -841,20 +846,16 @@ export function Inspector({ node, plan, evidence, busy, onClose, onSave, onCompl
           <div className="node-actions"><button className="save-node" disabled={busy || !title.trim()} onClick={() => onSave({ title: title.trim(), startDate, endDate })}>保存修改</button>{node.type === "task" && node.status !== "done" && <button className="complete-node" disabled={busy} onClick={onComplete}>✓ 抵达此站</button>}</div>
           {node.type === "task" && <div className="node-secondary-actions"><button disabled={busy} onClick={onReportChange}>↯ 这里有变化</button><button className="archive-node" disabled={busy} onClick={onArchive}>收起此路标</button></div>}
           <section className="node-story"><p className="section-kicker">抵达证明</p><h3>{node.deliverable ?? "待补充可检查的产出"}</h3>{node.description && <p className="inference-note">{node.description}</p>}<ul>{node.acceptanceCriteria?.map((item) => <li key={item}>{item}</li>) ?? <li>尚未补充完成标准</li>}</ul></section>
-          <section className="evidence-stack">
+          {showEvidence && <section className="evidence-stack">
             <p className="section-kicker">这枚路标从哪里来</p>
-            {evidence.length === 0 && <div className="empty-evidence">目前没有知乎依据。它需要被标记为用户事实、规则或 AI 推断。</div>}
-            {node.type === "task" && evidence.some(card => card.sourceType === "ai") && !evidence.some(card => card.sourceType === "zhihu")
-              && <p className="inference-note">AI规划／待验证：这项任务尚无直接采用的知乎依据。</p>}
-            {evidence.some((card) => card.contentType === "ai_inference") && <p className="inference-note">这枚路标含 AI 推断；请检查任务安排、工时与依据是否适合你。</p>}
-            <InsufficientSourcesDisclosure key={`insufficient-${node.id}`} sources={plan?.research?.insufficientSources ?? []}
+            <InsufficientSourcesDisclosure key={`insufficient-${node.id}`} sources={insufficientSources}
               description="这些原帖来自本次研究，未作为计划依据；不代表这些内容支持当前路标。保留原文片段和链接，供你自行判断。"
-              showEmpty={plan?.research?.mode === "live" && plan.research.roadmapper?.evidenceStatus === "insufficient" && !plan.evidence.some(card => card.sourceType === "zhihu")} />
-            <CollectedSourcesDisclosure key={`collected-${node.id}`} evidence={plan?.evidence.filter(card => card.sourceType === "zhihu" && !node.evidenceIds.includes(card.id)) ?? []} />
-            {evidence.map((card) => <EvidenceCardView key={card.id} card={card} nodes={plan?.nodes ?? [node]}
+              showEmpty={showEmptySources} />
+            <CollectedSourcesDisclosure key={`collected-${node.id}`} evidence={collectedEvidence} />
+            {visibleEvidence.map((card) => <EvidenceCardView key={card.id} card={card} nodes={plan?.nodes ?? [node]}
               application={card.sourceType === "zhihu" ? plan?.research?.roadmapper?.evidenceApplications?.find(item =>
                 item.routeId === plan.research?.selectedRouteId && item.evidenceId === card.id && item.taskIds.includes(node.id)) : undefined} />)}
-          </section>
+          </section>}
         </div></>}
     </aside>
   );
