@@ -3,9 +3,27 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { trackedFetch, requestLabel, isRoadmapChatRequest } from "./request-progress";
 import { WaitStatus } from "./WaitStatus";
-afterEach(() => vi.useRealTimers());
+afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
 
 describe("shared waiting feedback", () => {
+  it("opts into CloudBase heartbeats and restores the original failure response", async () => {
+    vi.stubEnv("VITE_CLOUDBASE_TRANSPORT", "sse");
+    const request = vi.fn<typeof fetch>(async () => new Response(`event: response\ndata: ${JSON.stringify({ status: 422, body: '{"error":"invalid"}', contentType: "application/json" })}\n\n`, { headers: { "X-Zhilu-Transport": "sse" } }));
+    const response = await trackedFetch("/api/interviews", { method: "POST" }, request);
+    expect((request.mock.calls[0]![1]!.headers as Headers).get("Accept")).toBe("text/event-stream");
+    expect(response.status).toBe(422);
+    expect(await response.json()).toEqual({ error: "invalid" });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+  it("keeps local research requests and authentication on their existing transport", async () => {
+    vi.stubEnv("VITE_CLOUDBASE_TRANSPORT", "");
+    const request = vi.fn<typeof fetch>(async () => new Response("{}"));
+    await trackedFetch("/api/projects/p/research/live/baseline", { method: "POST" }, request);
+    expect((request.mock.calls[0]![1]!.headers as Headers).has("X-Zhilu-Transport")).toBe(false);
+    vi.stubEnv("VITE_CLOUDBASE_TRANSPORT", "sse");
+    await trackedFetch("/api/auth/logout", { method: "POST" }, request);
+    expect((request.mock.calls[1]![1]!.headers as Headers).has("X-Zhilu-Transport")).toBe(false);
+  });
   it("keeps all chat waits in the chat panel while retaining other global waits", () => {
     for (const suffix of ["", "/apply", "/discard"]) expect(isRoadmapChatRequest(`/api/projects/p/chat${suffix}`)).toBe(true);
     expect(isRoadmapChatRequest("/api/projects/p/nodes/t1")).toBe(false);

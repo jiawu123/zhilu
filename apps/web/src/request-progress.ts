@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { unwrapStreamResponse } from "./stream-response";
 
 export interface RequestProgress {
   id: string;
@@ -56,7 +57,11 @@ export async function trackedFetch(path: string, init?: RequestInit, request: ty
   try {
     const headers = new Headers(init?.headers);
     headers.set("X-Zhilu-Operation-Id", id);
-    return await request(path, { ...init, headers });
+    if (import.meta.env.VITE_CLOUDBASE_TRANSPORT === "sse" && init?.method && !["GET", "HEAD", "OPTIONS"].includes(init.method.toUpperCase()) && !path.startsWith("/api/auth/")) {
+      headers.set("X-Zhilu-Transport", "sse");
+      headers.set("Accept", "text/event-stream");
+    }
+    return await unwrapStreamResponse(await request(path, { ...init, headers }));
   } finally {
     ended = true; clearTimeout(timer); controller.abort();
     active = active.filter(item => item.id !== id); publish();
