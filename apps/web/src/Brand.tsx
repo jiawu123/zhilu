@@ -3,5 +3,6 @@ export function Brand() {
   return <span className="zhilu-brand" role="img" aria-label="知路">
     <span className="zhilu-brand-zhi" aria-hidden="true" />
     <img className="zhilu-brand-lu" src="/zhilu-lu.svg" alt="" aria-hidden="true" draggable={false} />
+    <img className="zhilu-mascot" src="/liukanshan-transparent.png" alt="" aria-hidden="true" draggable={false} />
   </span>;
 }

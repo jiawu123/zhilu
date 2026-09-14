@@ -1,7 +1,7 @@
 import { trackedFetch, useRequestProgress } from "./request-progress";
 import { WaitStatus } from "./WaitStatus";
 import { RoadmapChat } from "./RoadmapChat";
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type {
   BaselineProposal,
   CreateProjectInput,
@@ -68,11 +68,12 @@ interface WorkspacePayload {
   baselineProposals: BaselineProposal[];
 }
 
-export function App({ interviewStorageKey = "zhilu-interview:local", onOpenHistory }: { interviewStorageKey?: string; onOpenHistory?: () => void }) {
+export function App({ interviewStorageKey = "zhilu-interview:local", onOpenHistory, accountControls }: { interviewStorageKey?: string; onOpenHistory?: () => void; accountControls?: ReactNode }) {
   const [activeProjectId, setActiveProjectId] = useState(initialProjectId);
   const [workspace, setWorkspace] = useState<WorkspacePayload | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [roadmapEntry, setRoadmapEntry] = useState<"project" | "generated">("project");
   const [addingTask, setAddingTask] = useState(false);
   const [archivingNode, setArchivingNode] = useState<PlanNode | null>(null);
   const [pending, setPending] = useState<PendingChange | null>(null);
@@ -279,6 +280,7 @@ export function App({ interviewStorageKey = "zhilu-interview:local", onOpenHisto
       });
       loadGeneration.current += 1;
       sessionStorage.removeItem(interviewStorageKey);
+      setRoadmapEntry("generated");
       acceptWorkspace(created);
       setBaselineProposal(null);
       setSelectedRouteId(null);
@@ -330,6 +332,7 @@ export function App({ interviewStorageKey = "zhilu-interview:local", onOpenHisto
         method: "POST",
         body: JSON.stringify({ proposalId: baselineProposal.id, routeId: selectedRouteId }),
       });
+      setRoadmapEntry("generated");
       acceptWorkspace(payload);
       setBaselineProposal(null);
       setSelectedRouteId(null);
@@ -356,11 +359,11 @@ export function App({ interviewStorageKey = "zhilu-interview:local", onOpenHisto
     finally { setBusy(false); }
   };
 
-  if (page === "interview") return <Onboarding storageKey={interviewStorageKey} busy={busy} error={error}
+  if (page === "interview") return <Onboarding accountControls={accountControls} storageKey={interviewStorageKey} busy={busy} error={error}
     onClose={() => { setError(null); navigate("roadmap"); }} onCreate={input => void createProject(input)} />;
 
   if (workspace?.plan.projectId === activeProjectId && resolveFlowPage(page, workspace.plan.evidence.some(item => item.riskTags.includes("等待知乎研究"))) === "plan" && (baselineProposal || workspace.plan.evidence.some(item => item.riskTags.includes("等待知乎研究")))) {
-    return <ResearchStudio proposal={baselineProposal} selectedRouteId={selectedRouteId} busy={busy} error={error}
+    return <ResearchStudio accountControls={accountControls} proposal={baselineProposal} selectedRouteId={selectedRouteId} busy={busy} error={error}
       onClose={() => { setError(null); navigate("interview"); }} onRunLive={() => void runLiveResearch()}
       onRunMock={() => void runMockResearch()} onSelectRoute={setSelectedRouteId}
       onRevise={message => void revisePlan(message)} onApply={() => void applyBaseline()} />;
@@ -368,7 +371,7 @@ export function App({ interviewStorageKey = "zhilu-interview:local", onOpenHisto
 
   if (!workspace || workspace.plan.projectId !== activeProjectId) {
     return (
-      <main className="loading-screen">
+      <main className="loading-screen"><div className="flow-account-controls">{accountControls}</div>
         <Brand />
         <p>{error ?? "正在加载项目计划"}</p>
         {error && <button onClick={() => void load()}>重新连接</button>}
@@ -390,8 +393,9 @@ export function App({ interviewStorageKey = "zhilu-interview:local", onOpenHisto
         <div className="workspace-project"><small>{researchPending ? "待研究" : workspace.plan.research?.mode === "mock" ? "演示计划" : workspace.plan.research?.roadmapper?.evidenceStatus === "insufficient" ? "证据待补充" : "项目计划"}</small><strong title={workspace.plan.goal}>{workspace.plan.goal}</strong></div>
         <span className="workspace-progress">完成率 <strong>{progress}%</strong></span>
         <button className="header-add-task" disabled={busy} onClick={() => { setError(null); setAddingTask(true); }}>＋ 新增任务</button>
+        {accountControls}
       </header>
-      <RoadmapBoard plan={workspace.plan} selectedId={selectedId} focusId={focusTasks[0]?.id ?? null} affectedIds={pending?.impact.affectedNodeIds ?? []} busy={busy} onSelect={setSelectedId} onReschedule={(node, weeks) => void rescheduleNode(node, weeks)} onChange={openChange} />
+      <RoadmapBoard entryMode={roadmapEntry} plan={workspace.plan} selectedId={selectedId} focusId={focusTasks[0]?.id ?? null} affectedIds={pending?.impact.affectedNodeIds ?? []} busy={busy} onSelect={setSelectedId} onReschedule={(node, weeks) => void rescheduleNode(node, weeks)} onChange={openChange} />
       <RoadmapChat key={activeProjectId} plan={workspace.plan} onApplied={load} context={changeContext} onResetContext={() => openChange(globalChangeContext)} onEditHours={() => { setError(null); setHoursDialog(true); }} externalBusy={busy} externalError={!hoursDialog && !addingTask && !archivingNode && !selectedNode ? error : null} />
       <div className="canvas-hint">滚动查看任务流程 · 点击任务查看详情</div>
       <div className="commit-whisper">版本 {workspace.plan.currentCommitId}</div>
@@ -407,7 +411,7 @@ export function App({ interviewStorageKey = "zhilu-interview:local", onOpenHisto
         busy={busy}
         onClose={() => setSidebarOpen(false)}
         onAddTask={() => { setError(null); setAddingTask(true); }}
-        onNewProject={() => { setSidebarOpen(false); setError(null); navigate("interview"); }}
+        onNewProject={() => { window.location.assign("/?page=interview&new=1"); }}
         onSelectTask={(id) => { setSidebarOpen(false); setSelectedId(id); }}
       />
 
@@ -431,7 +435,8 @@ export function App({ interviewStorageKey = "zhilu-interview:local", onOpenHisto
   );
 }
 
-export function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose, onRunLive, onRunMock, onSelectRoute, onApply, onRevise }: {
+export function ResearchStudio({ accountControls, proposal, selectedRouteId, busy, error, onClose, onRunLive, onRunMock, onSelectRoute, onApply, onRevise }: {
+  accountControls?: ReactNode;
   proposal: BaselineProposal | null;
   selectedRouteId: string | null;
   busy: boolean;
@@ -452,7 +457,7 @@ export function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose
   useEffect(() => { pageRef.current?.scrollTo(0, 0); }, [hasProposal]);
   useEffect(() => { setMessage(""); }, [proposal?.id]);
   if (!proposal) {
-    return <main ref={pageRef} className="flow-page plan-page"><section className="research-intro" aria-labelledby="research-title">
+    return <main ref={pageRef} className="flow-page plan-page"><div className="flow-account-controls">{accountControls}</div><section className="research-intro" aria-labelledby="research-title">
       <button className="research-close" disabled={busy} onClick={onClose}>返回背景资料</button>
       <Brand />
       <p className="section-kicker">02 · 生成计划草稿</p>
@@ -461,6 +466,7 @@ export function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose
       <div className="research-steps"><span><b>01</b>明确研究问题</span><span><b>02</b>检索与整理依据</span><span><b>03</b>确认并生成计划</span></div>
       {error && <ErrorNotice message={error} />}
       {busy && <div className="inline-operation-status"><WaitStatus label="正在准备研究与计划生成" progress={progress} /></div>}
+      {busy && <div className="plan-loading-preview" aria-hidden="true"><div><i /><span /><span /></div><b>→</b><div><i /><span /><span /></div><b>→</b><div><i /><span /><span /></div></div>}
       <button className="research-primary" disabled={busy} onClick={onRunLive}>{busy ? "正在生成研究方案" : "生成研究方案"}<span>→</span></button>
       <button className="research-secondary" disabled={busy} onClick={onRunMock}>查看演示方案</button>
     </section></main>;
@@ -477,7 +483,7 @@ export function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose
   const routeEvidence = researchEvidence.filter((card) => route?.evidenceIds.includes(card.id));
   const queryCount = proposal.researchRun.questions.reduce((sum, question) => sum + question.searchQueries.length, 0);
   return (
-    <main ref={pageRef} className="flow-page plan-page">
+    <main ref={pageRef} className="flow-page plan-page"><div className="flow-account-controls">{accountControls}</div>
       <section className="route-lab" aria-labelledby="route-lab-title">
         <button className="research-close" disabled={busy} onClick={onClose}>返回背景资料</button>
         <header>

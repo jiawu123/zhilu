@@ -1,6 +1,6 @@
 import { Brand } from "./Brand";
 import { ErrorNotice } from "./ErrorNotice";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { CreateProjectInput, InterviewAnswer, InterviewSession } from "@zhilu/contracts";
 import { INTERVIEW_MAX_QUESTIONS } from "@zhilu/contracts";
 import { requestSession, InterviewRequestError } from "./interview-api";
@@ -10,6 +10,7 @@ import { useRequestProgress } from "./request-progress";
 import { WaitStatus } from "./WaitStatus";
 
 interface OnboardingProps {
+  accountControls?: ReactNode;
   storageKey: string;
   busy: boolean;
   error: string | null;
@@ -17,7 +18,7 @@ interface OnboardingProps {
   onCreate: (input: CreateProjectInput) => void;
 }
 
-export function Onboarding({ storageKey, busy, error, onClose, onCreate }: OnboardingProps) {
+export function Onboarding({ accountControls, storageKey, busy, error, onClose, onCreate }: OnboardingProps) {
   const [goal, setGoal] = useState("");
   const [backgroundNotes, setBackgroundNotes] = useState("");
   const [fileMessage, setFileMessage] = useState("");
@@ -47,8 +48,14 @@ export function Onboarding({ storageKey, busy, error, onClose, onCreate }: Onboa
     setSelected(Object.fromEntries((next.draftAnswers ?? []).map(answer => [answer.questionId, answer])));
     setLocalError(next.generationError ?? null);
     sessionStorage.setItem(storageKey, next.id);
+    const query = new URLSearchParams(window.location.search);
+    if (query.has("new")) {
+      query.delete("new"); query.set("interview", next.id);
+      window.history.replaceState(null, "", `?${query}`);
+    }
   };
   useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("new") === "1") return;
     const id = new URLSearchParams(window.location.search).get("interview") ?? sessionStorage.getItem(storageKey) ?? (storageKey.endsWith(":local") ? sessionStorage.getItem("zhilu-interview") : null);
     if (!id) return;
     let cancelled = false;
@@ -101,7 +108,7 @@ export function Onboarding({ storageKey, busy, error, onClose, onCreate }: Onboa
   };
 
   return <main className="flow-page interview-page">
-    <header className="flow-header"><button onClick={onClose} disabled={locked || saveState === "正在保存回答…"}><Brand /><span>返回项目</span></button><span>01 背景登记 · 02 计划确认 · 03 任务执行</span></header>
+    <header className="flow-header"><button onClick={onClose} disabled={locked || saveState === "正在保存回答…"}><Brand /><span>返回项目</span></button><span>01 背景登记 · 02 计划确认 · 03 任务执行</span>{accountControls}</header>
     <section className="interview-page-content">
       <p className="section-kicker">{summary ? "确认目标与背景" : session ? `已处理 ${processedCount} 题 · 信息足够即结束` : "项目目标登记"}</p>
       <h1>{summary ? "目标与背景确认" : session ? "背景信息补充" : "登记项目目标"}</h1>
@@ -120,9 +127,11 @@ export function Onboarding({ storageKey, busy, error, onClose, onCreate }: Onboa
         <div><strong>背景资料完成度 {understandingPercent}%</strong></div>
         <progress aria-label="目标了解进度" max={100} value={understandingPercent} />
         <div><span>最多 {INTERVIEW_MAX_QUESTIONS} 个问题 · 信息足够即可提前结束</span><span>已回答 {answeredCount} 题 · 已跳过 {skippedCount} 题</span></div>
-        <small>百分比按回答进度估算，跳过不计入已了解。{summary && (session.finishRequested ? "已提前结束访谈，可在下方补充背景。" : "访谈已完成，请检查下方摘要。")}</small>
-        {!summary && <small>{pending.length ? `本轮 ${batchCompleted} / ${pending.length} 题已回答或跳过 · ${session.questions.length >= INTERVIEW_MAX_QUESTIONS ? "提交后整理背景摘要" : "提交后由 AI 判断是否需要继续补充背景"}` : "本轮已提交，可继续判断是否需要补问或生成摘要。"}</small>}
-        {!summary && <button className="interview-skip-all" disabled={locked} onClick={() => void submit(true)}>跳过全部剩余问题</button>}
+        <div className="interview-progress-footer"><div className="interview-progress-notes">
+          <small>百分比按回答进度估算，跳过不计入已了解。{summary && (session.finishRequested ? "已提前结束访谈，可在下方补充背景。" : "访谈已完成，请检查下方摘要。")}</small>
+          {!summary && <small>{pending.length ? `本轮 ${batchCompleted} / ${pending.length} 题已回答或跳过 · ${session.questions.length >= INTERVIEW_MAX_QUESTIONS ? "提交后整理背景摘要" : "提交后由 AI 判断是否需要继续补充背景"}` : "本轮已提交，可继续判断是否需要补问或生成摘要。"}</small>}
+        </div>
+        {!summary && <button className="interview-skip-all" disabled={locked} onClick={() => void submit(true)}>跳过全部剩余问题<span aria-hidden="true">→</span></button>}</div>
       </div>}
       {waiting && <div className="inline-operation-status"><WaitStatus label={restoring ? "正在恢复上次访谈…" : "正在发送背景信息…"} progress={progress} /></div>}
       {session && !summary && <p className="answer-save-status" role="status">{pending.length ? saveState : "本轮回答已保存，可继续生成。"}</p>}

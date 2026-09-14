@@ -1,7 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="33.66 -829.74 944.46 936.74">
   <!-- Standard 路 structure with optically matched curved terminals and square counters.
-       Main stroke: approximately 110% of the preceding version's visible weight. -->
+       Main visible strokes reduced by 4%: inset the combined outline by 1.49 units per edge. -->
+  <defs><filter id="lu-weight" x="-5%" y="-5%" width="110%" height="110%" color-interpolation-filters="sRGB"><feMorphology in="SourceAlpha" operator="erode" radius="1.49" result="outline"/><feFlood flood-color="#0f88eb"/><feComposite in2="outline" operator="in"/></filter></defs>
   <rect x="33.66" y="-829.74" width="944.46" height="936.74" fill="#fff"/>
+  <g filter="url(#lu-weight)">
   <g fill="#0f88eb" stroke="#0f88eb" stroke-width="25.3" stroke-linejoin="round">
     <path d="M263.98 -292.60H387.91Q401.91 -292.60 401.91 -243.08H263.98Z"/>
     <path d="M239.82 -496.10Q239.82 -496.10 245.42 -496.10Q245.42 -496.10 288.13 -496.10Q288.13 -369.50 288.13 -244.62Q288.13 -125.28 288.13 -3.75Q288.13 -3.75 239.82 10.42Q239.82 -116.21 239.82 -242.50Q239.82 -369.47 239.82 -496.10Z"/>
@@ -14,4 +16,5 @@
   <!-- Tapered upper-left falling stroke echoes the pointed entry of 知. -->
   <path fill="#0f88eb" d="M400 -518Q468 -591 514 -681Q554 -747 582 -802Q599 -829 663 -829Q626 -721 577 -635Q524 -553 468 -521Q437 -503 400 -518Z"/>
   <path fill="#0f88eb" fill-rule="evenodd" d="M85.80 -780.96H403.90V-459.17H85.80ZM160.18 -706.60V-533.55H329.52V-706.60ZM478.55 -281.05H884.65V75.38H478.55ZM553.01 -206.83V1.00H809.74V-206.83Z"/>
+  </g>
 </svg>
