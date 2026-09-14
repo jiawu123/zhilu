@@ -20,11 +20,114 @@ function fixture() {
     requests: questions.map((q, i) => ({ ...q, id: `rq${i}`, relevantUserConditions: [], evidenceLimit: 6 })),
     evidencePacks: [{ requestId: "rq0", evidence: cards.slice(0, 5), routeCandidates: [], unresolvedQuestions: ["出版要求尚不确定"] },
       { requestId: "rq1", evidence: cards.slice(5), routeCandidates: [], unresolvedQuestions: [] }] };
+  for (const pack of research.evidencePacks) pack.routeCandidates = [{ id: `candidate-${pack.requestId}`,
+    title: "有出处的练习假设", summary: "根据该问题的首张证据考虑练习方式", applicableWhen: ["需审阅适用条件"],
+    evidenceIds: [pack.evidence[0]!.id], risks: ["未独立核验"] }];
   const input = prepareRoadmapperInput(plan, research, "roadmapper-1");
   return { plan, research, input, draft: roadmapperDraftFixture(input) };
 }
 
 describe("model Roadmapper", () => {
+  it.each([5, 12])("accepts up to 10 percent capped at one hour for a %i hour week, including review", hours => {
+    const { plan, research } = fixture();
+    plan.weeklyHours = hours; plan.userContext!.weeklyHours = hours;
+    const input = prepareRoadmapperInput(plan, research, "budget-model"), draft = roadmapperDraftFixture(input);
+    const week = input.context.weeks[1]!, tolerance = Math.min(hours * 0.1, 1);
+    const task = draft.routes[0]!.tasks.find(task => task.week === 2)!;
+    task.hours = hours + tolerance - week.reviewHours;
+    const before = structuredClone({ plan, research, draft });
+    const proposal = compileRoadmapperBaseline(plan, research, input, draft);
+    expect(week).toMatchObject({ capacityHours: hours, toleranceHours: tolerance, maxTotalHours: hours + tolerance });
+    expect(proposal.roadmapper).toMatchObject({ planningBudget: { weeklyToleranceRatio: 0.1, weeklyToleranceHours: 1 },
+      weeklyOverruns: [{ routeId: "build", week: 2, capacityHours: hours, plannedHours: hours + tolerance, toleranceHours: tolerance }] });
+    expect(proposal.roadmapper!.warnings.join()).toContain("工时弹性");
+    const preview = proposal.previews[0]!.plan;
+    expect(preview.weeklyHours).toBe(hours);
+    expect(preview.userContext!.weeklyHours).toBe(hours);
+    expect(preview.nodes.find(node => node.id === task.id)!.estimatedHours).toBe(task.hours);
+    expect(preview.research!.roadmapper).toEqual(proposal.roadmapper);
+    expect(proposal.researchRun.planningBudget).toEqual(proposal.roadmapper!.planningBudget);
+    expect({ plan, research, draft }).toEqual(before);
+    task.hours += 0.01;
+    expect(() => compileRoadmapperBaseline(plan, research, input, draft)).toThrow("弹性上限");
+  });
+
+  it("allows underscheduling and zero tolerance restores the original ceiling", () => {
+    const { plan, research } = fixture();
+    research.planningBudget = { weeklyToleranceRatio: 0, weeklyToleranceHours: 1 };
+    const input = prepareRoadmapperInput(plan, research, "strict-budget"), draft = roadmapperDraftFixture(input);
+    draft.routes.forEach(route => route.tasks.forEach(task => { task.hours = 0.1; }));
+    expect(compileRoadmapperBaseline(plan, research, input, draft).roadmapper!.weeklyOverruns).toEqual([]);
+    draft.routes[0]!.tasks[0]!.hours = input.context.weeks[0]!.capacityHours - input.context.weeks[0]!.reviewHours;
+    expect(() => compileRoadmapperBaseline(plan, research, input, draft)).not.toThrow();
+    draft.routes[0]!.tasks[0]!.hours += 0.01;
+    expect(() => compileRoadmapperBaseline(plan, research, input, draft)).toThrow("弹性上限");
+  });
+
+  it("prorates the tolerance with the final partial week and does not compound it", () => {
+    const { plan, research } = fixture();
+    plan.weeklyHours = 12; plan.userContext!.weeklyHours = 12;
+    plan.goalContract!.targetDate = "2026-12-05";
+    const input = prepareRoadmapperInput(plan, research, "partial-week"), draft = roadmapperDraftFixture(input);
+    const last = input.context.weeks.at(-1)!;
+    expect(last).toMatchObject({ capacityHours: 1.71, toleranceHours: 0.14, maxTotalHours: 1.85, maxTaskHours: 1.68 });
+    draft.routes[0]!.tasks.at(-1)!.hours = 1.85 - last.reviewHours;
+    const proposal = compileRoadmapperBaseline(plan, research, input, draft);
+    const nextResearch = { ...research, ...proposal.researchRun, runId: research.runId };
+    const next = prepareRoadmapperInput(plan, nextResearch, "next-budget-model");
+    expect(next.context.weeks).toEqual(input.context.weeks);
+    draft.routes[0]!.tasks.at(-1)!.hours += 0.01;
+    expect(() => compileRoadmapperBaseline(plan, research, input, draft)).toThrow("弹性上限");
+  });
+
+  it.each([
+    { weeklyToleranceRatio: true, weeklyToleranceHours: 1 },
+    { weeklyToleranceRatio: -0.1, weeklyToleranceHours: 1 },
+    { weeklyToleranceRatio: 0.1, weeklyToleranceHours: Infinity },
+    { weeklyToleranceRatio: 0.1, weeklyToleranceHours: "1" },
+    { weeklyToleranceRatio: 0.1, weeklyToleranceHours: 1, approved: true },
+  ])("rejects invalid planning budget before model input is prepared", budget => {
+    const { plan, research } = fixture();
+    research.planningBudget = budget as never;
+    expect(() => prepareRoadmapperInput(plan, research, "invalid-budget")).toThrow(RoadmapperValidationError);
+  });
+
+  it("accepts same-week prerequisites and orders tasks without changing weeks, hours, or references", () => {
+    const { plan, research, input, draft } = fixture();
+    const route = draft.routes[0]!, first = route.tasks[0]!;
+    first.hours = 1;
+    first.dependsOn = ["verify-first"];
+    route.tasks.push({ ...structuredClone(first), id: "verify-first", title: "先核实原始信息", dependsOn: [] });
+    route.evidenceApplications[0]!.taskIds.push("verify-first");
+    const before = structuredClone({ plan, draft });
+    const proposal = compileRoadmapperBaseline(plan, research, input, draft);
+    const preview = proposal.previews[0]!.plan;
+    const tasks = preview.nodes.filter(node => node.type === "task");
+    expect(tasks.slice(0, 3).map(task => task.id)).toEqual(["verify-first", "t1", "t2"]);
+    expect(preview.relations.filter(relation => relation.sourceId === "t1")).toEqual([
+      { id: "dep-1", type: "depends_on", sourceId: "t1", targetId: "verify-first", hard: true },
+    ]);
+    expect(tasks[0]).toMatchObject({ startDate: input.context.weeks[0]!.startDate, endDate: input.context.weeks[0]!.endDate, estimatedHours: 1 });
+    expect(tasks[1]).toMatchObject({ startDate: input.context.weeks[0]!.startDate, estimatedHours: 1 });
+    expect({ plan, draft }).toEqual(before);
+  });
+
+  it.each(["self", "missing", "other-route", "future", "cycle"] as const)("rejects %s dependencies with a specific safe explanation", kind => {
+    const { plan, research, input, draft } = fixture(), first = draft.routes[0]!.tasks[0]!;
+    const messages = { self: "任务不能依赖自身", missing: "依赖引用了本路线中不存在的任务", "other-route": "依赖引用了本路线中不存在的任务",
+      future: "任务不能依赖安排在未来周的任务", cycle: "任务依赖存在循环" };
+    first.hours = 1;
+    if (kind === "self") first.dependsOn = [first.id];
+    if (kind === "missing") first.dependsOn = ["not-present"];
+    if (kind === "other-route") { draft.routes[1]!.tasks[0]!.id = "only-other-route"; first.dependsOn = ["only-other-route"]; }
+    if (kind === "future") first.dependsOn = ["t2"];
+    if (kind === "cycle") {
+      first.dependsOn = ["peer"];
+      draft.routes[0]!.tasks.push({ ...structuredClone(first), id: "peer", dependsOn: [first.id] });
+    }
+    expect(() => compileRoadmapperBaseline(plan, research, input, draft)).toThrow(messages[kind]);
+  });
+
   it("projects a weekly source-backed plan without mutating the confirmed plan or upgrading evidence", () => {
     const { plan, research, input, draft } = fixture();
     const before = structuredClone(plan);
@@ -76,7 +179,7 @@ describe("model Roadmapper", () => {
   it.each([
     ["invented evidence", (d: ReturnType<typeof roadmapperDraftFixture>) => { d.routes[0]!.tasks[0]!.evidenceIds = ["invented"]; }],
     ["wrong recommendation evidence", (d: ReturnType<typeof roadmapperDraftFixture>) => { d.recommendationEvidenceIds = d.routes[1]!.evidenceIds; }],
-    ["weekly overload", (d: ReturnType<typeof roadmapperDraftFixture>) => { d.routes[0]!.tasks[0]!.hours = 6; }],
+    ["weekly overload", (d: ReturnType<typeof roadmapperDraftFixture>) => { d.routes[0]!.tasks[0]!.hours = 7; }],
     ["forward dependency", (d: ReturnType<typeof roadmapperDraftFixture>) => { d.routes[0]!.tasks[0]!.dependsOn = ["t2"]; }],
     ["empty acceptance", (d: ReturnType<typeof roadmapperDraftFixture>) => { d.routes[0]!.tasks[0]!.acceptanceCriteria = []; }],
     ["missing week", (d: ReturnType<typeof roadmapperDraftFixture>) => { d.routes[0]!.tasks.pop(); }],
@@ -111,5 +214,168 @@ describe("model Roadmapper", () => {
     expect(input.context.evidence).toHaveLength(3);
     research.evidencePacks[1]!.evidence[0]!.id = research.evidencePacks[0]!.evidence[0]!.id;
     expect(() => prepareRoadmapperInput(plan, research, "mapper")).toThrow("ID");
+  });
+});
+
+function insufficientFixture(count = 0) {
+  const { plan, research, draft } = fixture();
+  research.evidencePacks[0]!.evidence = research.evidencePacks[0]!.evidence.slice(0, count);
+  research.evidencePacks[1]!.evidence = [];
+  research.evidencePacks.forEach(pack => { pack.routeCandidates = []; });
+  draft.routes = draft.routes.slice(0, 1);
+  draft.routes[0]!.evidenceIds = [];
+  draft.routes[0]!.evidenceApplications = [];
+  draft.routes[0]!.tasks.forEach(task => { task.evidenceIds = []; });
+  draft.routes[0]!.milestones.forEach(milestone => { milestone.evidenceIds = []; });
+  draft.recommendationEvidenceIds = [];
+  return { plan, research, draft };
+}
+
+describe("Roadmapper with insufficient research", () => {
+  it.each([0])("plans from confirmed facts with %i valid cards and explicit inference labels", count => {
+    const { plan, research, draft } = insufficientFixture(count), before = structuredClone(plan);
+    const input = prepareRoadmapperInput(plan, research, "provisional-model");
+    expect(input.context.evidenceStatus).toBe("insufficient");
+    expect(input.context.evidence).toHaveLength(count);
+    expect(input.systemPrompt).toContain("证据不足");
+    const proposal = compileRoadmapperBaseline(plan, research, input, draft);
+    expect(proposal.roadmapper).toMatchObject({ mode: "model", evidenceStatus: "insufficient", recommendationEvidenceIds: [] });
+    expect(proposal.roadmapper!.warnings).toContain("证据不足");
+    expect(proposal.previews).toHaveLength(1);
+    expect(proposal.researchRun.routeCandidates[0]!.risks).toContain("证据不足");
+    const preview = proposal.previews[0]!.plan;
+    const inference = preview.evidence.find(card => card.sourceType === "ai")!;
+    expect(inference).toMatchObject({ contentType: "ai_inference", verificationStatus: "unverified" });
+    expect(inference.riskTags).toContain("证据不足");
+    expect(preview.evidence.filter(card => card.sourceType === "zhihu")).toHaveLength(count);
+    expect(preview.nodes.every(node => node.evidenceIds.includes(inference.id))).toBe(true);
+    expect(plan).toEqual(before);
+  });
+
+  it("keeps actual coverage authoritative when a pack claims sufficiency", () => {
+    const { plan, research } = insufficientFixture(1);
+    research.evidencePacks[0]!.coverage = { status: "sufficient", evidenceCount: 8, targetMin: 6, targetMax: 8,
+      hasCaveat: true, gaps: [], reviewStatus: "needs_human_review" };
+    expect(prepareRoadmapperInput(plan, research, "provisional-model").context.evidenceStatus).toBe("insufficient");
+  });
+
+  it("marks a completed-looking aggregate insufficient when a research stage is partial", () => {
+    const { plan, research } = fixture();
+    research.controller = { coverage: { status: "sufficient", evidenceCount: 8, targetMin: 6, targetMax: 8,
+      hasCaveat: true, gaps: [], reviewStatus: "needs_human_review" }, questionCoverage: [], rounds: 1,
+      queryBudget: 6, queriesAttempted: 2, searchCallsAttempted: 2, cacheHits: 0,
+      stages: [{ stage: "research", status: "partial", durationMs: 1 }], stopReason: "partial" };
+    expect(prepareRoadmapperInput(plan, research, "provisional-model").context.evidenceStatus).toBe("insufficient");
+  });
+
+  it("does not treat a successful supplementary planner stage as partial research", () => {
+    const { plan, research } = fixture();
+    research.controller = { coverage: { status: "sufficient", evidenceCount: 8, targetMin: 6, targetMax: 8,
+      hasCaveat: true, gaps: [], reviewStatus: "needs_human_review" }, questionCoverage: [], rounds: 2,
+      queryBudget: 6, queriesAttempted: 4, searchCallsAttempted: 4, cacheHits: 0,
+      stages: [{ stage: "supplement", status: "ready_for_review", durationMs: 1 }], stopReason: "coverage_sufficient" };
+    expect(prepareRoadmapperInput(plan, research, "supplemented-model").context.evidenceStatus).toBe("sufficient");
+  });
+
+  it("keeps rejected CRLF and emoji sources separate and out of the model context", () => {
+    const { plan, research, draft } = insufficientFixture();
+    const sources = [{ source: { id: "zhihu:Answer:999", provider: "zhihu" as const, title: "未采纳资料",
+      url: "https://www.zhihu.com/answer/999", author: "作者", snippet: "RAW_REJECTED😀\r\n没有直接依据。",
+      retrievedAt: "2026-09-13T00:00:00Z", source_scope: "search_snippet" as const },
+      reasonCode: "compiler_rejected" as const, riskTags: ["search_snippet_only", "证据不足"] }];
+    research.evidencePacks[0]!.insufficientSources = sources;
+    const variant = structuredClone(sources[0]!); variant.source.snippet = "不同摘要😀\r\n仍然没有直接依据。";
+    research.evidencePacks[1]!.insufficientSources = [structuredClone(sources[0]!), variant];
+    const input = prepareRoadmapperInput(plan, research, "provisional-model");
+    expect(JSON.stringify(input)).not.toContain("RAW_REJECTED");
+    expect(JSON.stringify(input)).not.toContain("https://www.zhihu.com/answer/999");
+    const proposal = compileRoadmapperBaseline(plan, research, input, draft);
+    expect(proposal.previews[0]!.plan.research!.insufficientSources).toEqual([...sources, variant]);
+    expect(proposal.previews[0]!.plan.evidence.some(card => card.id === sources[0]!.source.id)).toBe(false);
+    proposal.previews[0]!.plan.research!.insufficientSources![0]!.riskTags.push("later-edit");
+    expect(sources[0]!.riskTags).not.toContain("later-edit");
+  });
+
+  it("accepts provided user facts as provisional planning references", () => {
+    const { plan, research, draft } = insufficientFixture();
+    const input = prepareRoadmapperInput(plan, research, "provisional-model"), id = input.context.userFacts[0]!.id;
+    draft.routes[0]!.evidenceIds = [id]; draft.recommendationEvidenceIds = [id];
+    draft.routes[0]!.tasks[0]!.evidenceIds = [id];
+    expect(compileRoadmapperBaseline(plan, research, input, draft).roadmapper!.recommendationEvidenceIds).toEqual([id]);
+  });
+
+  it.each(["route", "recommendation", "milestone", "task"])("rejects invented %s references despite missing evidence", target => {
+    const { plan, research, draft } = insufficientFixture();
+    const input = prepareRoadmapperInput(plan, research, "provisional-model");
+    if (target === "route") draft.routes[0]!.evidenceIds = ["invented"];
+    if (target === "recommendation") draft.recommendationEvidenceIds = ["invented"];
+    if (target === "milestone") draft.routes[0]!.milestones[0]!.evidenceIds = ["invented"];
+    if (target === "task") draft.routes[0]!.tasks[0]!.evidenceIds = ["invented"];
+    expect(() => compileRoadmapperBaseline(plan, research, input, draft)).toThrow("未提供的证据");
+  });
+
+  it("rejects invented alternative routes and retains scheduling limits", () => {
+    const { plan, research, draft } = insufficientFixture();
+    const input = prepareRoadmapperInput(plan, research, "provisional-model");
+    draft.routes.push({ ...structuredClone(draft.routes[0]!), id: "another" });
+    expect(() => compileRoadmapperBaseline(plan, research, input, draft)).toThrow("候选路线数量");
+    draft.routes.pop(); draft.routes[0]!.tasks[0]!.hours = 100;
+    expect(() => compileRoadmapperBaseline(plan, research, input, draft)).toThrow("弹性上限");
+  });
+
+  it("allows AI scheduling tasks alongside evidence-backed actions even with sufficient research", () => {
+    const { plan, research, input, draft } = fixture();
+    expect(input.context.evidenceStatus).toBe("sufficient");
+    draft.routes[0]!.tasks[0]!.evidenceIds = [];
+    draft.routes[0]!.evidenceApplications[0]!.taskIds.shift();
+    expect(() => compileRoadmapperBaseline(plan, research, input, draft)).not.toThrow();
+  });
+
+  it.each([1, 5])("does not silently discard %i accepted cards because coverage is insufficient", count => {
+    const { plan, research, draft } = insufficientFixture(count);
+    const input = prepareRoadmapperInput(plan, research, "partial-unused");
+    expect(input.context.evidenceStatus).toBe("insufficient");
+    expect(() => compileRoadmapperBaseline(plan, research, input, draft)).toThrow("已有知乎证据");
+    const userId = input.context.userFacts[0]!.id;
+    draft.routes[0]!.evidenceIds = [userId];
+    draft.routes[0]!.tasks[0]!.evidenceIds = [userId];
+    expect(() => compileRoadmapperBaseline(plan, research, input, draft)).toThrow("已有知乎证据");
+  });
+
+  it("retains a source's concrete application, without forcing all cards or all tasks to use citations", () => {
+    const { plan, research } = insufficientFixture(5);
+    const input = prepareRoadmapperInput(plan, research, "partial-used"), draft = roadmapperDraftFixture(input);
+    const route = draft.routes[0]!;
+    route.tasks.slice(1).forEach(task => { task.evidenceIds = []; });
+    route.evidenceApplications[0]!.taskIds = [route.tasks[0]!.id];
+    const before = structuredClone({ plan, research, draft });
+    const proposal = compileRoadmapperBaseline(plan, research, input, draft);
+    const applications = [{ routeId: route.id, ...route.evidenceApplications[0]! }];
+    expect(proposal.roadmapper).toMatchObject({ evidenceApplications: applications });
+    expect(proposal.previews[0]!.plan.research!.roadmapper).toMatchObject({ evidenceApplications: applications });
+    expect(proposal.roadmapper!.warnings.join()).toContain("11 个任务");
+    expect(proposal.roadmapper!.warnings.join()).toContain("AI 规划");
+    expect({ plan, research, draft }).toEqual(before);
+  });
+
+  it("accepts original source IDs without applying model-created task ID restrictions", () => {
+    const { plan, research } = insufficientFixture(1);
+    research.evidencePacks[0]!.evidence[0]!.id = "zhihu:accepted-evidence:42";
+    const input = prepareRoadmapperInput(plan, research, "original-source-id"), draft = roadmapperDraftFixture(input);
+    expect(() => compileRoadmapperBaseline(plan, research, input, draft)).not.toThrow();
+  });
+
+  it.each(["missing", "unknown", "unbound", "empty reason", "duplicate source", "duplicate task", "wrong task", "omitted task"])("rejects %s source applications", failure => {
+    const { plan, research, input, draft } = fixture(), route = draft.routes[0]!;
+    const application = route.evidenceApplications[0]!;
+    if (failure === "missing") route.evidenceApplications = [];
+    if (failure === "unknown") application.evidenceId = "invented";
+    if (failure === "unbound") application.evidenceId = input.context.evidence.at(-1)!.id;
+    if (failure === "empty reason") application.application = " ";
+    if (failure === "duplicate source") route.evidenceApplications.push(structuredClone(application));
+    if (failure === "duplicate task") application.taskIds.push(application.taskIds[0]!);
+    if (failure === "wrong task") application.taskIds[0] = "absent";
+    if (failure === "omitted task") application.taskIds.shift();
+    expect(() => compileRoadmapperBaseline(plan, research, input, draft)).toThrow(RoadmapperValidationError);
   });
 });

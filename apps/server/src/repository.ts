@@ -1,8 +1,10 @@
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { randomUUID } from "node:crypto";
 import type { BaselineProposal, EventProcessingRecord, InterviewSession, PatchProposal, PlanCommit, PlanEvent, PlanState } from "@zhilu/contracts";
 import { createCommit } from "@zhilu/plan-engine";
 import type { LiveResearchInput } from "@zhilu/agent-runtime";
+import type { CompletedResearchEvidence } from "./research-controller";
 
 export interface PendingChange {
   event: PlanEvent;
@@ -90,6 +92,18 @@ export class PlanRepository {
     }
   }
 
+  /** Restore actionable proposals without deleting older records needed for conflict checks. */
+  async getActivePending(plan: Pick<PlanState, "projectId" | "version">): Promise<PendingChange[]> {
+    const eventTime = (pending: PendingChange) => {
+      const parsed = Date.parse(pending.event.occurredAt);
+      return Number.isFinite(parsed) ? parsed : -Infinity;
+    };
+    return (await this.getPending(plan.projectId))
+      .filter(pending => pending.patch.baseVersion === plan.version && pending.afterPreview.projectId === plan.projectId)
+      .sort((left, right) => eventTime(right) - eventTime(left)
+        || (left.patch.id < right.patch.id ? -1 : left.patch.id > right.patch.id ? 1 : 0));
+  }
+
   async removePending(projectId: string, patchId: string): Promise<void> {
     await rm(join(this.projectRoot(projectId), "pending", `${patchId}.json`), { force: true });
   }
@@ -134,8 +148,23 @@ export class PlanRepository {
 
   async saveResearchFailure(projectId: string, failure: {
     occurredAt: string; code: string; message: string; controller: import("@zhilu/contracts").ResearchControllerReport;
+    completedResearch?: CompletedResearchEvidence;
   }): Promise<void> {
-    await writeJsonAtomic(join(this.projectRoot(projectId), "research-failure.json"), failure);
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(projectId)) throw new Error("Invalid research diagnostic identifier.");
+    const { completedResearch, ...diagnostic } = failure;
+    let partialArtifactId: string | undefined;
+    if (completedResearch?.requests.length) {
+      // Separate from M3 snapshots: these outputs have not completed the research round.
+      const body = `${JSON.stringify({ artifactKind: "partial-research", ...diagnostic, completedResearch }, null, 2)}\n`;
+      if (Buffer.byteLength(body, "utf8") > 2 * 1024 * 1024) throw new Error("Partial research diagnostic exceeds size limit.");
+      partialArtifactId = `partial-${randomUUID()}`;
+      const directory = join(this.projectRoot(projectId), "research-partials");
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      await writeFile(join(directory, `${partialArtifactId}.json`), body, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    }
+    await writeJsonAtomic(join(this.projectRoot(projectId), "research-failure.json"), {
+      ...diagnostic, ...(partialArtifactId ? { partialArtifactId } : {}),
+    });
   }
 
   private planPath(projectId: string): string {

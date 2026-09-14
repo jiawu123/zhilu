@@ -29,6 +29,19 @@ function fixture() {
 }
 
 describe("Controller global research evidence", () => {
+  it("preserves rejected sources without promoting them to evidence or normalizing their original text", () => {
+    const { requests, packs } = fixture();
+    const sources = [{ source: { id: "zhihu:Answer:999", provider: "zhihu" as const, title: "原始资料",
+      url: "https://www.zhihu.com/answer/999", author: "作者", snippet: "😀原文\r\n没有直接依据。",
+      retrievedAt: "2026-09-13T00:00:00Z", source_scope: "search_snippet" as const },
+      reasonCode: "no_evidence" as const, riskTags: ["证据不足", "search_snippet_only"] }];
+    packs[0]!.insufficientSources = sources;
+    const result = aggregateResearchEvidence(requests, packs);
+    expect(result.evidencePacks[0]!.insufficientSources).toEqual(sources);
+    expect(result.evidence.some(item => item.id === sources[0]!.source.id)).toBe(false);
+    result.evidencePacks[0]!.insufficientSources![0]!.riskTags.push("later-edit");
+    expect(sources[0]!.riskTags).not.toContain("later-edit");
+  });
   it("recomputes global coverage instead of summing each pack's minimum-six gap", () => {
     const { requests, packs } = fixture();
     for (const item of packs) item.coverage = coverage([{ kind: "evidence_count", reason: "这个问题只有三张" }]);

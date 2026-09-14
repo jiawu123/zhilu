@@ -181,43 +181,111 @@ def test_invalid_hypothesis_collection_preserves_valid_evidence(model, groups):
         assert 'invalid_group_count' not in rejected
 
 
-def test_two_card_item_and_no_evidence_citations_preserve_eight_independent_cards(model, monkeypatch, capsys):
+def test_multiple_cards_expand_to_single_outputs_and_group_requires_all_cards(model):
     batch = importlib.import_module('zhihu_m2.batch_screening')
-    values = [candidate(i) for i in range(10)]
+    values = [candidate(i) for i in range(2)]
     proposed = [item(i, value) for i, value in enumerate(values)]
-    proposed[5]['compilation'] = {'status': 'no_evidence', 'reason': '缺少所需依据。',
-                                'evidence_cards': []}
-    extra_card = copy.deepcopy(proposed[6]['compilation']['evidence_cards'][0])
-    extra_card['claim'] = '另一条主张仍然不能绕过单卡契约。'
-    proposed[6]['compilation']['evidence_cards'].append(extra_card)
+    extra_card = copy.deepcopy(proposed[0]['compilation']['evidence_cards'][0])
+    extra_card['claim'] = '作者建议比较练习后的实际变化。'
+    proposed[0]['compilation']['evidence_cards'].append(extra_card)
     model['payload'] = {'items': proposed, 'researchCandidates': [{
-        'title': f'假设{index}', 'summary': '需要完整的所引证据才能成立。',
-        'applicableWhen': ['条件已知'], 'candidateIndices': indices, 'risks': [],
-    } for index, indices in enumerate([[0, 2, 3, 4, 6, 7], [1, 5, 9], [6, 7]])]}
-    monkeypatch.setenv('ZHIHU_BATCH_DEBUG', '1')
-    diagnostics = []
-    full = run(values, diagnostics=diagnostics)
-    invalid_item = next(entry for entry in diagnostics if entry['batch_debug'] == 'item_invalid')
-    assert invalid_item['candidate_index'] == 6
-    assert invalid_item['card_count'] == 2
-    stderr_events = [json.loads(line) for line in capsys.readouterr().err.splitlines()]
-    assert invalid_item in stderr_events
-    assert len(full['compilerOutputs']) == 9
-    assert sum(len(value['evidence_cards']) for value in full['compilerOutputs']) == 8
-    assert full['researchCandidates'] == []
-    assert full['issues'] == [
-        {'code': 'batch_item_invalid', 'candidateIndex': 6},
-        {'code': 'batch_research_candidate_invalid', 'researchCandidateIndex': 0},
-        {'code': 'batch_research_candidate_invalid', 'researchCandidateIndex': 1},
-        {'code': 'batch_research_candidate_invalid', 'researchCandidateIndex': 2},
-    ]
-    selected = batch.select_evidence(full, evidence_limit=5)
-    assert sum(len(value['evidence_cards']) for value in selected['compilerOutputs']) == 5
+        'title': '记录并比较', 'summary': '需要两张卡共同支持。',
+        'applicableWhen': ['条件已知'], 'candidateIndices': [0], 'risks': [],
+    }]}
+    original = copy.deepcopy(model['payload'])
+    full = run(values)
+    assert len(full['compilerOutputs']) == 3
+    assert all(len(value['evidence_cards']) == 1 for value in full['compilerOutputs'])
+    assert [value['candidateIndex'] for value in full['assessments']] == [0, 0, 1]
+    cards = [value['evidence_cards'][0] for value in full['compilerOutputs']]
+    assert [card['claim'] for card in cards[:2]] == [
+        '作者建议记录第0次练习结果。', '作者建议比较练习后的实际变化。']
+    assert full['researchCandidates'][0]['evidenceIds'] == [cards[0]['id'], cards[1]['id']]
+    assert full['issues'] == []
+    assert model['payload'] == original
+    selected = batch.select_evidence(full, evidence_limit=1)
     assert selected['researchCandidates'] == []
-    assert all(value['source']['id'] != 'zhihu:Answer:6' for value in selected['compilerOutputs'])
-    for compiled in selected['compilerOutputs']:
+    for compiled in full['compilerOutputs']:
         for card in compiled['evidence_cards']:
             assert compiled['source']['snippet'][card['quote_start']:card['quote_end']] == card['supporting_quote']
+
+
+@pytest.mark.parametrize('bad_field,bad_value', [
+    ('supporting_quote', '不是原文中的引用，不能放宽接受。'),
+    ('source_id', 'zhihu:Answer:999'), ('extra', 'untrusted'),
+])
+def test_invalid_card_in_same_candidate_is_isolated_and_its_group_dropped(model, bad_field, bad_value):
+    values = [candidate(i) for i in range(2)]
+    proposed = [item(i, value) for i, value in enumerate(values)]
+    bad = copy.deepcopy(proposed[0]['compilation']['evidence_cards'][0])
+    bad[bad_field] = bad_value
+    proposed[0]['compilation']['evidence_cards'].insert(0, bad)
+    model['payload'] = {'items': proposed, 'researchCandidates': [{
+        'title': '不能只保留一半依据', 'summary': '依赖该候选完整主张。',
+        'applicableWhen': ['练习时'], 'candidateIndices': [0], 'risks': [],
+    }]}
+    diagnostics = []
+    full = run(values, diagnostics=diagnostics)
+    assert [value['source']['id'] for value in full['compilerOutputs']] == [
+        'zhihu:Answer:0', 'zhihu:Answer:1']
+    assert [value['candidateIndex'] for value in full['assessments']] == [0, 1]
+    assert full['researchCandidates'] == []
+    assert full['issues'] == [
+        {'code': 'batch_item_invalid', 'candidateIndex': 0},
+        {'code': 'batch_research_candidate_invalid', 'researchCandidateIndex': 0},
+    ]
+    rejected = next(entry for entry in diagnostics if entry['batch_debug'] == 'item_invalid')
+    assert rejected['candidate_index'] == 0
+    assert rejected['card_count'] == 2
+
+
+def test_multiple_card_duplicate_is_kept_once_without_dangling_group_ids(model):
+    values = [candidate(i) for i in range(2)]
+    proposed = [item(i, value) for i, value in enumerate(values)]
+    proposed[0]['compilation']['evidence_cards'] *= 2
+    model['payload'] = {'items': proposed, 'researchCandidates': [{
+        'title': '同一主张', 'summary': '重复卡仍只是一条依据。',
+        'applicableWhen': ['练习时'], 'candidateIndices': [0], 'risks': [],
+    }]}
+    full = run(values)
+    assert [value['source']['id'] for value in full['compilerOutputs']] == [
+        'zhihu:Answer:0', 'zhihu:Answer:1']
+    first_id = full['compilerOutputs'][0]['evidence_cards'][0]['id']
+    assert full['researchCandidates'][0]['evidenceIds'] == [first_id]
+    assert full['issues'] == []
+
+
+def test_multiple_card_bound_keeps_first_three_and_drops_incomplete_group(model):
+    batch = importlib.import_module('zhihu_m2.batch_screening')
+    values = [candidate(i) for i in range(2)]
+    proposed = [item(i, value) for i, value in enumerate(values)]
+    card = proposed[0]['compilation']['evidence_cards'][0]
+    proposed[0]['compilation']['evidence_cards'] = [
+        {**card, 'claim': f'第{index}项建议。'} for index in range(4)]
+    model['payload'] = {'items': proposed, 'researchCandidates': [{
+        'title': '四项建议的总结', 'summary': '不能将保留三卡冒充完整四卡。',
+        'applicableWhen': ['练习时'], 'candidateIndices': [0], 'risks': [],
+    }]}
+    full = run(values)
+    assert [value['evidence_cards'][0]['claim'] for value in full['compilerOutputs']] == [
+        '第0项建议。', '第1项建议。', '第2项建议。', '作者建议记录第1次练习结果。']
+    assert full['researchCandidates'] == []
+    assert any(issue['candidateIndex'] == 0 for issue in full['issues'] if 'candidateIndex' in issue)
+    selected = batch.select_evidence(full, evidence_limit=8)
+    assert len(selected['compilerOutputs']) == 3
+    assert sum(value['source']['id'] == 'zhihu:Answer:0' for value in selected['compilerOutputs']) == 2
+
+
+def test_multiple_card_bound_does_not_search_past_bad_first_three(model):
+    values = [candidate(i) for i in range(2)]
+    proposed = [item(i, value) for i, value in enumerate(values)]
+    good = proposed[0]['compilation']['evidence_cards'][0]
+    bad = {**good, 'supporting_quote': '第一批卡均不匹配原文。'}
+    proposed[0]['compilation']['evidence_cards'] = [bad, bad, bad, good]
+    model['payload'] = {'items': proposed}
+    full = run(values)
+    assert [value['source']['id'] for value in full['compilerOutputs']] == ['zhihu:Answer:1']
+    assert full['issues'] == [{'code': 'batch_item_invalid', 'candidateIndex': 0}]
 
 
 def test_all_invalid_items_fail_without_raw_exception(model):

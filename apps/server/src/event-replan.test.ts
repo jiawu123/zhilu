@@ -83,6 +83,77 @@ describe("model event replanning HTTP boundary", () => {
     expect(planResearch).not.toHaveBeenCalled(); expect(researchOne).not.toHaveBeenCalled();
   });
 
+  it("returns a successful no-change result without replacing pending or writing formal state", async () => {
+    const plan = fixture();
+    plan.nodes[1]!.endDate = "2026-09-16";
+    plan.nodes[2]!.startDate = "2026-09-17";
+    await repository.savePlan(plan);
+    const pending = await createEvent({ changes: { weeklyHours: plan.weeklyHours } });
+    const beforeHistory = await repository.getHistory(plan.projectId);
+    const savePending = vi.spyOn(repository, "savePending"), removePending = vi.spyOn(repository, "removePending");
+    generate.mockResolvedValue({ status: "scheduled", summary: "现有日期已满足当前每周预算，无需调整。", usedEvidenceIds: [], changes: [] });
+
+    const response = await post(`${origin}/diff/replan`, { patchId: pending.patch.id });
+    expect(response.status).toBe(200);
+    const result = await response.json();
+    expect(result).toMatchObject({ unchanged: true, processing: { mode: "model", researchNeeded: false,
+      usedEvidenceIds: [], summary: "现有日期已满足当前每周预算，无需调整。" } });
+    expect(result).not.toHaveProperty("patch");
+    expect(result).not.toHaveProperty("afterPreview");
+    expect(await repository.getPending(plan.projectId)).toEqual([pending]);
+    expect(await repository.getExistingPlan(plan.projectId)).toEqual(plan);
+    expect(await repository.getHistory(plan.projectId)).toEqual(beforeHistory);
+    expect(savePending).not.toHaveBeenCalled(); expect(removePending).not.toHaveBeenCalled();
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(planResearch).not.toHaveBeenCalled(); expect(researchOne).not.toHaveBeenCalled();
+    // A no-change result releases the project lock and leaves the existing proposal addressable.
+    expect((await post(`${origin}/diff/replan`, { patchId: pending.patch.id })).status).toBe(200);
+    expect(generate).toHaveBeenCalledTimes(2);
+    expect(await repository.getPending(plan.projectId)).toEqual([pending]);
+  });
+
+  it("still proposes a real weekly-hours change when no task dates need changing", async () => {
+    const plan = fixture();
+    plan.nodes[1]!.endDate = "2026-09-16";
+    plan.nodes[2]!.startDate = "2026-09-17";
+    await repository.savePlan(plan);
+    const pending = await createEvent({ changes: { weeklyHours: 10 } });
+    generate.mockResolvedValue({ status: "scheduled", summary: "新预算已容纳现有排期，仅更新每周工时。", usedEvidenceIds: [], changes: [] });
+
+    const response = await post(`${origin}/diff/replan`, { patchId: pending.patch.id });
+    expect(response.status).toBe(202);
+    const proposal = await response.json() as PendingChange;
+    expect(proposal.patch.operations).toEqual([{ op: "set_weekly_hours", weeklyHours: 10 }]);
+    expect(proposal.patch.id).not.toBe(pending.patch.id);
+    expect(proposal.afterPreview.nodes).toEqual(plan.nodes);
+    expect(await repository.getExistingPlan(plan.projectId)).toEqual(plan);
+    expect(await repository.getHistory(plan.projectId)).toHaveLength(1);
+    expect((await repository.getPending(plan.projectId)).map(item => item.patch.id)).toEqual([proposal.patch.id]);
+    expect((await post(`${origin}/diff/apply`, { patchId: proposal.patch.id })).status).toBe(200);
+    const applied = await repository.getExistingPlan(plan.projectId);
+    expect(applied.weeklyHours).toBe(10);
+    expect(applied.nodes).toEqual(plan.nodes);
+    expect(await repository.getHistory(plan.projectId)).toHaveLength(2);
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(planResearch).not.toHaveBeenCalled(); expect(researchOne).not.toHaveBeenCalled();
+  });
+
+  it("rejects a no-change result if the formal plan changed while the model was checking", async () => {
+    const plan = fixture();
+    plan.nodes[1]!.endDate = "2026-09-16";
+    plan.nodes[2]!.startDate = "2026-09-17";
+    await repository.savePlan(plan);
+    const pending = await createEvent({ changes: { weeklyHours: plan.weeklyHours } });
+    generate.mockImplementationOnce(async () => {
+      await repository.savePlan({ ...plan, version: plan.version + 1 });
+      return { status: "scheduled", summary: "现有日期无需变化。", usedEvidenceIds: [], changes: [] };
+    });
+    expect((await post(`${origin}/diff/replan`, { patchId: pending.patch.id })).status).toBe(409);
+    expect(await repository.getPending(plan.projectId)).toEqual([pending]);
+    expect((await repository.getExistingPlan(plan.projectId)).version).toBe(plan.version + 1);
+    expect(await repository.getHistory(plan.projectId)).toHaveLength(1);
+  });
+
   it.each(["invalid", "timeout", "unschedulable"])("keeps previous proposal on %s and releases the busy guard", async kind => {
     const pending = await createEvent();
     if (kind === "timeout") generate.mockRejectedValueOnce(new RoadmapperProviderError("timeout"));

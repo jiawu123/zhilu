@@ -10,6 +10,27 @@ export function compiler() {
 }
 const response = () => envelope({ requestId: request.id, status: "ok", compilerOutputs: [compiler()], routeCandidates: [], unresolvedQuestions: [], issues: [] });
 describe("M2 unknown boundary", () => {
+  it("retains insufficient posts separately without promoting them into EvidenceCards", () => {
+    const output = compiler();
+    const insufficientSources = [{ source: output.source, reasonCode: "compiler_rejected", riskTags: ["证据不足", ...output.evidence_cards[0]!.risk_flags] }];
+    const data = { requestId: request.id, status: "partial", compilerOutputs: [], routeCandidates: [], unresolvedQuestions: [],
+      issues: [{ code: "compiler_invalid_output", stage: "compile" }], insufficientSources };
+    const parsed = parseResearchResponse(envelope(data), request);
+    expect(parsed.pack.evidence).toEqual([]);
+    expect(parsed.pack.insufficientSources).toEqual(insufficientSources);
+    expect(parsed.pack.insufficientSources![0]!.source.snippet).toBe(output.source.snippet);
+  });
+  it.each(["url", "tag", "field", "count", "reason"])("rejects unsafe insufficient source %s", kind => {
+    const source = { source: compiler().source, reasonCode: "no_evidence", riskTags: ["证据不足", ...compiler().evidence_cards[0]!.risk_flags] };
+    if (kind === "url") source.source.url = "javascript:alert(1)";
+    if (kind === "tag") source.riskTags = [];
+    if (kind === "field") Object.assign(source, { claim: "invented" });
+    if (kind === "reason") source.reasonCode = "verified";
+    const data = { requestId: request.id, status: "no_evidence", compilerOutputs: [], routeCandidates: [], unresolvedQuestions: [], issues: [],
+      insufficientSources: kind === "count" ? Array(25).fill(source) : [source] };
+    expect(() => parseResearchResponse(envelope(data), request)).toThrow(BoundaryError);
+  });
+
   it("defensively copies valid single-query input", () => {
     const input = { goal: "构建测试程序", user_context: {}, request };
     expect(validateResearchInput(input)).toEqual(input);

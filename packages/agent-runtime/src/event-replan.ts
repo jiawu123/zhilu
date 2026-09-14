@@ -30,7 +30,7 @@ export interface EventReplanInput {
     eligibleTasks: Array<ScheduledNode & { title: string; milestoneId?: string; lockedDates: string[] }>;
     milestones: Array<{ id: string; startDate: string; endDate: string; lockedDates: string[]; childNodeIds: string[] }>;
     fixedSchedule: ScheduledNode[];
-    dependencies: Array<{ dependentId: string; prerequisiteId: string }>;
+    dependencies: Array<{ dependentId: string; prerequisiteId: string; windowKind?: "shared_week" }>;
     weeks: Array<{ startDate: string; endDate: string; capacityHours: number; fixedHours: number }>;
     evidence: Array<{ id: string; summary: string; sourceType: string; verificationStatus: string; applicableWhen: string[]; caveats: string[] }>;
   };
@@ -45,8 +45,10 @@ milestones 是父里程碑边界，不能直接提交变更；Controller 会根�
 未完成 task/checkpoint 的全部 estimatedHours 只从 max(startDate,effectiveDate) 到 endDate 均摊（包含首尾），不得把未完成工时分摊到过去；in_progress 也没有剩余量记录，仍按全部预计工时保守安排。done 节点按原首尾日期计算历史及当周占用。
 每个固定 7 天周的任务与复盘工时总和不得超过 weeks.capacityHours。fixedHours 按同一规则包含不可改节点，不能忽略。任何未完成节点若 endDate 早于 effectiveDate，必须重新排期；无权限调整则说明无法排期。
 依赖含义：dependentId 开始必须严格晚于 prerequisiteId 结束。禁止将新开始日期放到 effectiveDate 之前；已开始任务可保留原开始日并延长结束日。
+唯一例外是已由系统标记 windowKind=shared_week 的依赖：原计划把这两个任务放在同一执行窗口，日期不是连续占用时间。它们可以保留或共同移到起止完全相同、最多7天的执行窗口，窗口内先做前置任务，再做后续任务，工时仍计入预算；也可以改为严格先后日期。不能把未标记的依赖合并到同窗，不能部分重叠、倒置依赖或忽略固定/锁定日期。
 所有日期必须在 scheduleStart 和 scheduleLimit 之间。允许预计完工晚于 goal.targetDate，但不能修改用户的目标日期或自行批准。
 优先最小改动，不伪造变化。仅在引用给定 evidence 时填写 usedEvidenceIds，不使用来源时返回空数组。
+如果现有日期已满足新预算与依赖，status=scheduled、changes=[]，说明无需改期；投入时间也未变化时系统只提示无需调整，不生成新的待确认变更。
 若锁定日期、依赖或预算导致无法安排，status 返回 unschedulable，changes 为空，并在 summary 说明原因。
 只允许结构：{"status":"scheduled","summary":"调整原因与取舍","usedEvidenceIds":[],"changes":[{"nodeId":"任务ID","startDate":"YYYY-MM-DD","endDate":"YYYY-MM-DD","reason":"该任务调整原因"}]}。不要输出其他字段、Markdown、批准状态或新增来源。`;
 
@@ -65,6 +67,7 @@ export function prepareEventReplanInput(plan: PlanState, event: PlanEvent, impac
   day(plan.goalContract!.targetDate);
   const nodes = new Map(plan.nodes.map(node => [node.id, node]));
   requireValue(nodes.size === plan.nodes.length, "现有计划节点 ID 重复。");
+  validateExistingDependencies(plan, nodes);
   const affected = new Set(impact.affectedNodeIds);
   const taskIds = new Set(impact.tasksToRescheduleIds);
   requireValue(taskIds.size === impact.tasksToRescheduleIds.length, "待重排任务 ID 重复。");
@@ -104,7 +107,13 @@ export function prepareEventReplanInput(plan: PlanState, event: PlanEvent, impac
       requireValue(node && node.status !== "archived" && node.startDate && node.endDate, "依赖边界缺少有效排期或已归档，不能安全局部重排。");
       day(node!.startDate!); day(node!.endDate!);
     }
-    return { dependentId: relation.sourceId, prerequisiteId: relation.targetId };
+    // M3 dates describe weekly execution windows, not continuous occupancy.
+    // Authorize only an already shared task window from a model Roadmapper plan;
+    // never infer permission from proposed dates or from generic overlap.
+    const sharedWindow = plan.research?.mode === "live" && plan.research.roadmapper?.mode === "model"
+      && isSharedWeekWindow(nodes.get(relation.sourceId)!, nodes.get(relation.targetId)!);
+    return { dependentId: relation.sourceId, prerequisiteId: relation.targetId,
+      ...(sharedWindow ? { windowKind: "shared_week" as const } : {}) };
   });
   // Include non-task dependency boundaries as fixed zero-hour dates, never their descriptions.
   for (const relation of dependencies) for (const id of [relation.dependentId, relation.prerequisiteId]) {
@@ -203,19 +212,23 @@ export function compileEventReplan(plan: PlanState, event: PlanEvent, impact: Im
       Object.assign(parent!, changes);
     }
   }
+  const sharedWindows: string[] = [];
   for (const dependency of input.context.dependencies) {
     const dependent = nextNodes.get(dependency.dependentId)!, prerequisite = nextNodes.get(dependency.prerequisiteId)!;
-    requireValue(dependent.startDate! > prerequisite.endDate!, `依赖排期冲突：${dependent.id} 必须在 ${prerequisite.id} 结束后开始。`);
+    const sharedWindow = dependency.windowKind === "shared_week" && isSharedWeekWindow(dependent, prerequisite);
+    requireValue(dependent.startDate! > prerequisite.endDate! || sharedWindow,
+      `依赖排期冲突：${dependent.id} 必须在 ${prerequisite.id} 结束后开始${dependency.windowKind === "shared_week" ? "，或保留两者完全相同且不超过 7 天的执行窗口并依次完成" : ""}。`);
+    if (sharedWindow) sharedWindows.push(`${prerequisite.id} → ${dependent.id}`);
   }
   const scheduled = [...nextNodes.values()].filter(node => (node.type === "task" || node.type === "checkpoint") && node.status !== "archived").map(scheduleNode);
   for (const week of input.context.weeks) if (week.endDate >= input.context.effectiveDate) {
     const hours = occupiedHours(scheduled, day(week.startDate), day(week.endDate), day(input.context.effectiveDate));
     requireValue(hours <= week.capacityHours + 1e-8, `${week.startDate} 当周任务与复盘合计 ${hours.toFixed(2)} 小时，超过 ${week.capacityHours} 小时预算。`);
   }
-  requireValue(operations.length > 0, "模型没有提出实际变化，不生成空 Patch。");
   const taskEnd = scheduled.filter(node => node.type === "task" && node.status !== "done").map(node => node.endDate).sort().at(-1);
   const reviewEnd = scheduled.filter(node => node.type === "checkpoint").map(node => node.endDate).sort().at(-1);
   const warnings: string[] = ["未完成任务与复盘的全部预计工时，从原开始日与事件日中较晚的一天起均摊估算，不视作已经投入；新预算从事件所在排期周起生效。"];
+  if (sharedWindows.length) warnings.push(`同一执行窗口内仍须依次完成前置与后续任务：${sharedWindows.join("；")}。日期表示可执行范围，不表示同时开始；硬依赖完成状态仍受检查。`);
   if (scheduled.some(node => node.status === "in_progress")) warnings.push("进行中节点缺少剩余工时记录，本次仍按全部预计工时保守排期，需要用户核对实际剩余量。");
   if (taskEnd && taskEnd > plan.goalContract!.targetDate) warnings.push(`预计完成日期延后至 ${taskEnd}；原目标日期 ${plan.goalContract!.targetDate} 未修改，需要用户确认延期取舍。`);
   if (taskEnd && (!reviewEnd || taskEnd > reviewEnd)) warnings.push("周复盘节点未自动增删或延展；延长区间的复盘安排仍需用户确认。");
@@ -224,6 +237,32 @@ export function compileEventReplan(plan: PlanState, event: PlanEvent, impact: Im
     processing: { mode: "model", researchNeeded: false, researchReason: "仅调整已知任务的日期和每周时间预算，没有新增知识问题，使用现有计划与证据，无需检索。",
       usedEvidenceIds, runId: metadata.runId, summary, warnings },
   };
+}
+
+function isSharedWeekWindow(dependent: PlanNode, prerequisite: PlanNode): boolean {
+  return dependent.type === "task" && prerequisite.type === "task"
+    && !!dependent.startDate && !!dependent.endDate
+    && dependent.startDate === prerequisite.startDate && dependent.endDate === prerequisite.endDate
+    && day(dependent.endDate) >= day(dependent.startDate) && day(dependent.endDate) - day(dependent.startDate) < 7;
+}
+
+function validateExistingDependencies(plan: PlanState, nodes: Map<string, PlanNode>): void {
+  const indegree = new Map([...nodes.keys()].map(id => [id, 0]));
+  const successors = new Map<string, string[]>();
+  for (const relation of plan.relations) if (relation.type === "depends_on") {
+    const dependent = nodes.get(relation.sourceId), prerequisite = nodes.get(relation.targetId);
+    requireValue(dependent && prerequisite, "现有计划依赖引用了未知节点。");
+    requireValue(!relation.hard || !["ready", "in_progress", "done"].includes(dependent.status) || prerequisite.status === "done",
+      `硬依赖尚未完成：${dependent.id} 必须等 ${prerequisite.id} 完成后才能开始或完成。`);
+    indegree.set(dependent.id, indegree.get(dependent.id)! + 1);
+    successors.set(prerequisite.id, [...(successors.get(prerequisite.id) ?? []), dependent.id]);
+  }
+  const ready = [...indegree].filter(([, count]) => count === 0).map(([id]) => id);
+  for (let index = 0; index < ready.length; index++) for (const id of successors.get(ready[index]!) ?? []) {
+    indegree.set(id, indegree.get(id)! - 1);
+    if (indegree.get(id) === 0) ready.push(id);
+  }
+  requireValue(ready.length === nodes.size, "现有计划存在循环依赖，不能安全重新排期。");
 }
 
 function scheduleNode(node: PlanNode): ScheduledNode {

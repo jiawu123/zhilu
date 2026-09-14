@@ -1,3 +1,6 @@
+import type { RoadmapperPlanningBudget } from "@zhilu/contracts";
+import { validateRoadmapperPlanningBudget } from "@zhilu/agent-runtime";
+
 export interface RoadmapperInput {
   systemPrompt: string;
   context: unknown;
@@ -68,6 +71,24 @@ export function readRoadmapperConfig(env: NodeJS.ProcessEnv = process.env): Road
     timeoutMs: Number(env.ROADMAP_TIMEOUT_MS || 120000),
     maxTokens: Number(env.ROADMAP_MAX_TOKENS || 16384),
   });
+}
+
+/** This planning allowance is separate from model transport settings and confirmed weekly hours. */
+export function readRoadmapperPlanningBudget(env: NodeJS.ProcessEnv = process.env): RoadmapperPlanningBudget {
+  function numeric(key: string, fallback: number): number {
+    const value = env[key];
+    if (value === undefined) return fallback;
+    if (typeof value !== "string" || !value.trim() || !Number.isFinite(Number(value))) {
+      throw new RoadmapperProviderError("invalid_configuration");
+    }
+    return Number(value);
+  }
+  try {
+    return validateRoadmapperPlanningBudget({
+      weeklyToleranceRatio: numeric("ROADMAP_WEEKLY_TOLERANCE_PERCENT", 10) / 100,
+      weeklyToleranceHours: numeric("ROADMAP_WEEKLY_TOLERANCE_HOURS", 1),
+    });
+  } catch { throw new RoadmapperProviderError("invalid_configuration"); }
 }
 
 export function createRoadmapperProvider(

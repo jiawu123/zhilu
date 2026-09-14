@@ -2,11 +2,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { mkdir, open, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import type { BaselineProposal, EvidenceCard, EvidencePack, PlanState } from "@zhilu/contracts";
-import { aggregateResearchEvidence, compileRoadmapperBaseline, prepareRoadmapperInput, type LiveResearchInput, type RoadmapperInput } from "@zhilu/agent-runtime";
+import type { BaselineProposal, EvidenceCard, EvidencePack, PlanState, ResearchControllerReport } from "@zhilu/contracts";
+import { aggregateResearchEvidence, compileRoadmapperBaseline, prepareRoadmapperInput, validateRoadmapperPlanningBudget, type LiveResearchInput, type RoadmapperInput } from "@zhilu/agent-runtime";
 import { roadmapperDraftFixture } from "../../../packages/agent-runtime/src/roadmapper.test-fixture";
 import { validatePlan } from "@zhilu/plan-engine";
-import { validateResearchRequest } from "./zhihu-boundary";
+import { validateInsufficientSources, validateResearchRequest } from "./zhihu-boundary";
 import { createRoadmapperProvider, readRoadmapperConfig, RoadmapperProviderError, type RoadmapperProvider } from "./roadmapper-provider";
 
 export const MAX_M3_SNAPSHOT_BYTES = 2 * 1024 * 1024;
@@ -149,7 +149,7 @@ function planState(value: unknown, researchAt: number): PlanState {
 
 function evidencePack(value: unknown, requestId: string, limit: number, now: number): EvidencePack {
   const p = object(value);
-  keys(p, ["requestId", "evidence", "routeCandidates", "unresolvedQuestions"], ["coverage"]);
+  keys(p, ["requestId", "evidence", "routeCandidates", "unresolvedQuestions"], ["coverage", "insufficientSources"]);
   ensure(p.requestId === requestId, "snapshot_request_mismatch");
   const evidence = array(p.evidence, limit).map(value => card(value, true, now));
   const evidenceIds = new Set(evidence.map(item => item.id));
@@ -166,6 +166,7 @@ function evidencePack(value: unknown, requestId: string, limit: number, now: num
     ensure(ids.length > 0 && new Set(ids).size === ids.length && ids.every(value => evidenceIds.has(value)));
   }
   strings(p.unresolvedQuestions, 100, 2000);
+  if (p.insufficientSources !== undefined) validateInsufficientSources(p.insufficientSources);
   if (p.coverage !== undefined) {
     const c = object(p.coverage);
     keys(c, ["status", "evidenceCount", "targetMin", "targetMax", "hasCaveat", "gaps", "reviewStatus"]);
@@ -186,7 +187,8 @@ export function validateM3Snapshot(value: unknown, currentTime = new Date().toIS
     inspectJson(value);
     ensure(Buffer.byteLength(JSON.stringify(value), "utf8") <= MAX_M3_SNAPSHOT_BYTES, "snapshot_too_large");
     const snapshot = object(value); keys(snapshot, ["plan", "research"]);
-    const r = object(snapshot.research); keys(r, ["runId", "proposalId", "questions", "requests", "evidencePacks", "now"], ["controller"]);
+    const r = object(snapshot.research); keys(r, ["runId", "proposalId", "questions", "requests", "evidencePacks", "now"], ["controller", "planningBudget"]);
+    const planningBudget = validateRoadmapperPlanningBudget(r.planningBudget);
     const now = timestamp(r.now); ensure(now <= timestamp(currentTime) + 300_000, "snapshot_future_time");
     const runId = id(r.runId), proposalId = id(r.proposalId); ensure(runId !== proposalId, "snapshot_run_id_collision");
     const plan = planState(snapshot.plan, now);
@@ -207,12 +209,51 @@ export function validateM3Snapshot(value: unknown, currentTime = new Date().toIS
     const evidencePacks = packs.map((pack, index) => evidencePack(pack, requests[index]!.id, requests[index]!.evidenceLimit, now));
     const userIds = new Set(plan.evidence.filter(item => item.sourceType === "user").map(item => item.id));
     ensure(evidencePacks.every(pack => pack.evidence.every(card => !userIds.has(card.id))), "snapshot_evidence_id_collision");
-    // Controller diagnostics are intentionally discarded. Coverage is recomputed from cards below.
-    return { plan, research: { runId, proposalId, now: r.now as string, questions, requests, evidencePacks } };
+    const aggregate = aggregateResearchEvidence(requests, evidencePacks);
+    const controller = r.controller === undefined ? undefined : negativeControllerDiagnostics(r.controller, aggregate);
+    return { plan, research: { runId, proposalId, now: r.now as string, questions, requests, evidencePacks, planningBudget,
+      ...(controller ? { controller } : {}) } };
   } catch (error) {
     if (error instanceof ReplayError) throw error;
     throw new ReplayError("invalid_snapshot");
   }
+}
+
+/** Preserve bounded failure signals, never accept a snapshot's assertion of sufficient evidence. */
+function negativeControllerDiagnostics(value: unknown, aggregate: ReturnType<typeof aggregateResearchEvidence>): ResearchControllerReport | undefined {
+  const c = object(value);
+  const stages: ResearchControllerReport["stages"] = [];
+  for (const raw of c.stages === undefined ? [] : array(c.stages, 24)) {
+    const stage = object(raw);
+    keys(stage, ["stage", "durationMs", "status"], ["requestId"]);
+    ensure(["plan", "research", "supplement"].includes(stage.stage as string));
+    const statuses = stage.stage === "plan" ? ["ready_for_review", "needs_clarification", "failed", "cancelled"]
+      : stage.stage === "supplement" ? ["ready_for_review", "stop", "failed", "cancelled"]
+      : ["ok", "no_evidence", "partial", "failed", "cancelled"];
+    ensure(statuses.includes(stage.status as string));
+    ensure(typeof stage.durationMs === "number" && Number.isFinite(stage.durationMs) && stage.durationMs >= 0 && stage.durationMs <= 86_400_000);
+    if (stage.requestId !== undefined) id(stage.requestId);
+    if (["partial", "failed", "cancelled", "stop", "needs_clarification"].includes(stage.status as string)) stages.push({
+      stage: stage.stage as "plan" | "research" | "supplement", status: stage.status as string,
+      durationMs: stage.durationMs, ...(stage.requestId === undefined ? {} : { requestId: stage.requestId as string }),
+    });
+  }
+  const reportedInsufficient = c.coverage !== undefined && object(c.coverage).status === "insufficient";
+  if (!stages.length && !reportedInsufficient) return undefined;
+  const coverage = structuredClone(aggregate.coverage);
+  if (reportedInsufficient && coverage.status === "sufficient") {
+    coverage.status = "insufficient";
+    coverage.gaps.push({ kind: "conditions", reason: "保存的研究运行仍有未解决的覆盖缺口，需人工核实。" });
+  }
+  function count(key: string, max: number): number {
+    const value = c[key];
+    if (value === undefined) return 0;
+    ensure(typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= max);
+    return value;
+  }
+  return { coverage, questionCoverage: structuredClone(aggregate.questionCoverage), rounds: count("rounds", 6), queryBudget: 6,
+    queriesAttempted: count("queriesAttempted", 6), searchCallsAttempted: count("searchCallsAttempted", 6),
+    cacheHits: count("cacheHits", 6), stages, stopReason: "snapshot_research_incomplete" };
 }
 
 export async function readM3Snapshot(path: string): Promise<unknown> {
@@ -275,10 +316,8 @@ export async function executeM3Replay(value: unknown, options: { live: boolean }
     report.snapshotSha256 = createHash("sha256").update(JSON.stringify({ plan, research })).digest("hex");
     const aggregate = aggregateResearchEvidence(research.requests, research.evidencePacks);
     report.evidenceCount = aggregate.evidence.length;
-    ensure(aggregate.coverage.status === "sufficient" && aggregate.evidence.length >= 6 && aggregate.evidence.length <= 8, "research_coverage_insufficient");
     research.evidencePacks = aggregate.evidencePacks;
     const input = prepareRoadmapperInput(plan, research, `m3-replay-${randomUUID()}`);
-    ensure(input.context.evidence.length >= 6, "research_coverage_insufficient");
     let output: unknown;
     const modelStarted = performance.now();
     try {

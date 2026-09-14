@@ -11,14 +11,18 @@ import type {
   PlanNode,
   PlanNodeUpdate,
   PlanState,
+  RoadmapperRun,
   RoadmapView,
 } from "@zhilu/contracts";
 import { positionDateInRange, shiftIsoDate, weeksFromDragDistance } from "./roadmap-date";
 import { getWeekFocusTasks } from "./roadmap-focus";
 import { getPlanDiff } from "./plan-diff";
+import { selectCurrentPending } from "./pending-selection";
 import { formatApiError } from "./api-error";
 import { Onboarding } from "./Onboarding";
 import { readFlowPage, resolveFlowPage, type FlowPage } from "./onboarding-model";
+import { CollectedSourcesDisclosure, InsufficientEvidenceNotice, InsufficientSourcesDisclosure } from "./ResearchEvidence";
+import { WeeklyOverrunNotice } from "./WeeklyOverrunNotice";
 
 const demoProjectId = "agent-engineer-demo";
 const initialProjectId = new URLSearchParams(window.location.search).get("project") ?? demoProjectId;
@@ -31,6 +35,21 @@ interface PendingChange {
   impact: ImpactDiff;
   afterPreview: PlanState;
   processing?: EventProcessingRecord;
+}
+
+interface UnchangedEventReplan {
+  patchId: string;
+  processing: EventProcessingRecord;
+}
+
+type EventReplanResponse = (PendingChange & { before: PlanState }) | { unchanged: true; processing: EventProcessingRecord };
+
+export function mergeEventReplanResponse(pending: PendingChange, response: EventReplanResponse): {
+  pending: PendingChange; unchangedReplan: UnchangedEventReplan | null;
+} {
+  return "unchanged" in response
+    ? { pending, unchangedReplan: { patchId: pending.patch.id, processing: response.processing } }
+    : { pending: response, unchangedReplan: null };
 }
 
 interface WorkspacePayload {
@@ -95,6 +114,14 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [replanning, setReplanning] = useState(false);
   const [pendingError, setPendingError] = useState<string | null>(null);
+  const [unchangedReplan, setUnchangedReplan] = useState<UnchangedEventReplan | null>(null);
+
+  const acceptWorkspace = (payload: WorkspacePayload | null) => {
+    setWorkspace(payload);
+    setPending(payload ? selectCurrentPending(payload.pending, payload.plan) : null);
+    setPendingError(null);
+    setUnchangedReplan(null);
+  };
 
   const loadGeneration = useRef(0);
   const load = async () => {
@@ -102,9 +129,7 @@ export function App() {
     try {
       const payload = await api<WorkspacePayload>(`/api/projects/${activeProjectId}`);
       if (generation !== loadGeneration.current) return;
-      setWorkspace(payload);
-      setPending(payload.pending[0] ?? null);
-      setPendingError(null);
+      acceptWorkspace(payload);
       const proposal = payload.baselineProposals[0] ?? null;
       setBaselineProposal(proposal);
       setSelectedRouteId(proposal?.recommendedRouteId ?? null);
@@ -116,7 +141,7 @@ export function App() {
 
   useEffect(() => {
     if (workspace?.plan.projectId !== activeProjectId) {
-      setWorkspace(null);
+      acceptWorkspace(null);
       void load();
     }
     return () => { loadGeneration.current += 1; };
@@ -197,6 +222,7 @@ export function App() {
       });
       setPending(result);
       setPendingError(null);
+      setUnchangedReplan(null);
       setEventContext(null);
       setSelectedId(null);
       setError(null);
@@ -221,6 +247,7 @@ export function App() {
       });
       setPending(result);
       setPendingError(null);
+      setUnchangedReplan(null);
       setEventContext(null);
       setSelectedId(null);
       setError(null);
@@ -246,7 +273,7 @@ export function App() {
   };
 
   const applyPending = async () => {
-    if (!pending || pending.patch.baseVersion !== workspace?.plan.version) return;
+    if (!pending || unchangedReplan?.patchId === pending.patch.id || pending.patch.baseVersion !== workspace?.plan.version) return;
     setBusy(true);
     setPendingError(null);
     try {
@@ -269,11 +296,13 @@ export function App() {
     setReplanning(true);
     setPendingError(null);
     try {
-      const result = await api<PendingChange & { before: PlanState }>(`/api/projects/${activeProjectId}/diff/replan`, {
+      const result = await api<EventReplanResponse>(`/api/projects/${activeProjectId}/diff/replan`, {
         method: "POST",
         body: JSON.stringify({ patchId: pending.patch.id }),
       });
-      setPending(result);
+      const next = mergeEventReplanResponse(pending, result);
+      setPending(next.pending);
+      setUnchangedReplan(next.unchangedReplan);
     } catch (requestError) {
       setPendingError(`AI 排期未完成，上一份预演已保留。${toMessage(requestError)}`);
     } finally {
@@ -292,8 +321,7 @@ export function App() {
       });
       loadGeneration.current += 1;
       sessionStorage.removeItem("zhilu-interview");
-      setWorkspace(created);
-      setPending(null);
+      acceptWorkspace(created);
       setBaselineProposal(null);
       setSelectedRouteId(null);
       setSelectedId(null);
@@ -344,7 +372,7 @@ export function App() {
         method: "POST",
         body: JSON.stringify({ proposalId: baselineProposal.id, routeId: selectedRouteId }),
       });
-      setWorkspace(payload);
+      acceptWorkspace(payload);
       setBaselineProposal(null);
       setSelectedRouteId(null);
       navigate("roadmap");
@@ -404,7 +432,7 @@ export function App() {
         </button>
         <button className="goal-capsule" onClick={() => setSidebarOpen(true)}>
           <span className="goal-spark">✦</span>
-          <span className="goal-copy"><small>{researchPending ? "研究准备版" : workspace.plan.research?.mode === "mock" ? "Mock 研究路线" : "正在前往"}</small><strong>{workspace.plan.goal}</strong></span>
+          <span className="goal-copy"><small>{researchPending ? "研究准备版" : workspace.plan.research?.mode === "mock" ? "Mock 研究路线" : workspace.plan.research?.roadmapper?.evidenceStatus === "insufficient" ? "证据不足 · 暂定计划" : "正在前往"}</small><strong>{workspace.plan.goal}</strong></span>
           <span className="goal-progress">{progress}%</span>
         </button>
         <button className="change-trigger" onClick={() => setEventContext({})}><span>↯</span><span>现实有变化</span></button>
@@ -434,6 +462,7 @@ export function App() {
 
       <Inspector
         node={selectedNode}
+        plan={workspace.plan}
         evidence={selectedEvidence}
         busy={busy}
         onClose={() => setSelectedId(null)}
@@ -448,13 +477,13 @@ export function App() {
       )}
 
       {eventContext && <EventDialog currentHours={workspace.plan.weeklyHours} {...(eventContext.nodeId && eventContext.nodeTitle ? { target: { id: eventContext.nodeId, title: eventContext.nodeTitle } } : {})} busy={busy} onClose={() => setEventContext(null)} onSubmitHours={(hours) => void submitHoursEvent(hours)} onSubmitNode={(nodeId, nodeTitle, description) => void submitNodeEvent(nodeId, nodeTitle, description)} />}
-      {pending && <DiffPanel pending={pending} before={workspace.plan} busy={busy} replanning={replanning} error={pendingError} onApply={() => void applyPending()} onReplan={() => void replanPending()} onClose={() => setPending(null)} />}
+      {pending && <DiffPanel pending={pending} before={workspace.plan} busy={busy} replanning={replanning} error={pendingError} unchangedReplan={unchangedReplan} onApply={() => void applyPending()} onReplan={() => void replanPending()} onClose={() => { setPending(null); setUnchangedReplan(null); }} />}
 
     </div>
   );
 }
 
-function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose, onRunLive, onRunMock, onSelectRoute, onApply, onRevise }: {
+export function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose, onRunLive, onRunMock, onSelectRoute, onApply, onRevise }: {
   proposal: BaselineProposal | null;
   selectedRouteId: string | null;
   busy: boolean;
@@ -483,6 +512,8 @@ function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose, onRun
   }
   const isLive = proposal.researchRun.mode === "live";
   const roadmapper = proposal.roadmapper;
+  const insufficient = isLive && roadmapper?.evidenceStatus === "insufficient";
+  const insufficientSources = proposal.researchRun.evidencePacks.flatMap(pack => pack.insufficientSources ?? []);
   const route = proposal.researchRun.routeCandidates.find((item) => item.id === selectedRouteId) ?? proposal.researchRun.routeCandidates[0];
   const preview = proposal.previews.find((item) => item.routeId === route?.id)?.plan;
   const previewReviewNodes = preview?.nodes.filter((node) => node.type === "checkpoint" || node.type === "assumption") ?? [];
@@ -506,6 +537,8 @@ function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose, onRun
           </div>
           {error && <div className="research-error" role="alert">{error}</div>}
         </header>
+        {insufficient && <InsufficientEvidenceNotice />}
+        <InsufficientSourcesDisclosure sources={insufficientSources} showEmpty={insufficient && !researchEvidence.some(card => card.sourceType === "zhihu")} />
         <div className="route-lab-grid">
           <section className="route-choice">
             <p className="section-kicker">选择路线</p>
@@ -536,11 +569,14 @@ function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose, onRun
                   </details>
                 )}
                 <EvidenceDisclosure label="查看这条路线的原始依据" evidence={routeEvidence} />
+                {preview && <EvidenceApplications applications={roadmapper?.evidenceApplications} routeId={route.id}
+                  evidence={preview.evidence} nodes={preview.nodes} />}
               </div>
             )}
           </section>
           <section className="preview-rail" key={route?.id}>
             <p className="section-kicker">计划内容</p>
+            <WeeklyOverrunNotice overruns={roadmapper?.weeklyOverruns} routeId={route?.id} />
             {roadmapper && <p className="preview-note">任务拆分、日期与工时是 AI 推断，确认后仍可在图上调整。</p>}
             {preview?.nodes.filter((node) => node.type === "task").map((node, index) => (
               <article className="preview-task" key={node.id}>
@@ -548,6 +584,8 @@ function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose, onRun
                 <div>
                   <strong>{node.title}</strong>
                   <small>{formatDateRange(node)} · {node.estimatedHours ?? "—"}h</small>
+                  {roadmapper && !preview.evidence.some(card => card.sourceType === "zhihu" && node.evidenceIds.includes(card.id))
+                    && <p className="inference-note">AI规划／待验证：这项任务尚无直接采用的知乎依据。</p>}
                   <details className="research-details">
                     <summary>产出、验收与依据</summary>
                     {node.deliverable && <p>{node.deliverable}</p>}
@@ -591,7 +629,7 @@ function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose, onRun
           </aside>
         </div>
         <footer>
-          <div><span className="route-proof-dot" /><small>{isLive ? "知乎内容提供依据；路线安排仍需结合你的实际情况确认。" : "这是机制演示，不是已验证的知乎研究结论。"}</small></div>
+          <div><span className="route-proof-dot" /><small>{isLive ? insufficient ? "证据不足：这份暂定计划由模型推断，确认前请核实关键安排。" : "知乎内容提供依据；路线安排仍需结合你的实际情况确认。" : "这是机制演示，不是已验证的知乎研究结论。"}</small></div>
           <button className="research-primary" disabled={busy || !selectedRouteId} onClick={onApply}>{busy ? "正在写入路线…" : "确认计划，生成路线图 / Plan Bundle"}<span>→</span></button>
         </footer>
       </section>
@@ -609,11 +647,33 @@ function EvidenceDisclosure({ label, evidence }: { label: string; evidence: Evid
   );
 }
 
-function EvidenceCardView({ card }: { card: EvidenceCard }) {
+function EvidenceApplications({ applications, routeId, evidence, nodes }: {
+  applications?: RoadmapperRun["evidenceApplications"]; routeId: string; evidence: EvidenceCard[]; nodes: PlanNode[];
+}) {
+  const selected = (applications ?? []).filter(item => item.routeId === routeId
+    && evidence.some(card => card.id === item.evidenceId && card.sourceType === "zhihu")
+    && nodes.some(node => node.type === "task" && item.taskIds.includes(node.id) && node.evidenceIds.includes(item.evidenceId)));
+  if (!selected.length) return null;
+  return <details className="research-details evidence-disclosure">
+    <summary>查看依据如何影响任务 · {selected.length}</summary>
+    {selected.map(item => <EvidenceCardView key={item.evidenceId} card={evidence.find(card => card.id === item.evidenceId)!}
+      application={item} nodes={nodes} />)}
+  </details>;
+}
+
+function EvidenceCardView({ card, application, nodes = [] }: {
+  card: EvidenceCard; application?: NonNullable<RoadmapperRun["evidenceApplications"]>[number] | undefined; nodes?: PlanNode[];
+}) {
   return (
     <article className="evidence-card">
       <div><span>{card.sourceType === "zhihu" ? "知乎" : card.sourceType === "ai" ? "AI 推断" : card.sourceType}</span><small>{contentTypeLabel(card.contentType)} · {card.verificationStatus}</small></div>
       <h3>{card.title}</h3>
+      {application && <div className="inference-note">
+        <strong>模型的采用说明 · 待核实</strong>
+        <p>{application.application}</p>
+        <p>对应任务：{nodes.filter(node => node.type === "task" && application.taskIds.includes(node.id)
+          && node.evidenceIds.includes(card.id)).map(node => node.title).join("；")}</p>
+      </div>}
       <p>{card.summary}</p>
       {card.supportingQuote && <blockquote>{card.supportingQuote}</blockquote>}
       <dl className="evidence-context">
@@ -721,7 +781,7 @@ function RoadmapGraph({ workspace, selectedId, focusId, pending, onSelect, onRes
   );
 }
 
-function Sidebar({ open, plan, projectId, history, focusTasks, pendingCount, busy, onClose, onAddTask, onNewProject, onSelectTask }: { open: boolean; plan: PlanState; projectId: string; history: PlanCommit[]; focusTasks: PlanNode[]; pendingCount: number; busy: boolean; onClose: () => void; onAddTask: () => void; onNewProject: () => void; onSelectTask: (id: string) => void }) {
+export function Sidebar({ open, plan, projectId, history, focusTasks, pendingCount, busy, onClose, onAddTask, onNewProject, onSelectTask }: { open: boolean; plan: PlanState; projectId: string; history: PlanCommit[]; focusTasks: PlanNode[]; pendingCount: number; busy: boolean; onClose: () => void; onAddTask: () => void; onNewProject: () => void; onSelectTask: (id: string) => void }) {
   const tasks = plan.nodes.filter((node) => node.type === "task" && node.status !== "archived");
   const reviewNodes = plan.nodes.filter((node) => (node.type === "checkpoint" || node.type === "assumption") && node.status !== "archived");
   const done = tasks.filter((task) => task.status === "done").length;
@@ -730,6 +790,9 @@ function Sidebar({ open, plan, projectId, history, focusTasks, pendingCount, bus
       <div className="drawer-head"><div><span className="brand-symbol">路</span><strong>路线背包</strong></div><button onClick={onClose}>×</button></div>
       <div className="drawer-scroll">
         <section className="drawer-goal"><small>你的目的地</small><p>{plan.goal}</p></section>
+        <WeeklyOverrunNotice overruns={plan.research?.roadmapper?.weeklyOverruns} routeId={plan.research?.selectedRouteId} />
+        {plan.research?.mode === "live" && plan.research.roadmapper?.evidenceStatus === "insufficient" && <InsufficientEvidenceNotice />}
+        <InsufficientSourcesDisclosure sources={plan.research?.insufficientSources ?? []} showEmpty={plan.research?.mode === "live" && plan.research.roadmapper?.evidenceStatus === "insufficient" && !plan.evidence.some(card => card.sourceType === "zhihu")} />
         <section className="progress-card"><div className="progress-ring" style={{ "--progress": `${tasks.length ? (done / tasks.length) * 360 : 0}deg` } as CSSProperties}><span>{done}/{tasks.length}</span></div><div><strong>{plan.weeklyHours} 小时</strong><small>每周探索时间</small></div></section>
         {pendingCount > 0 && <div className="pending-callout"><span>↯</span><div><strong>{pendingCount} 个变化待确认</strong><small>正式路线还没有被改变</small></div></div>}
         <section className="week-focus"><p className="section-kicker">接下来 7 天</p>{focusTasks.length === 0 ? <div className="focus-empty">这周没有必须抵达的路标。</div> : focusTasks.map((task, index) => <button key={task.id} onClick={() => onSelectTask(task.id)}><span>{index === 0 ? "下一站" : formatDateRange(task)}</span><strong>{task.title}</strong><small>{task.estimatedHours ?? "—"}h · {statusLabel(task.status)}</small></button>)}</section>
@@ -764,7 +827,7 @@ function Sidebar({ open, plan, projectId, history, focusTasks, pendingCount, bus
   );
 }
 
-function Inspector({ node, evidence, busy, onClose, onSave, onComplete, onReportChange, onArchive }: { node: PlanNode | null; evidence: EvidenceCard[]; busy: boolean; onClose: () => void; onSave: (changes: PlanNodeUpdate) => void; onComplete: () => void; onReportChange: () => void; onArchive: () => void }) {
+export function Inspector({ node, plan, evidence, busy, onClose, onSave, onComplete, onReportChange, onArchive }: { node: PlanNode | null; plan?: PlanState; evidence: EvidenceCard[]; busy: boolean; onClose: () => void; onSave: (changes: PlanNodeUpdate) => void; onComplete: () => void; onReportChange: () => void; onArchive: () => void }) {
   const [title, setTitle] = useState(""); const [startDate, setStartDate] = useState(""); const [endDate, setEndDate] = useState("");
   useEffect(() => { setTitle(node?.title ?? ""); setStartDate(node?.startDate ?? ""); setEndDate(node?.endDate ?? ""); }, [node]);
   return (
@@ -781,8 +844,16 @@ function Inspector({ node, evidence, busy, onClose, onSave, onComplete, onReport
           <section className="evidence-stack">
             <p className="section-kicker">这枚路标从哪里来</p>
             {evidence.length === 0 && <div className="empty-evidence">目前没有知乎依据。它需要被标记为用户事实、规则或 AI 推断。</div>}
+            {node.type === "task" && evidence.some(card => card.sourceType === "ai") && !evidence.some(card => card.sourceType === "zhihu")
+              && <p className="inference-note">AI规划／待验证：这项任务尚无直接采用的知乎依据。</p>}
             {evidence.some((card) => card.contentType === "ai_inference") && <p className="inference-note">这枚路标含 AI 推断；请检查任务安排、工时与依据是否适合你。</p>}
-            {evidence.map((card) => <EvidenceCardView key={card.id} card={card} />)}
+            <InsufficientSourcesDisclosure key={`insufficient-${node.id}`} sources={plan?.research?.insufficientSources ?? []}
+              description="这些原帖来自本次研究，未作为计划依据；不代表这些内容支持当前路标。保留原文片段和链接，供你自行判断。"
+              showEmpty={plan?.research?.mode === "live" && plan.research.roadmapper?.evidenceStatus === "insufficient" && !plan.evidence.some(card => card.sourceType === "zhihu")} />
+            <CollectedSourcesDisclosure key={`collected-${node.id}`} evidence={plan?.evidence.filter(card => card.sourceType === "zhihu" && !node.evidenceIds.includes(card.id)) ?? []} />
+            {evidence.map((card) => <EvidenceCardView key={card.id} card={card} nodes={plan?.nodes ?? [node]}
+              application={card.sourceType === "zhihu" ? plan?.research?.roadmapper?.evidenceApplications?.find(item =>
+                item.routeId === plan.research?.selectedRouteId && item.evidenceId === card.id && item.taskIds.includes(node.id)) : undefined} />)}
           </section>
         </div></>}
     </aside>
@@ -795,20 +866,22 @@ function EventDialog({ currentHours, target, busy, onClose, onSubmitHours, onSub
   return <div className="modal-backdrop"><section className="event-modal" role="dialog" aria-modal="true" aria-labelledby="event-title"><button className="modal-close" onClick={onClose}>×</button><div className="event-orb">↯</div><p className="section-kicker">现实事件</p><h2 id="event-title">{target ? "这枚路标发生了什么？" : "路线需要转弯了吗？"}</h2><p>{target ? `先记录“${target.title}”遇到的新情况。我只检查它和下游路径。` : "先告诉我现在每周能投入多少时间。我只点亮受影响的路径，不会重写整张图。"}</p>{target ? <><label className="event-note-label">变化说明<textarea autoFocus value={description} onChange={(event) => setDescription(event.target.value)} placeholder="例如：原本依赖的数据暂时拿不到，需要先找替代方案" /></label><button className="modal-primary" disabled={busy || !description.trim()} onClick={() => onSubmitNode(target.id, target.title, description.trim())}>预演受影响路径 <span>→</span></button></> : <><label>每周可投入<input type="number" min="1" max="80" value={hours} onChange={(event) => setHours(Number(event.target.value))} /><span>小时</span></label><button className="modal-primary" disabled={busy || hours <= 0} onClick={() => onSubmitHours(hours)}>看看路线会怎样变化 <span>→</span></button></>}</section></div>;
 }
 
-function DiffPanel({ pending, before, busy, replanning, error, onApply, onReplan, onClose }: {
+export function DiffPanel({ pending, before, busy, replanning, error, unchangedReplan, onApply, onReplan, onClose }: {
   pending: PendingChange;
   before: PlanState;
   busy: boolean;
   replanning: boolean;
   error: string | null;
+  unchangedReplan?: UnchangedEventReplan | null;
   onApply: () => void;
   onReplan: () => void;
   onClose: () => void;
 }) {
   const summary = pending.event.type === "constraint_changed" ? `${before.weeklyHours}h → ${pending.afterPreview.weeklyHours}h / 周` : pending.event.title;
   const stale = pending.patch.baseVersion !== before.version;
-  const diff = stale ? [] : getPlanDiff(before, pending.afterPreview);
-  const processing = pending.processing;
+  const unchanged = !stale && unchangedReplan?.patchId === pending.patch.id;
+  const diff = stale || unchanged ? [] : getPlanDiff(before, pending.afterPreview);
+  const processing = unchanged ? unchangedReplan.processing : pending.processing;
   const model = processing?.mode === "model";
   const canReplan = pending.event.confirmed && pending.event.type === "constraint_changed" && pending.event.changes?.weeklyHours !== undefined;
   const dateChanges = diff.filter((entry) => entry.fields.some((field) => field.key === "startDate" || field.key === "endDate")).length;
@@ -817,20 +890,20 @@ function DiffPanel({ pending, before, busy, replanning, error, onApply, onReplan
   return <section className="impact-dock" aria-label="待确认的路线变化" aria-busy={replanning}>
     <div className="impact-icon" aria-hidden="true">↯</div>
     <div className="impact-copy">
-      <small>{model ? "AI 排期草案" : "规则预演"} · 尚未生效</small>
-      <strong>{stale ? "这份预演已过期" : summary}</strong>
-      <span>{replanning ? "AI 正在检查受影响任务的排期，正式计划保持不变…" : stale ? `预演基于 v${pending.patch.baseVersion}，当前已是 v${before.version}` : model ? `${dateChanges} 个节点的日期调整 · 等你确认` : canReplan ? "只更新约束和原因，任务日期尚未调整" : "只记录影响，尚未调整任务安排"}</span>
+      <small>{unchanged ? "AI 排期检查" : `${model ? "AI 排期草案" : "规则预演"} · 尚未生效`}</small>
+      <strong>{stale ? "这份预演已过期" : unchanged ? "当前排期已满足约束，无需调整" : summary}</strong>
+      <span>{replanning ? "AI 正在检查受影响任务的排期，正式计划保持不变…" : stale ? `预演基于 v${pending.patch.baseVersion}，当前已是 v${before.version}` : unchanged ? "检查已完成，原预演已保留" : model ? `${dateChanges} 个节点的日期调整 · 等你确认` : canReplan ? "只更新约束和原因，任务日期尚未调整" : "只记录影响，尚未调整任务安排"}</span>
     </div>
     <div className="impact-actions">
       <button disabled={busy} onClick={onClose}>稍后</button>
       {canReplan && <button className="impact-replan" disabled={busy || stale} onClick={onReplan}>{replanning ? "正在排期…" : model ? "重新生成 AI 方案" : "用 AI 重新排期"}</button>}
-      <button disabled={busy || stale || diff.length === 0} onClick={onApply}>{model ? "确认当前方案" : canReplan ? "确认约束变更" : "确认当前记录"} →</button>
+      {!unchanged && <button disabled={busy || stale || diff.length === 0} onClick={onApply}>{model ? "确认当前方案" : canReplan ? "确认约束变更" : "确认当前记录"} →</button>}
     </div>
     {error && <p className="impact-error" role="alert">{error}</p>}
     {stale ? <p className="impact-stale">正式计划已发生变化。这份旧预演不能应用或重排；请基于当前路线重新记录事件。</p> : <details className="impact-details" key={pending.patch.id}>
-      <summary>查看修改详情 <span>{diff.reduce((count, entry) => count + entry.fields.length, 0)} 处字段变化</span></summary>
+      <summary>{unchanged ? "查看排期检查" : <>查看修改详情 <span>{diff.reduce((count, entry) => count + entry.fields.length, 0)} 处字段变化</span></>}</summary>
       <div className="impact-detail-scroll">
-        <p className="impact-review-note">以下是正式计划与当前草案的实际差异。节点存在依赖，确认时整组应用；展开查看不会修改计划。</p>
+        {!unchanged && <p className="impact-review-note">以下是正式计划与当前草案的实际差异。节点存在依赖，确认时整组应用；展开查看不会修改计划。</p>}
         {processing && <div className="impact-processing">
           <p>{processing.summary}</p>
           <details className="research-details">
@@ -840,7 +913,7 @@ function DiffPanel({ pending, before, busy, replanning, error, onApply, onReplan
             <EvidenceDisclosure label="查看使用的既有证据" evidence={usedEvidence} />
           </details>
         </div>}
-        {diff.length === 0 && <p className="impact-review-note">当前草案没有实际字段变化，无需应用。</p>}
+        {!unchanged && diff.length === 0 && <p className="impact-review-note">当前草案没有实际字段变化，无需应用。</p>}
         {diff.map((entry) => <article className="impact-change" key={entry.id}>
           <h3><span>{kindLabel[entry.kind]}</span>{entry.title}</h3>
           <dl>{entry.fields.map((field) => <div className="impact-field" key={field.key}>
