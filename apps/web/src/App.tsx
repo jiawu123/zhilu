@@ -23,6 +23,7 @@ import { Onboarding } from "./Onboarding";
 import { readFlowPage, resolveFlowPage, type FlowPage } from "./onboarding-model";
 import { CollectedSourcesDisclosure, InsufficientEvidenceNotice, InsufficientSourcesDisclosure } from "./ResearchEvidence";
 import { WeeklyOverrunNotice } from "./WeeklyOverrunNotice";
+import { RoadmapTimeline, TaskDeadline, type TimelineScale } from "./RoadmapTimeline";
 
 const demoProjectId = "agent-engineer-demo";
 const initialProjectId = new URLSearchParams(window.location.search).get("project") ?? demoProjectId;
@@ -584,6 +585,7 @@ export function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose
                 <div>
                   <strong>{node.title}</strong>
                   <small>{formatDateRange(node)} · {node.estimatedHours ?? "—"}h</small>
+                  <TaskDeadline task={node} />
                   {roadmapper && !preview.evidence.some(card => card.sourceType === "zhihu" && node.evidenceIds.includes(card.id))
                     && <p className="inference-note">AI规划／待验证：这项任务尚无直接采用的知乎依据。</p>}
                   <details className="research-details">
@@ -698,6 +700,7 @@ function RoadmapGraph({ workspace, selectedId, focusId, pending, onSelect, onRes
   const denseLayout = isDense ? buildDenseGraphLayout(tasks, milestones) : null;
   const graphWidth = denseLayout?.width ?? canvasWidth;
   const points = denseLayout?.points ?? buildGraphPoints(tasks, milestones);
+  const timelineScale = denseLayout?.timeline ?? buildTimelineScale(milestones);
   const pointMap = new Map(points.map((point) => [point.id, point]));
   const start = { id: "start", x: 70, y: 355 };
   const goal = { id: "goal", x: graphWidth - 70, y: 270 };
@@ -726,11 +729,11 @@ function RoadmapGraph({ workspace, selectedId, focusId, pending, onSelect, onRes
     >
       <div className="ambient ambient-one" /><div className="ambient ambient-two" />
       <div className={`graph-stage ${isDense ? "is-dense" : ""}`} style={{ "--pan-x": `${pan.x}px`, "--pan-y": `${pan.y}px`, ...(isDense ? { width: `${graphWidth}px`, height: `${canvasHeight}px` } : {}) } as CSSProperties}>
-        <svg className="route-svg" viewBox={`0 0 ${graphWidth} ${canvasHeight}`} role="img" aria-label={workspace.plan.title}>
+        <svg className="route-svg" viewBox={`0 0 ${graphWidth} ${canvasHeight}`} preserveAspectRatio="none" role="img" aria-label={workspace.plan.title}>
           <defs>
-            <linearGradient id="routeGradient" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stopColor="#f2b45a" /><stop offset="0.45" stopColor="#ff7e67" /><stop offset="1" stopColor="#8c7dff" /></linearGradient>
+            <linearGradient id="routeGradient" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stopColor="#91adeb" /><stop offset="0.45" stopColor="#2860eb" /><stop offset="1" stopColor="#9890da" /></linearGradient>
             <filter id="softGlow"><feGaussianBlur stdDeviation="5" result="blur" /><feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge></filter>
-            <pattern id="dotGrid" width="28" height="28" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1.2" fill="rgba(255,255,255,.13)" /></pattern>
+            <pattern id="dotGrid" width="28" height="28" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r=".8" fill="rgba(69,92,132,.16)" /></pattern>
           </defs>
           <rect width={graphWidth} height={canvasHeight} fill="url(#dotGrid)" />
           {milestoneSpots.map((spot) => <g key={spot.milestone.id} className={`phase-cloud phase-cloud-${spot.index % 3}`}><ellipse cx={spot.x} cy={spot.y} rx={spot.rx} ry="205" /></g>)}
@@ -771,11 +774,12 @@ function RoadmapGraph({ workspace, selectedId, focusId, pending, onSelect, onRes
             >
               {focusId === task.id && <span className="next-badge">下一站</span>}
               {dragging?.id === task.id && dragging.weeks !== 0 && <span className="drag-badge">{dragging.weeks > 0 ? `顺延 ${dragging.weeks} 周` : `提前 ${Math.abs(dragging.weeks)} 周`}</span>}
-              <span className="node-index">{String(index + 1).padStart(2, "0")}</span><span className="node-status-dot" /><strong>{task.title}</strong><small>{task.estimatedHours ?? "—"}h</small><span className="node-arrow">↗</span>
+              <span className="node-index">{String(index + 1).padStart(2, "0")}</span><span className="node-status-dot" /><strong>{task.title}</strong><small>{task.estimatedHours ?? "—"}h</small><TaskDeadline task={task} /><span className="node-arrow">↗</span>
             </button>
           );
         })}
       </div>
+      <RoadmapTimeline scale={timelineScale} width={graphWidth} panX={pan.x} dense={isDense} />
       {(pan.x !== 0 || pan.y !== 0) && <button className="reset-canvas" onPointerDown={(event) => event.stopPropagation()} onClick={() => setPan({ x: 0, y: 0 })}>{isDense ? "回到起点" : "回到全图"}</button>}
     </main>
   );
@@ -795,7 +799,7 @@ export function Sidebar({ open, plan, projectId, history, focusTasks, pendingCou
         <InsufficientSourcesDisclosure sources={plan.research?.insufficientSources ?? []} showEmpty={plan.research?.mode === "live" && plan.research.roadmapper?.evidenceStatus === "insufficient" && !plan.evidence.some(card => card.sourceType === "zhihu")} />
         <section className="progress-card"><div className="progress-ring" style={{ "--progress": `${tasks.length ? (done / tasks.length) * 360 : 0}deg` } as CSSProperties}><span>{done}/{tasks.length}</span></div><div><strong>{plan.weeklyHours} 小时</strong><small>每周探索时间</small></div></section>
         {pendingCount > 0 && <div className="pending-callout"><span>↯</span><div><strong>{pendingCount} 个变化待确认</strong><small>正式路线还没有被改变</small></div></div>}
-        <section className="week-focus"><p className="section-kicker">接下来 7 天</p>{focusTasks.length === 0 ? <div className="focus-empty">这周没有必须抵达的路标。</div> : focusTasks.map((task, index) => <button key={task.id} onClick={() => onSelectTask(task.id)}><span>{index === 0 ? "下一站" : formatDateRange(task)}</span><strong>{task.title}</strong><small>{task.estimatedHours ?? "—"}h · {statusLabel(task.status)}</small></button>)}</section>
+        <section className="week-focus"><p className="section-kicker">接下来 7 天</p>{focusTasks.length === 0 ? <div className="focus-empty">这周没有必须抵达的路标。</div> : focusTasks.map((task, index) => <button key={task.id} onClick={() => onSelectTask(task.id)}><span>{index === 0 ? "下一站" : formatDateRange(task)}</span><strong>{task.title}</strong><small>{task.estimatedHours ?? "—"}h · {statusLabel(task.status)}</small><TaskDeadline task={task} /></button>)}</section>
         {reviewNodes.length > 0 && (
           <details className="research-details review-nodes">
             <summary>复盘与待确认假设 · {reviewNodes.length}</summary>
@@ -927,7 +931,7 @@ export function DiffPanel({ pending, before, busy, replanning, error, unchangedR
 }
 
 function buildGraphPoints(tasks: PlanNode[], milestones: PlanNode[]): GraphPoint[] {
-  const yPattern = [355, 245, 405, 285, 390, 235];
+  const yPattern = [390, 200, 480, 290, 480, 200];
   const start = milestones.map((item) => item.startDate).filter((value): value is string => Boolean(value)).sort()[0];
   const end = milestones.map((item) => item.endDate).filter((value): value is string => Boolean(value)).sort().at(-1);
   const fallbackSpan = tasks.length > 1 ? 870 / (tasks.length - 1) : 0;
@@ -938,7 +942,14 @@ function buildGraphPoints(tasks: PlanNode[], milestones: PlanNode[]): GraphPoint
   }));
 }
 
-function buildDenseGraphLayout(tasks: PlanNode[], milestones: PlanNode[]): { width: number; points: GraphPoint[] } {
+function buildTimelineScale(milestones: PlanNode[]): TimelineScale | null {
+  const start = milestones.map(node => node.startDate).filter((value): value is string => Boolean(value)).sort()[0];
+  const end = milestones.map(node => node.endDate).filter((value): value is string => Boolean(value)).sort().at(-1);
+  if (!start || !end || !Number.isFinite(Date.parse(start)) || !Number.isFinite(Date.parse(end))) return null;
+  return { start: Date.parse(start), end: Math.max(Date.parse(start) + 86_400_000, Date.parse(end)), left: 145, right: 1040 };
+}
+
+function buildDenseGraphLayout(tasks: PlanNode[], milestones: PlanNode[]): { width: number; points: GraphPoint[]; timeline: TimelineScale | null } {
   const dayOf = (date: string | undefined) => date ? Date.parse(date) / 86_400_000 : NaN;
   const dates = [...tasks, ...milestones].flatMap((node) => [dayOf(node.startDate), dayOf(node.endDate)]).filter(Number.isFinite);
   const start = dates.length ? Math.min(...dates) : 0;
@@ -955,14 +966,14 @@ function buildDenseGraphLayout(tasks: PlanNode[], milestones: PlanNode[]): { wid
   const columnGap = 230;
   const pixelsPerDay = columnsPerDate * columnGap / (gaps.length ? Math.min(...gaps) : end - start);
   const width = Math.max(canvasWidth, Math.ceil(tasks.length / 4) * columnGap + 320, (end - start) * pixelsPerDay + 320 + (columnsPerDate - 1) * columnGap);
-  const laneY = [160, 270, 380, 490];
+  const laneY = [170, 300, 430, 560];
   let taskIndex = 0;
   const points = days.flatMap((day) => byDate.get(day)!.map((task, index) => ({
     id: task.id,
     x: 145 + (day - start) * pixelsPerDay + Math.floor(index / 4) * columnGap,
     y: laneY[taskIndex++ % 4]!,
   })));
-  return { width, points };
+  return { width, points, timeline: dates.length ? { start: start * 86_400_000, end: end * 86_400_000, left: 145, right: 145 + (end - start) * pixelsPerDay } : null };
 }
 
 function smoothPath(points: Array<Pick<GraphPoint, "x" | "y">>): string {
