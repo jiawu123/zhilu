@@ -89,6 +89,8 @@ describe("plan conversation before confirmation", () => {
     expect((await post("apply", { proposalId: latest.id, routeId: latest.recommendedRouteId })).status).toBe(200);
     expect((await repository.getPlan(plan.projectId)).version).toBe(2);
     expect(await repository.getHistory(plan.projectId)).toHaveLength(1);
+    expect((await repository.getPlanningHistory(plan.projectId)).find(item => item.id === latest.id)?.conversation).toEqual(latest.conversation);
+    expect((await fetch(url.replace("/baseline", "/planning-history"))).status).toBe(200);
     expect((await post("revise", { proposalId: latest.id, routeId: latest.recommendedRouteId, message: "已确认后修改" })).status).toBe(409);
   });
 });

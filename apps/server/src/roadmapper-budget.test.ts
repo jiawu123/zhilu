@@ -56,7 +56,7 @@ describe("Roadmapper weekly tolerance HTTP configuration", () => {
     expect(proposal.roadmapper!.warnings.length).toBeGreaterThan(0);
     expect(proposal.previews[0]!.plan.weeklyHours).toBe(6);
     expect(proposal.previews[0]!.plan.userContext!.weeklyHours).toBe(6);
-    expect(proposal.previews[0]!.plan.nodes.find(node => node.id === "t1")!.estimatedHours).toBe(6);
+    expect(proposal.previews[0]!.plan.nodes.find(node => node.id === "t1")!.estimatedHours).toBe(6.5);
     expect(await fixture.repository.getPlan(fixture.snapshot.plan.projectId)).toEqual(fixture.snapshot.plan);
     expect(await fixture.repository.getHistory(fixture.snapshot.plan.projectId)).toHaveLength(0);
     const directory = join(fixture.root, fixture.snapshot.plan.projectId, ".plan", "research-snapshots");
@@ -74,7 +74,7 @@ describe("Roadmapper weekly tolerance HTTP configuration", () => {
     expect(workspace.plan.version).toBe(2);
     expect(workspace.plan.weeklyHours).toBe(6);
     expect(workspace.plan.userContext!.weeklyHours).toBe(6);
-    expect(workspace.plan.nodes.find(node => node.id === "t1")!.estimatedHours).toBe(6);
+    expect(workspace.plan.nodes.find(node => node.id === "t1")!.estimatedHours).toBe(6.5);
     expect(workspace.plan.research!.roadmapper!.planningBudget).toEqual(proposal.roadmapper!.planningBudget);
     expect(workspace.plan.research!.roadmapper!.weeklyOverruns).toEqual(proposal.roadmapper!.weeklyOverruns);
     expect(workspace.plan.research!.roadmapper!.warnings).toEqual(proposal.roadmapper!.warnings);

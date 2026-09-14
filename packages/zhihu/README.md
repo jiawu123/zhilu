@@ -21,7 +21,11 @@ node .\node_modules\tsx\dist\cli.mjs .\apps\server\scripts\research_zhihu.ts --q
 
 生产默认已更新为 `ZHIHU_RETRIEVAL_PROFILE=batch-v1`；Server Planner 默认 `m2-initial`，全轮总计 2–3 条查询。研究仅执行本次请求，用一次模型批量分级/编译替换固定权重与逐篇调用，继续重用原 compiler 校验和 TS adapter。新增覆盖报告、带引用的研究假设、本地缓存与显式补充规划；不生成或批准正式 Roadmap。
 
-首轮模型候选仍受最多 3 个问题、每题最多 2 条及格式/去重校验约束。仅候选总数超过 3 条时，程序为每题保留一条，再按问题顺序分配剩余名额；返回的 `query_selection` 记录暂不执行的查询，不自动补搜。最终输出仍须满足首轮 2–3 条预算。`test_m2_followup.ts --live` 会在本次输出目录保存 `planner-diagnostic.json`（含原始模型回答、选取记录或具体校验原因），摘要同时写入 `report.json`。诊断文件只留本地，不应提交；普通服务调用默认不保存，只有可信进程环境设置 `ZHIHU_PLANNER_DIAGNOSTIC_FILE` 时才写入指定文件。
+首轮模型候选仍受最多 3 个问题、每题最多 2 条及格式/去重校验约束。仅候选总数超过 3 条时，程序为每题保留一条，再按问题顺序分配剩余名额；返回的 `query_selection` 记录暂不执行的查询，不自动补搜。最终输出仍须满足首轮 2–3 条预算。`test_m2_followup.ts --live` 会在本次输出目录保存 `planner-diagnostic.json`（含原始模型回答、选取记录或具体校验原因），摘要同时写入 `report.json`。普通服务调用可在可信进程环境配置 `ZHIHU_PLANNER_DIAGNOSTIC_DIR`（私有绝对路径），每次生成独立的 `planner-<UTC 时间>-<随机编号>.json`，保留失败和后续重试的不同记录。旧的 `ZHIHU_PLANNER_DIAGNOSTIC_FILE` 单文件配置仍兼容。
+
+每份 Planner 诊断包括 `run_id`、起止时间、耗时、输入及其哈希、提示词、模型设置、Planner/LLM 客户端源码哈希，以及具体 `validation_message` 或模型错误。`transport.request` 是不含认证头的实际模型请求，`transport.raw_content` 是解析前的模型文本，`finish_reason`、响应 ID、HTTP 状态和 token 用量一同保存。JSON 错误或输出截断也能留下原文；HTTP 授权错误仅保存状态，不保存可能包含凭据的错误正文。调用前写入 `running` 记录；进程中断而未执行收尾时，它仍保留输入和提示词，不会伪装为已完成。
+
+这些文件包含用户背景和模型输出，权限为仅服务进程账号可读写，不能放在前端静态资源目录或提交 Git。部署时为诊断目录挂载私有持久化存储；当前不自动清理历史，排查完成后按运行时间清理。可按 `input_sha256` 找同一输入的多次调用，按源码哈希判断调用时的校验代码是否相同。
 
 批量编译继续拒绝非原文连续逐字引文。若研究假设引用的候选未产生有效证据，丢弃整个假设并记录 issue，保留其他已验证的证据；不替换引用，也不重写假设摘要。研究流程返回 `partial`，不会将该结果写入成功缓存。越界引用、错误字段、证据 ID 冲突及整批无有效编译项仍会失败。
 

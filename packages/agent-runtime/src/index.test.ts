@@ -149,7 +149,7 @@ describe("Project interview output", () => {
     expect(proposal.previews.every((preview) => preview.plan.version === 2)).toBe(true);
   });
 
-  it("builds a pending live Baseline from matching EvidencePacks without changing the current plan", () => {
+  it.each([false, true])("builds a pending live Baseline from matching EvidencePacks, preserving optional Zhida research: %s", withZhida => {
     const plan = createResearchReadyPlan(input, "project-test", "2026-09-11T08:00:00.000Z");
     const questions: ResearchQuestionDraft[] = [
       { question: "怎样用真实项目验证能力？", rationale: "需要可检查成果", searchQueries: ["真实项目 验证能力", "项目 反馈 复盘", "项目 常见错误"] },
@@ -167,6 +167,9 @@ describe("Project interview output", () => {
       routeCandidates: [],
       unresolvedQuestions: [],
     }));
+    const zhida = { provider: "zhida-agent" as const, answer: "先做可检查项目，再按反馈完善能力。",
+      sources: [{ id: "source-one", title: "项目实践", url: "https://www.zhihu.com/question/1/answer/2" }],
+      generatedAt: "2026-09-11T09:00:00.000Z", durationMs: 100 };
     const proposal = createLiveBaselineProposal(plan, {
       runId: "research-live",
       proposalId: "baseline-live",
@@ -174,6 +177,7 @@ describe("Project interview output", () => {
       requests,
       evidencePacks,
       now: "2026-09-11T09:00:00.000Z",
+      ...(withZhida ? { zhida } : {}),
     });
 
     expect(proposal.researchRun.mode).toBe("live");
@@ -182,6 +186,14 @@ describe("Project interview output", () => {
     expect(proposal.previews.flatMap((preview) => preview.plan.evidence).some((item) => item.sourceType === "zhihu")).toBe(true);
     expect(plan.version).toBe(1);
     expect(plan.evidence.some((item) => item.sourceType === "zhihu")).toBe(false);
+    expect(proposal.researchRun.zhida).toEqual(withZhida ? zhida : undefined);
+    for (const preview of proposal.previews) expect(preview.plan.research!.zhida).toEqual(withZhida ? zhida : undefined);
+    if (withZhida) {
+      proposal.previews[0]!.plan.research!.zhida!.sources[0]!.title = "preview edit";
+      expect(proposal.previews[1]!.plan.research!.zhida!.sources[0]!.title).toBe("项目实践");
+      expect(proposal.researchRun.zhida!.sources[0]!.title).toBe("项目实践");
+      expect(zhida.sources[0]!.title).toBe("项目实践");
+    }
   });
 
   it("does not invent two live routes from fewer than two Evidence Cards", () => {

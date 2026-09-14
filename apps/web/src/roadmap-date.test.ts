@@ -7,11 +7,12 @@ describe("Roadmap direct manipulation", () => {
     expect(shiftIsoDate("2026-01-03", -14)).toBe("2025-12-20");
   });
 
-  it("turns horizontal drag distance into a bounded week offset", () => {
-    expect(weeksFromDragDistance(27)).toBe(0);
-    expect(weeksFromDragDistance(42)).toBe(1);
-    expect(weeksFromDragDistance(-150)).toBe(-2);
-    expect(weeksFromDragDistance(900)).toBe(4);
+  it("uses the rendered week spacing, including scaled canvases and long moves", () => {
+    expect(weeksFromDragDistance(7, 230)).toBe(0);
+    expect(weeksFromDragDistance(72, 230)).toBe(0);
+    expect(weeksFromDragDistance(-230, 230)).toBe(-1);
+    expect(weeksFromDragDistance(-230 * .75, 230 * .75)).toBe(-1);
+    expect(weeksFromDragDistance(230 * 8, 230)).toBe(8);
   });
 
   it("projects task dates onto a stable plan timeline", () => {

@@ -1,4 +1,7 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { trackedFetch, useRequestProgress } from "./request-progress";
+import { WaitStatus } from "./WaitStatus";
+import { RoadmapChat } from "./RoadmapChat";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type {
   BaselineProposal,
   CreateProjectInput,
@@ -21,13 +24,13 @@ import { selectCurrentPending } from "./pending-selection";
 import { formatApiError } from "./api-error";
 import { Onboarding } from "./Onboarding";
 import { readFlowPage, resolveFlowPage, type FlowPage } from "./onboarding-model";
-import { CollectedSourcesDisclosure, InsufficientEvidenceNotice, InsufficientSourcesDisclosure } from "./ResearchEvidence";
+import { InsufficientEvidenceNotice, InsufficientSourcesDisclosure } from "./ResearchEvidence";
 import { WeeklyOverrunNotice } from "./WeeklyOverrunNotice";
 import { TaskDeadline } from "./RoadmapTimeline";
 import { RoadmapBoard } from "./RoadmapBoard";
 import { ModalSurface, ConfirmDialog } from "./ModalSurface";
 import { Brand } from "./Brand";
-import { ChangeComposer, globalChangeContext, type ChangeContext } from "./ChangeComposer";
+import { globalChangeContext, type ChangeContext } from "./ChangeComposer";
 import { ErrorNotice } from "./ErrorNotice";
 import { draftFromNode, nodeEdits, type NodeDraft } from "./node-edits";
 
@@ -65,7 +68,7 @@ interface WorkspacePayload {
   baselineProposals: BaselineProposal[];
 }
 
-export function App() {
+export function App({ interviewStorageKey = "zhilu-interview:local", onOpenHistory }: { interviewStorageKey?: string; onOpenHistory?: () => void }) {
   const [activeProjectId, setActiveProjectId] = useState(initialProjectId);
   const [workspace, setWorkspace] = useState<WorkspacePayload | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -131,10 +134,6 @@ export function App() {
   }, [activeProjectId]);
 
   const selectedNode = workspace?.plan.nodes.find((node) => node.id === selectedId) ?? null;
-  const selectedEvidence = useMemo(
-    () => workspace?.plan.evidence.filter((evidence) => selectedNode?.evidenceIds.includes(evidence.id)) ?? [],
-    [workspace, selectedNode],
-  );
 
   const updateNode = async (nodeId: string, changes: PlanNodeUpdate) => {
     if (!Object.keys(changes).length) return;
@@ -217,33 +216,6 @@ export function App() {
     }
   };
 
-  const submitChange = async (description: string, context: ChangeContext): Promise<boolean> => {
-    setBusy(true);
-    try {
-      const result = await api<PendingChange & { before: PlanState }>(`/api/projects/${activeProjectId}/events`, {
-        method: "POST",
-        body: JSON.stringify({
-          type: "custom",
-          title: context.kind === "global" ? "全局变更说明" : `${context.kind === "task" ? "任务" : "阶段"}变更：${context.label}`,
-          description,
-          targetNodeIds: context.nodeIds,
-        }),
-      });
-      setPending(result);
-      setPendingError(null);
-      setUnchangedReplan(null);
-      setHoursDialog(false);
-      setSelectedId(null);
-      setError(null);
-      return true;
-    } catch (requestError) {
-      setError(toMessage(requestError));
-      return false;
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const archiveNode = async (node: PlanNode) => {
     setBusy(true);
     try {
@@ -306,7 +278,7 @@ export function App() {
         body: JSON.stringify(input),
       });
       loadGeneration.current += 1;
-      sessionStorage.removeItem("zhilu-interview");
+      sessionStorage.removeItem(interviewStorageKey);
       acceptWorkspace(created);
       setBaselineProposal(null);
       setSelectedRouteId(null);
@@ -384,7 +356,7 @@ export function App() {
     finally { setBusy(false); }
   };
 
-  if (page === "interview") return <Onboarding busy={busy} error={error}
+  if (page === "interview") return <Onboarding storageKey={interviewStorageKey} busy={busy} error={error}
     onClose={() => { setError(null); navigate("roadmap"); }} onCreate={input => void createProject(input)} />;
 
   if (workspace?.plan.projectId === activeProjectId && resolveFlowPage(page, workspace.plan.evidence.some(item => item.riskTags.includes("等待知乎研究"))) === "plan" && (baselineProposal || workspace.plan.evidence.some(item => item.riskTags.includes("等待知乎研究")))) {
@@ -420,7 +392,7 @@ export function App() {
         <button className="header-add-task" disabled={busy} onClick={() => { setError(null); setAddingTask(true); }}>＋ 新增任务</button>
       </header>
       <RoadmapBoard plan={workspace.plan} selectedId={selectedId} focusId={focusTasks[0]?.id ?? null} affectedIds={pending?.impact.affectedNodeIds ?? []} busy={busy} onSelect={setSelectedId} onReschedule={(node, weeks) => void rescheduleNode(node, weeks)} onChange={openChange} />
-      <ChangeComposer key={activeProjectId} context={changeContext} busy={busy} pending={Boolean(pending)} error={!hoursDialog && !addingTask && !archivingNode && !selectedNode ? error : null} onResetContext={() => openChange(globalChangeContext)} onSubmit={submitChange} onEditHours={() => { setError(null); setHoursDialog(true); }} />
+      <RoadmapChat key={activeProjectId} plan={workspace.plan} onApplied={load} context={changeContext} onResetContext={() => openChange(globalChangeContext)} onEditHours={() => { setError(null); setHoursDialog(true); }} externalBusy={busy} externalError={!hoursDialog && !addingTask && !archivingNode && !selectedNode ? error : null} />
       <div className="canvas-hint">滚动查看任务流程 · 点击任务查看详情</div>
       <div className="commit-whisper">版本 {workspace.plan.currentCommitId}</div>
 
@@ -429,6 +401,7 @@ export function App() {
         plan={workspace.plan}
         projectId={activeProjectId}
         history={workspace.history}
+        onOpenHistory={onOpenHistory ? () => { setSidebarOpen(false); onOpenHistory(); } : undefined}
         focusTasks={focusTasks}
         pendingCount={pending ? 1 : 0}
         busy={busy}
@@ -441,8 +414,6 @@ export function App() {
       <Inspector
         node={selectedNode}
         error={error}
-        plan={workspace.plan}
-        evidence={selectedEvidence}
         busy={busy}
         onClose={() => setSelectedId(null)}
         onSave={(changes) => selectedNode && void updateNode(selectedNode.id, changes)}
@@ -473,6 +444,9 @@ export function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose
   onRevise: (message: string) => void;
 }) {
   const [message, setMessage] = useState("");
+  const requests = useRequestProgress();
+  const progress = requests.filter(item => item.path.includes("/baseline")).at(-1);
+  const applying = busy && progress?.path.endsWith("/baseline/apply");
   const pageRef = useRef<HTMLElement>(null);
   const hasProposal = Boolean(proposal);
   useEffect(() => { pageRef.current?.scrollTo(0, 0); }, [hasProposal]);
@@ -486,6 +460,7 @@ export function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose
       <p>根据已确认的目标与背景检索相关依据，形成候选方案及任务安排。请审阅方案内容后确认应用。</p>
       <div className="research-steps"><span><b>01</b>明确研究问题</span><span><b>02</b>检索与整理依据</span><span><b>03</b>确认并生成计划</span></div>
       {error && <ErrorNotice message={error} />}
+      {busy && <div className="inline-operation-status"><WaitStatus label="正在准备研究与计划生成" progress={progress} /></div>}
       <button className="research-primary" disabled={busy} onClick={onRunLive}>{busy ? "正在生成研究方案" : "生成研究方案"}<span>→</span></button>
       <button className="research-secondary" disabled={busy} onClick={onRunMock}>查看演示方案</button>
     </section></main>;
@@ -496,7 +471,7 @@ export function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose
   const insufficientSources = proposal.researchRun.evidencePacks.flatMap(pack => pack.insufficientSources ?? []);
   const route = proposal.researchRun.routeCandidates.find((item) => item.id === selectedRouteId) ?? proposal.researchRun.routeCandidates[0];
   const preview = proposal.previews.find((item) => item.routeId === route?.id)?.plan;
-  const previewReviewNodes = preview?.nodes.filter((node) => node.type === "checkpoint" || node.type === "assumption") ?? [];
+  const previewAssumptions = preview?.nodes.filter((node) => node.type === "assumption") ?? [];
   const researchEvidence = [...new Map(proposal.researchRun.evidencePacks.flatMap((pack) => pack.evidence).map((card) => [card.id, card])).values()];
   const recommendationEvidence = researchEvidence.filter((card) => roadmapper?.recommendationEvidenceIds.includes(card.id));
   const routeEvidence = researchEvidence.filter((card) => route?.evidenceIds.includes(card.id));
@@ -576,10 +551,10 @@ export function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose
                 </div>
               </article>
             ))}
-            {previewReviewNodes.length > 0 && (
+            {previewAssumptions.length > 0 && (
               <details className="research-details review-preview">
-                <summary>复盘与待确认假设 · {previewReviewNodes.length}</summary>
-                {previewReviewNodes.map((node) => (
+                <summary>待确认假设 · {previewAssumptions.length}</summary>
+                {previewAssumptions.map((node) => (
                   <div key={node.id}>
                     <small>{nodeTypeLabel(node.type)} · {formatDateRange(node)}</small>
                     <strong>{node.title}</strong>
@@ -595,13 +570,14 @@ export function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose
             <p>请填写调整事项及理由。调整结果以草案形式呈现，经确认后应用。</p>
             <div className="plan-messages" aria-live="polite">
               {(proposal.conversation ?? []).map((entry, index) => <article key={index} className={`message-${entry.role}`}><small>{entry.role === "user" ? "提交人" : "知路"}</small><p>{entry.content}</p></article>)}
-              {busy && <p role="status">正在处理，请稍候…</p>}
+              {busy && <div className="inline-operation-status"><WaitStatus label="正在处理调整意见" progress={progress} /></div>}
             </div>
             <form onSubmit={event => { event.preventDefault(); if (message.trim() && !busy) onRevise(message.trim()); }}>
               <label htmlFor="plan-adjustment">调整意见</label>
               <textarea id="plan-adjustment" maxLength={2000} value={message} disabled={busy || !isLive} onChange={event => setMessage(event.target.value)} placeholder="例如：前两周优先安排实践任务，并减少理论学习时数。" />
               <button className="research-primary" type="submit" disabled={busy || !isLive || !message.trim()}>发送并调整草稿</button>
             </form>
+            <div className="plan-confirm-action"><button className="research-primary" disabled={busy || !selectedRouteId} onClick={onApply}>{applying ? "正在保存计划" : "确认当前方案"}</button><small>{busy && !applying ? "调整完成后可确认最新草稿。" : "应用当前草稿并进入任务流程，无需重新生成。"}</small></div>
             {!isLive && <small>演示草稿无法调用真实模型调整，请先生成知乎计划。</small>}
             <details className="research-details"><summary>查看研究问题与待确认点</summary>
               {proposal.researchRun.questions.map(question => <p key={question.question}>{question.question}</p>)}
@@ -611,7 +587,7 @@ export function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose
         </div>
         <footer>
           <div><span className="route-proof-dot" /><small>{isLive ? insufficient ? "证据不足：当前暂定计划由模型推断，确认前请核实关键安排。" : "知乎内容提供依据；路线安排仍需结合实际情况确认。" : "演示方案仅用于功能展示，未经真实研究验证。"}</small></div>
-          <button className="research-primary" disabled={busy || !selectedRouteId} onClick={onApply}>{busy ? "正在应用方案" : "确认并应用方案"}<span>→</span></button>
+          <button className="research-primary" disabled={busy || !selectedRouteId} onClick={onApply}>{applying ? "正在保存计划" : "确认并应用方案"}<span>→</span></button>
         </footer>
       </section>
     </main>
@@ -668,35 +644,20 @@ function EvidenceCardView({ card, application, nodes = [] }: {
   );
 }
 
-export function Sidebar({ open, plan, projectId, history, focusTasks, pendingCount, busy, onClose, onAddTask, onNewProject, onSelectTask }: { open: boolean; plan: PlanState; projectId: string; history: PlanCommit[]; focusTasks: PlanNode[]; pendingCount: number; busy: boolean; onClose: () => void; onAddTask: () => void; onNewProject: () => void; onSelectTask: (id: string) => void }) {
+export function Sidebar({ open, plan, projectId, history, focusTasks, pendingCount, busy, onClose, onAddTask, onNewProject, onSelectTask, onOpenHistory }: { open: boolean; plan: PlanState; projectId: string; history: PlanCommit[]; focusTasks: PlanNode[]; pendingCount: number; busy: boolean; onClose: () => void; onAddTask: () => void; onNewProject: () => void; onSelectTask: (id: string) => void; onOpenHistory?: (() => void) | undefined }) {
   const [showAllHistory, setShowAllHistory] = useState(false);
   useEffect(() => { setShowAllHistory(false); }, [projectId]);
   const tasks = plan.nodes.filter((node) => node.type === "task" && node.status !== "archived");
-  const reviewNodes = plan.nodes.filter((node) => (node.type === "checkpoint" || node.type === "assumption") && node.status !== "archived");
   const done = tasks.filter((task) => task.status === "done").length;
   return (
     <ModalSurface open={open} label="项目信息" busy={busy} onClose={onClose}><aside className="side-drawer is-open">
       <div className="drawer-head"><div><Brand /><strong>项目信息</strong></div><button data-initial-focus disabled={busy} aria-label="关闭计划菜单" onClick={onClose}>×</button></div>
       <div className="drawer-scroll">
         <section className="drawer-goal"><small>项目目标</small><p>{plan.goal}</p></section>
-        <WeeklyOverrunNotice overruns={plan.research?.roadmapper?.weeklyOverruns} routeId={plan.research?.selectedRouteId} />
-        {plan.research?.mode === "live" && plan.research.roadmapper?.evidenceStatus === "insufficient" && <InsufficientEvidenceNotice />}
-        <InsufficientSourcesDisclosure sources={plan.research?.insufficientSources ?? []} showEmpty={plan.research?.mode === "live" && plan.research.roadmapper?.evidenceStatus === "insufficient" && !plan.evidence.some(card => card.sourceType === "zhihu")} />
         <section className="progress-card"><div className="progress-ring" style={{ "--progress": `${tasks.length ? (done / tasks.length) * 360 : 0}deg` } as CSSProperties}><span>{done}/{tasks.length}</span></div><div><strong>{plan.weeklyHours} 小时</strong><small>每周投入时间</small></div></section>
         {pendingCount > 0 && <div className="pending-callout"><span aria-hidden="true">○</span><div><strong>{pendingCount} 项变更待确认</strong><small>变更尚未应用于正式计划</small></div></div>}
         <section className="week-focus"><p className="section-kicker">{weekFocusTitle(focusTasks, new Date().toISOString().slice(0, 10))}</p>{focusTasks.length === 0 ? <div className="focus-empty">未来七日暂无待办任务。</div> : focusTasks.map((task, index) => <button key={task.id} onClick={() => onSelectTask(task.id)}><span>{index === 0 ? "待执行" : formatDateRange(task)}</span><strong>{task.title}</strong><small>{task.estimatedHours ?? "—"}h · {statusLabel(task.status)}</small><TaskDeadline task={task} /></button>)}</section>
-        {reviewNodes.length > 0 && (
-          <details className="research-details review-nodes">
-            <summary>复盘与待确认假设 · {reviewNodes.length}</summary>
-            {reviewNodes.map((node) => (
-              <button key={node.id} onClick={() => onSelectTask(node.id)}>
-                <span>{nodeTypeLabel(node.type)} · {formatDateRange(node)}</span>
-                <strong>{node.title}</strong>
-                <small>{statusLabel(node.status)}</small>
-              </button>
-            ))}
-          </details>
-        )}
+        {onOpenHistory && <button className="account-history-trigger" onClick={onOpenHistory}>账号历史记录</button>}
         <section className="export-panel"><p className="section-kicker">导出项目资料</p><div><a href={`/api/projects/${projectId}/export/json`} download>结构化数据（JSON）</a><a href={`/api/projects/${projectId}/export/markdown`} download>可读文档（Markdown）</a><a href={`/api/projects/${projectId}/export/zip`} download>完整计划包（ZIP）</a></div></section>
         <section className="drawer-history"><p className="section-kicker">版本历史 · 共 {history.length} 个版本</p>{(showAllHistory ? history : history.slice(0, 5)).map((commit) => <div className="history-step" key={commit.id}>
           <span />
@@ -716,7 +677,7 @@ export function Sidebar({ open, plan, projectId, history, focusTasks, pendingCou
   );
 }
 
-export function Inspector({ node, plan, evidence, busy, error, onClose, onSave, onComplete, onReportChange, onArchive }: { node: PlanNode | null; plan?: PlanState; evidence: EvidenceCard[]; busy: boolean; error?: string | null; onClose: () => void; onSave: (changes: PlanNodeUpdate) => void; onComplete: () => void; onReportChange: () => void; onArchive: () => void }) {
+export function Inspector({ node, busy, error, onClose, onSave, onComplete, onReportChange, onArchive }: { node: PlanNode | null; plan?: PlanState; evidence?: EvidenceCard[]; busy: boolean; error?: string | null; onClose: () => void; onSave: (changes: PlanNodeUpdate) => void; onComplete: () => void; onReportChange?: () => void; onArchive: () => void }) {
   const [draft, setDraft] = useState<NodeDraft>(() => node ? draftFromNode(node) : { title: "", startDate: "", endDate: "", status: "todo" });
   const [discarding, setDiscarding] = useState(false);
   useEffect(() => { if (node) setDraft(draftFromNode(node)); setDiscarding(false); }, [node]);
@@ -740,23 +701,9 @@ export function Inspector({ node, plan, evidence, busy, error, onClose, onSave, 
               <div className="node-actions"><button className="save-node" type="submit" disabled={busy || !dirty || !draft.title.trim()}>保存修改</button>{node.type === "task" && node.status !== "done" && <button className="complete-node" type="button" disabled={busy || dirty} onClick={onComplete}>标记完成</button>}</div>
             </fieldset>
           </form>
-          {node.type === "task" && <div className="node-secondary-actions"><button disabled={busy || dirty} onClick={onReportChange}>记录任务变更</button><button className="archive-node" disabled={busy || dirty} onClick={onArchive}>归档任务</button></div>}
+          {node.type === "task" && <div className="node-secondary-actions">{onReportChange && <button disabled={busy || dirty} onClick={onReportChange}>记录任务变更</button>}<button className="archive-node" disabled={busy || dirty} onClick={onArchive}>归档任务</button></div>}
           {dirty && <p className="edit-save-hint">请先保存修改，再标记完成、记录变更或归档任务。</p>}
           <section className="node-story"><p className="section-kicker">交付要求与验收标准</p><h3>{node.deliverable ?? "待补充可检查的产出"}</h3>{node.description && <p className="inference-note">{node.description}</p>}<ul>{node.acceptanceCriteria?.map((item) => <li key={item}>{item}</li>) ?? <li>尚未补充完成标准</li>}</ul></section>
-          <section className="evidence-stack">
-            <p className="section-kicker">任务依据</p>
-            {evidence.length === 0 && <div className="empty-evidence">当前暂无知乎证据。请核对该任务对应的用户事实、规则或 AI 推断。</div>}
-            {node.type === "task" && evidence.some(card => card.sourceType === "ai") && !evidence.some(card => card.sourceType === "zhihu")
-              && <p className="inference-note">AI规划／待验证：该任务尚无直接采用的知乎依据。</p>}
-            {evidence.some((card) => card.contentType === "ai_inference") && <p className="inference-note">该任务含 AI 推断；请核实任务安排、工时及依据是否符合实际情况。</p>}
-            <InsufficientSourcesDisclosure key={`insufficient-${node.id}`} sources={plan?.research?.insufficientSources ?? []}
-              description="本次研究收录的以下原帖未作为计划依据，不代表其内容支持当前任务。原文片段和来源链接供核验参考。"
-              showEmpty={plan?.research?.mode === "live" && plan.research.roadmapper?.evidenceStatus === "insufficient" && !plan.evidence.some(card => card.sourceType === "zhihu")} />
-            <CollectedSourcesDisclosure key={`collected-${node.id}`} evidence={plan?.evidence.filter(card => card.sourceType === "zhihu" && !node.evidenceIds.includes(card.id)) ?? []} />
-            {evidence.map((card) => <EvidenceCardView key={card.id} card={card} nodes={plan?.nodes ?? [node]}
-              application={card.sourceType === "zhihu" ? plan?.research?.roadmapper?.evidenceApplications?.find(item =>
-                item.routeId === plan.research?.selectedRouteId && item.evidenceId === card.id && item.taskIds.includes(node.id)) : undefined} />)}
-          </section>
         </div></>}
     </aside>
     {discarding && <ConfirmDialog title="放弃未保存的修改？" description="名称、日期和状态的修改尚未保存。取消可继续编辑。" confirmLabel="放弃修改" onCancel={() => setDiscarding(false)} onConfirm={() => { setDiscarding(false); onClose(); }} />}
@@ -851,7 +798,7 @@ export function DiffPanel({ pending, before, busy, replanning, error, unchangedR
 }
 
 async function api<T = unknown>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, { ...init, headers: { "content-type": "application/json", ...(init?.headers ?? {}) } }); const body: unknown = await response.json();
+  const response = await trackedFetch(path, { ...init, headers: { "content-type": "application/json", ...(init?.headers ?? {}) } }); const body: unknown = await response.json();
   if (!response.ok) throw new Error(formatApiError(body, response.status)); return body as T;
 }
 

@@ -1,7 +1,8 @@
 import { Fragment, useEffect, useRef, useState, type PointerEvent } from "react";
 import type { PlanNode, PlanState } from "@zhilu/contracts";
 import { groupTasksByDate } from "./date-groups";
-import { weeksFromDragDistance } from "./roadmap-date";
+import { shiftIsoDate } from "./roadmap-date";
+import { weeksFromBoardDrag, type DateAnchor } from "./board-drag";
 import type { ChangeContext } from "./ChangeComposer";
 
 export function RoadmapBoard({ plan, selectedId, focusId, affectedIds, busy, onSelect, onReschedule, onChange }: {
@@ -11,7 +12,7 @@ export function RoadmapBoard({ plan, selectedId, focusId, affectedIds, busy, onS
   const groups = groupTasksByDate(plan.nodes);
   const board = useRef<HTMLDivElement>(null), timeline = useRef<HTMLDivElement>(null);
   const pan = useRef<{ pointerId: number; x: number; scroll: number } | null>(null);
-  const [drag, setDrag] = useState<{ id: string; pointerId: number; x: number; weeks: number } | null>(null);
+  const [drag, setDrag] = useState<{ id: string; pointerId: number; x: number; weeks: number; startDate: string; anchors: DateAnchor[]; pixelsPerWeek: number } | null>(null);
   const [atStart, setAtStart] = useState(true);
   const selectDate = (index: number) => {
     const column = board.current?.querySelector<HTMLElement>(`[data-column-index="${index}"]`);
@@ -29,7 +30,7 @@ export function RoadmapBoard({ plan, selectedId, focusId, affectedIds, busy, onS
   }, []);
   const finishDrag = (event: PointerEvent<HTMLButtonElement>, task: PlanNode) => {
     if (!drag || drag.pointerId !== event.pointerId) return;
-    const weeks = weeksFromDragDistance(event.clientX - drag.x);
+    const weeks = weeksFromBoardDrag(event.clientX - drag.x, drag.startDate, drag.anchors, drag.pixelsPerWeek);
     setDrag(null);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     if (weeks && !busy) onReschedule(task, weeks);
@@ -40,11 +41,14 @@ export function RoadmapBoard({ plan, selectedId, focusId, affectedIds, busy, onS
       <button className="task-drag-handle" disabled={busy || !task.startDate || !task.endDate} aria-label={`调整日期：${task.title}`} title="左右拖动按周调整；方向键每次调整一周" onPointerDown={event => {
         if (event.button !== 0) return;
         event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId);
-        setDrag({ id: task.id, pointerId: event.pointerId, x: event.clientX, weeks: 0 });
-      }} onPointerMove={event => { if (drag?.pointerId === event.pointerId) setDrag({ ...drag, weeks: weeksFromDragDistance(event.clientX - drag.x) }); }} onPointerUp={event => finishDrag(event, task)} onPointerCancel={() => setDrag(null)} onKeyDown={event => {
+        const columns = [...(board.current?.querySelectorAll<HTMLElement>("[data-column-index]") ?? [])];
+        const anchors = columns.flatMap((column, index) => groups[index]?.date ? [{ date: groups[index]!.date!, x: column.getBoundingClientRect().left }] : []);
+        const pixelsPerWeek = columns.length > 1 ? columns[1]!.getBoundingClientRect().left - columns[0]!.getBoundingClientRect().left : 360;
+        setDrag({ id: task.id, pointerId: event.pointerId, x: event.clientX, weeks: 0, startDate: task.startDate!, anchors, pixelsPerWeek });
+      }} onPointerMove={event => { if (drag?.pointerId === event.pointerId) setDrag({ ...drag, weeks: weeksFromBoardDrag(event.clientX - drag.x, drag.startDate, drag.anchors, drag.pixelsPerWeek) }); }} onPointerUp={event => finishDrag(event, task)} onPointerCancel={() => setDrag(null)} onKeyDown={event => {
         if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); onReschedule(task, event.key === "ArrowRight" ? 1 : -1); }
       }}>↔</button></div>
-    {drag?.id === task.id && drag.weeks !== 0 && <p className="board-drag-preview" role="status">{drag.weeks > 0 ? "顺延" : "提前"} {Math.abs(drag.weeks)} 周，释放后保存</p>}
+    {drag?.id === task.id && drag.weeks !== 0 && <p className="board-drag-preview" role="status">{shiftIsoDate(drag.startDate, drag.weeks * 7)} · {drag.weeks > 0 ? "顺延" : "提前"} {Math.abs(drag.weeks)} 周，释放后保存</p>}
   </article>;
   return <main className="roadmap-board" aria-label="任务流程图">
     <div className="board-guide"><div><strong>任务流程</strong><span>按开始日期排序</span></div><div><small>日期范围：开始 — 截止</small><button disabled={atStart} onClick={() => board.current?.scrollTo({ left: 0, behavior: "instant" })}>返回起点</button></div></div>

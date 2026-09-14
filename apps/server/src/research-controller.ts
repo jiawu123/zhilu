@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { reportProgress } from "./operation-progress";
 import { aggregateResearchEvidence, assembleResearchRequests, ResearchEvidenceError, ResearchRequestValidationError,
   type LiveResearchInput, type ResearchQueryPolicy } from "@zhilu/agent-runtime";
 import type { EvidencePack, PlanState, ResearchControllerReport, ResearchQuestionDraft, ResearchRequest } from "@zhilu/contracts";
@@ -52,6 +53,9 @@ export async function runResearchController(plan: PlanState, provider: ZhihuProv
   function checkDeadline() { if (abort.signal.aborted) throw new ZhihuProviderError("timeout"); }
   async function stage<T extends { status: string }>(name: "plan" | "research" | "supplement", operation: () => Promise<T>, requestId?: string): Promise<T> {
     checkDeadline();
+    reportProgress(name === "plan" ? "我正在根据目标和背景，拆解研究问题与检索词…"
+      : name === "supplement" ? "我正在检查证据缺口，规划补充检索…"
+      : `正在检索知乎并筛选、整理证据（研究问题 ${requests.length + 1} / ${scheduled.length}）…`);
     const entry: ResearchControllerReport["stages"][number] = { stage: name, ...(requestId ? { requestId } : {}), durationMs: 0, status: "failed" };
     report.stages.push(entry);
     const started = performance.now();

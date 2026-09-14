@@ -14,6 +14,7 @@ import type {
   RouteCandidate,
   ValidationIssue,
   ValidationResult,
+  ZhidaResearch,
 } from "@zhilu/contracts";
 import { PLAN_SCHEMA_VERSION } from "@zhilu/contracts";
 export { prepareRoadmapperInput, compileRoadmapperBaseline, validateRoadmapperPlan, validateRoadmapperPlanningBudget, RoadmapperValidationError, type RoadmapperInput } from "./roadmapper";
@@ -287,6 +288,7 @@ export interface LiveResearchInput {
   now: string;
   controller?: ResearchControllerReport;
   planningBudget?: RoadmapperPlanningBudget;
+  zhida?: ZhidaResearch;
 }
 
 /**
@@ -328,6 +330,7 @@ export function createLiveBaselineProposal(plan: PlanState, input: LiveResearchI
     requests: structuredClone(input.requests),
     evidencePacks: structuredClone(input.evidencePacks),
     routeCandidates: routes,
+    ...(input.zhida ? { zhida: structuredClone(input.zhida) } : {}),
   };
   const success = plan.goalContract.successCriteria[0]?.trim() ?? "完成可检查成果";
   const prefersFoundation = /零基础|初学|刚开始|没有.{0,8}(经验|基础|项目)|尚未/iu.test(plan.userContext.currentSituation);
@@ -559,6 +562,7 @@ function buildRoutePreview(
       runId: run.id,
       selectedRouteId: route.id,
       routeCandidates: structuredClone(run.routeCandidates),
+      ...(run.zhida ? { zhida: structuredClone(run.zhida) } : {}),
     },
     updatedAt: now,
   };

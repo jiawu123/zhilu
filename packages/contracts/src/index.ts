@@ -129,6 +129,29 @@ export interface PlanState {
   updatedAt: string;
 }
 
+export interface RoadmapChatMessage {
+  planEffect?: "unchanged" | "proposal" | "applied";
+  planVersion?: number;
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: string;
+  research?: ZhidaResearch;
+}
+
+export interface RoadmapChatProposal {
+  id: string;
+  baseVersion: number;
+  summary: string;
+  afterPreview: PlanState;
+  status: "pending" | "applied" | "discarded";
+}
+
+export interface RoadmapChatState {
+  messages: RoadmapChatMessage[];
+  proposal?: RoadmapChatProposal;
+}
+
 export interface PlanResearchState {
   mode: "mock" | "live";
   runId: string;
@@ -136,6 +159,7 @@ export interface PlanResearchState {
   routeCandidates: RouteCandidate[];
   roadmapper?: RoadmapperRun;
   insufficientSources?: InsufficientResearchSource[];
+  zhida?: ZhidaResearch;
 }
 
 /** 模型只提出草案；Run ID 和批准状态由 Controller / 用户管理。 */
@@ -242,11 +266,15 @@ export interface GoalContract {
 }
 
 export interface CreateProjectInput {
+  interviewId?: string;
   userContext: UserContextCard;
   goalContract: GoalContract;
   adaptiveQuestion: string;
   adaptiveAnswer: string;
 }
+
+export const INTERVIEW_MAX_QUESTIONS = 30;
+export const INTERVIEW_GENERATION_ATTEMPTS = 3;
 
 export interface InterviewQuestion {
   id: string;
@@ -272,6 +300,13 @@ export interface InterviewSession {
   answers: InterviewAnswer[];
   status: "asking" | "complete";
   summary?: CreateProjectInput;
+  draftAnswers?: InterviewAnswer[];
+  createdAt?: string;
+  updatedAt?: string;
+  projectId?: string;
+  generationError?: string;
+  finishRequested?: boolean;
+  history?: Array<{ at: string; kind: "questions_generated" | "answers_submitted" | "summary_generated" | "generation_failed" | "project_created"; questionIds?: string[]; message?: string }>;
 }
 
 export interface ImpactDiff {
@@ -360,6 +395,23 @@ export interface RouteCandidate {
   risks: string[];
 }
 
+/** References suggested by Zhida; summaries are AI-generated, not verified source excerpts. */
+export interface ZhidaSource {
+  id: string;
+  title: string;
+  url: string;
+  author?: string;
+  summary?: string;
+}
+
+export interface ZhidaResearch {
+  provider: "zhida-agent";
+  answer: string;
+  sources: ZhidaSource[];
+  durationMs: number;
+  generatedAt: string;
+}
+
 export interface ResearchRunResult {
   id: string;
   mode: "mock" | "live";
@@ -370,6 +422,7 @@ export interface ResearchRunResult {
   routeCandidates: RouteCandidate[];
   controller?: ResearchControllerReport;
   planningBudget?: RoadmapperPlanningBudget;
+  zhida?: ZhidaResearch;
 }
 
 /** Controller-observed diagnostics, never a claim of semantic or factual verification. */

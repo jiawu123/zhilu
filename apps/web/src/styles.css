@@ -774,3 +774,123 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
   .change-composer textarea { height: 40px; min-height: 40px; }
   .date-board-scroll { padding-top: 7px; padding-bottom: 12px; }
 }
+
+/* Upstream account and progress surfaces, integrated below with the light theme. */
+.account-login { max-width: 620px; margin: 16vh auto; padding: 24px; line-height: 1.8; }
+.account-login-link { display: inline-block; padding: 12px 24px; margin: 20px 20px 20px 0; border-radius: 12px; background: #a7e1cd; color: #161724; }
+.account-history { width: min(820px, 100%); max-height: 90vh; overflow: auto; padding: 28px; border-radius: 20px; background: #1e1b2c; border: 1px solid var(--line); }
+.account-history header { display: flex; justify-content: space-between; align-items: center; }
+.account-history article { border-bottom: 1px solid var(--line); padding: 18px 0; overflow-wrap: anywhere; }
+.account-history article p, .answer-save-status { color: var(--muted); font-size: 13px; line-height: 1.7; }
+.account-history article a { color: #a7e1cd; margin-right: 18px; }
+.account-history article button { margin-right: 18px; }
+.interview-page-content { padding-bottom: 80px; }
+.account-history button, .account-login button { color: #f5f1ff; background: #302a40; border: 1px solid #544b69; border-radius: 9px; padding: 8px 12px; font: inherit; cursor: pointer; }
+.account-history button:hover, .account-login button:hover { background: #443959; }
+
+/* Shared progress for model work and ordinary saves / reads. */
+.request-activity { position: fixed; right: 24px; bottom: 24px; z-index: 200; width: min(380px, calc(100vw - 32px)); max-height: 45vh; overflow: auto; border-radius: 16px; background: #211d32; box-shadow: 0 12px 48px #0006; }
+.request-activity .model-running { margin: 0; }
+body:has(.inline-operation-status) .request-activity { display: none; }
+.model-running > div { min-width: 0; overflow-wrap: anywhere; }
+.model-running strong { font-size: 14px; line-height: 1.6; }
+.activity-steps { margin-top: 12px; font-size: 12px; color: var(--muted); }
+.activity-steps summary { cursor: pointer; }
+.activity-steps ol { padding-left: 18px; max-height: 180px; overflow: auto; }
+.activity-steps li { margin-bottom: 8px; line-height: 1.6; }
+.activity-steps li small { display: inline; }
+.plan-confirm-action { display: grid; gap: 10px; padding-top: 16px; margin-bottom: 18px; border-top: 1px solid var(--line); }
+.plan-confirm-action button { width: 100%; }
+.inline-operation-status .model-running { padding: 14px; gap: 12px; }
+@media (max-width: 600px) { .request-activity { right: 16px; bottom: 64px; } }
+
+
+/* Chat floats over the full canvas; opening it never crops the map. */
+.app-shell > .canvas-hint { bottom: 176px; font-size: 12px; }
+.roadmap-chat { position: absolute; z-index: 15; bottom: 18px; left: 50%; transform: translateX(-50%); width: min(660px, calc(100vw - 48px)); display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 18px; background: #211d32ed; backdrop-filter: blur(14px); box-shadow: 0 12px 40px #0006; }
+.roadmap-chat.is-expanded { height: min(420px, calc(100dvh - 170px)); }
+.roadmap-chat > .model-running { flex-shrink: 0; margin: 0; padding: 10px 12px; max-height: 140px; overflow-y: auto; }
+.chat-plan-effect { display: block; margin-top: 8px; }
+.roadmap-chat > header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.roadmap-chat > header strong { font-size: 18px; }
+.roadmap-chat button { min-height: 36px; padding: 7px 12px; border: 1px solid var(--line); border-radius: 10px; background: #ffffff09; font-size: 14px; cursor: pointer; }
+.roadmap-chat button:disabled { opacity: .5; cursor: default; }
+.roadmap-chat > form { display: flex; align-items: stretch; gap: 10px; min-height: 64px; flex-shrink: 0; }
+.roadmap-chat textarea { flex: 1; min-width: 0; padding: 10px 12px; resize: none; border: 1px solid var(--line); border-radius: 12px; color: var(--cream); background: #ffffff05; font: inherit; font-size: 16px; line-height: 1.5; }
+.roadmap-chat textarea:focus { outline: 2px solid var(--violet); outline-offset: 1px; }
+.roadmap-chat form button, .chat-proposal > div button:first-child { background: var(--violet); color: #171224; font-weight: 700; }
+.roadmap-conversation { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-right: 8px; scrollbar-width: thin; }
+.chat-empty { color: var(--muted); font-size: 16px; line-height: 1.7; }
+.chat-message { padding: 12px 14px; margin-bottom: 12px; border-radius: 14px; background: #ffffff05; }
+.chat-message.from-user { margin-left: 40px; background: #9b8cff18; }
+.chat-message > small { color: var(--mint); font-size: 13px; }
+.chat-message p, .chat-proposal > p { margin: 6px 0; font-size: 16px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-message details { margin-top: 10px; font-size: 14px; color: var(--muted); }
+.chat-message a { display: block; color: var(--mint); margin-top: 10px; overflow-wrap: anywhere; }
+.chat-proposal { padding: 16px; border: 1px solid #9b8cff66; border-radius: 14px; }
+.chat-proposal > strong { font-size: 18px; }
+.chat-proposal details { margin: 14px 0; font-size: 14px; }
+.chat-proposal details article { border-top: 1px solid var(--line); padding: 12px 0; }
+.chat-proposal details article p { display: grid; gap: 5px; margin: 8px 0; overflow-wrap: anywhere; }
+.chat-proposal del { color: var(--muted); }
+.chat-proposal > div { display: flex; gap: 8px; flex-wrap: wrap; }
+.chat-error { margin: 0; font-size: 14px; line-height: 1.5; color: #ffb3a2; }
+.roadmap-chat .chat-error { max-height: 80px; overflow-y: auto; flex-shrink: 0; }
+@media (max-width: 700px) {
+  .roadmap-chat { bottom: 68px; width: calc(100vw - 24px); padding: 12px; }
+  .roadmap-chat.is-expanded { height: min(420px, calc(100dvh - 210px)); }
+  .app-shell > .canvas-hint, .app-shell > .commit-whisper { display: none; }
+  .floating-header { grid-template-columns: auto 1fr; }
+}
+
+.workspace-dialog { color: inherit; max-height: calc(100dvh - 48px); overflow-wrap: anywhere; box-shadow: var(--shadow); }
+.workspace-dialog::backdrop { background: #070612bb; backdrop-filter: blur(4px); }
+.workspace-dialog header { gap: 16px; }
+.workspace-dialog h2 { font-size: 20px; }
+.workspace-dialog .history-step { padding-bottom: 18px; }
+
+/* Integration: new account, history, progress and chat keep the white/blue UI. */
+.account-login { width: min(520px,calc(100vw - 40px)); margin: 12vh auto; padding: 36px; border: 1px solid var(--line); border-radius: 14px; background: #fff; box-shadow: var(--shadow); color: var(--text); }
+.account-login > .zhilu-brand { margin-bottom: 28px; }
+.account-login h1 { font-size: 25px; font-weight: 600; }
+.account-login p { color: var(--muted); font-size: 14px; }
+.account-login-link { background: var(--blue); color: #fff; border-radius: 7px; font-size: 14px; }
+.account-history { position: relative; margin: auto; width: min(820px,calc(100vw - 40px)); max-height: calc(100dvh - 48px); background: #fff; color: var(--text); border-radius: 12px; }
+.account-history header { position: sticky; top: -28px; padding: 12px 0; background: #fff; z-index: 1; }
+.account-history h2 { font-size: 20px; }.account-history h3 { font-size: 15px; }
+.account-history article a { color: var(--blue); font-size: 13px; }
+.account-history button, .account-login button, .account-history-trigger { color: #38679a; background: #f5f8fc; border: 1px solid #d8e2ef; border-radius: 6px; font-size: 13px; padding: 8px 12px; }
+.account-history button:hover, .account-login button:hover { background: #eaf3ff; }
+.account-history-trigger { width: 100%; margin: 12px 0; text-align: left; }
+.request-activity { bottom: 24px; background: #fff; border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); }
+.request-activity .model-running { border: 0; background: #fff; }
+.plan-confirm-action { margin: 18px 0; }.plan-confirm-action small { color: var(--muted); font-size: 11px; line-height: 1.7; }
+.change-composer { display: flex; flex-direction: column; gap: 8px; max-height: calc(100dvh - 108px); }
+.change-composer > form { flex-shrink: 0; min-width: 0; }
+.change-composer.is-expanded { height: min(560px,calc(100dvh - 108px)); }
+.chat-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.chat-toolbar strong { font-size: 12px; color: #50627b; }
+.chat-toolbar button { border: 0; background: none; padding: 3px 0; font-size: 11px; color: var(--blue); }
+.change-composer > .model-running { margin: 0; padding: 10px 12px; flex-shrink: 0; max-height: 130px; overflow-y: auto; }
+.roadmap-conversation { flex: 1; min-height: 0; padding: 6px 4px 0 0; }
+.chat-empty { font-size: 12px; }.chat-message { background: #f6f8fb; border-radius: 9px; }
+.chat-message.from-user { background: #edf4ff; }.chat-message > small { color: #62758f; font-size: 11px; }
+.chat-message p, .chat-proposal > p { font-size: 13px; }.chat-message a { color: var(--blue); }
+.chat-proposal { border-color: #c9ddfa; border-radius: 10px; background: #fafdff; padding: 14px; }
+.chat-proposal > strong { font-size: 14px; }.chat-proposal details { font-size: 12px; }
+.chat-proposal > div button { background: #fff; color: #52749e; border: 1px solid #cddcf0; border-radius: 6px; font-size: 12px; padding: 8px 12px; }
+.chat-proposal > div button:first-child { color: #fff; background: var(--blue); font-weight: 500; }
+.chat-proposal button:disabled { opacity: .5; cursor: not-allowed; }
+.app-shell > .canvas-hint { bottom: 16px; font-size: 9px; }
+@media (max-width: 700px) {
+  .account-login { padding: 24px; margin-top: 8vh; }
+  .account-history { width: calc(100vw - 24px); padding: 20px; }.account-history header { top: -20px; }
+  .change-composer.is-expanded { height: min(500px,calc(100dvh - 110px)); }
+  .chat-message.from-user { margin-left: 18px; }
+}
+.change-composer { background: #fff; border: 1px solid #dfe6ef; border-radius: 15px; padding: 12px 15px 10px; box-shadow: 0 7px 25px #28436a0d; }
+.change-composer > form { border: 0; border-radius: 0; padding: 0; box-shadow: none; }
+.change-composer > form:focus-within { box-shadow: none; }
+.change-composer:focus-within { border-color: #a7c8f7; }
+.roadmap-board { bottom: 210px; }
+@media (max-height: 650px) and (min-width: 701px) { .roadmap-board { bottom: 200px; } }

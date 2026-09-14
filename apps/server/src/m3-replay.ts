@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { mkdir, open, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import type { BaselineProposal, EvidenceCard, EvidencePack, PlanState, ResearchControllerReport } from "@zhilu/contracts";
+import type { BaselineProposal, EvidenceCard, EvidencePack, PlanState, ResearchControllerReport, ZhidaResearch } from "@zhilu/contracts";
 import { aggregateResearchEvidence, compileRoadmapperBaseline, prepareRoadmapperInput, validateRoadmapperPlanningBudget, type LiveResearchInput, type RoadmapperInput } from "@zhilu/agent-runtime";
 import { roadmapperDraftFixture } from "../../../packages/agent-runtime/src/roadmapper.test-fixture";
 import { validatePlan } from "@zhilu/plan-engine";
@@ -181,19 +181,48 @@ function evidencePack(value: unknown, requestId: string, limit: number, now: num
   return structuredClone(p) as unknown as EvidencePack;
 }
 
+/** Direct-answer cards are display metadata; validating their shape does not verify their claims. */
+function zhidaResearch(value: unknown, now: number): ZhidaResearch {
+  const research = object(value);
+  keys(research, ["provider", "answer", "sources", "durationMs", "generatedAt"]);
+  ensure(research.provider === "zhida-agent");
+  text(research.answer, 100_000);
+  ensure(timestamp(research.generatedAt) <= now + 300_000);
+  ensure(typeof research.durationMs === "number" && Number.isSafeInteger(research.durationMs)
+    && research.durationMs >= 0 && research.durationMs <= 86_400_000);
+  const sourceIds = new Set<string>(), sourceUrls = new Set<string>();
+  for (const raw of array(research.sources, 12)) {
+    const source = object(raw);
+    keys(source, ["id", "title", "url"], ["author", "summary"]);
+    const sourceId = text(source.id, 40);
+    ensure(/^[\w-]+$/u.test(sourceId) && !sourceIds.has(sourceId));
+    sourceIds.add(sourceId);
+    text(source.title, 240);
+    if (source.author !== undefined) text(source.author, 160);
+    if (source.summary !== undefined) text(source.summary, 1000);
+    const url = text(source.url, 4096), parsed = new URL(url);
+    ensure(["http:", "https:"].includes(parsed.protocol) && parsed.hostname && !parsed.username && !parsed.password
+      && !/[\s\\\p{C}]/u.test(url) && !sourceUrls.has(parsed.href));
+    sourceUrls.add(parsed.href);
+  }
+  return structuredClone(research) as unknown as ZhidaResearch;
+}
+
 /** Validates local JSON as data, never accepts provider configuration or self-reported approval. */
 export function validateM3Snapshot(value: unknown, currentTime = new Date().toISOString()): M3Snapshot {
   try {
     inspectJson(value);
     ensure(Buffer.byteLength(JSON.stringify(value), "utf8") <= MAX_M3_SNAPSHOT_BYTES, "snapshot_too_large");
     const snapshot = object(value); keys(snapshot, ["plan", "research"]);
-    const r = object(snapshot.research); keys(r, ["runId", "proposalId", "questions", "requests", "evidencePacks", "now"], ["controller", "planningBudget"]);
+    const r = object(snapshot.research); keys(r, ["runId", "proposalId", "questions", "requests", "evidencePacks", "now"], ["controller", "planningBudget", "zhida"]);
     const planningBudget = validateRoadmapperPlanningBudget(r.planningBudget);
     const now = timestamp(r.now); ensure(now <= timestamp(currentTime) + 300_000, "snapshot_future_time");
     const runId = id(r.runId), proposalId = id(r.proposalId); ensure(runId !== proposalId, "snapshot_run_id_collision");
     const plan = planState(snapshot.plan, now);
+    const zhida = r.zhida === undefined ? undefined : zhidaResearch(r.zhida, now);
     const requests = array(r.requests, 6).map(validateResearchRequest);
-    ensure(requests.length > 0 && new Set(requests.map(request => request.id)).size === requests.length);
+    // An explicit direct-answer snapshot has no search requests, packs or promoted evidence.
+    ensure((zhida ? requests.length === 0 : requests.length > 0) && new Set(requests.map(request => request.id)).size === requests.length);
     requests.forEach(request => id(request.id));
     const questions = array(r.questions, 6).map((raw, index) => {
       const q = object(raw); keys(q, ["question", "searchQueries", "rationale"]);
@@ -209,10 +238,10 @@ export function validateM3Snapshot(value: unknown, currentTime = new Date().toIS
     const evidencePacks = packs.map((pack, index) => evidencePack(pack, requests[index]!.id, requests[index]!.evidenceLimit, now));
     const userIds = new Set(plan.evidence.filter(item => item.sourceType === "user").map(item => item.id));
     ensure(evidencePacks.every(pack => pack.evidence.every(card => !userIds.has(card.id))), "snapshot_evidence_id_collision");
-    const aggregate = aggregateResearchEvidence(requests, evidencePacks);
-    const controller = r.controller === undefined ? undefined : negativeControllerDiagnostics(r.controller, aggregate);
+    const aggregate = zhida ? undefined : aggregateResearchEvidence(requests, evidencePacks);
+    const controller = r.controller === undefined || !aggregate ? undefined : negativeControllerDiagnostics(r.controller, aggregate);
     return { plan, research: { runId, proposalId, now: r.now as string, questions, requests, evidencePacks, planningBudget,
-      ...(controller ? { controller } : {}) } };
+      ...(controller ? { controller } : {}), ...(zhida ? { zhida } : {}) } };
   } catch (error) {
     if (error instanceof ReplayError) throw error;
     throw new ReplayError("invalid_snapshot");
@@ -314,9 +343,11 @@ export async function executeM3Replay(value: unknown, options: { live: boolean }
     const { plan, research } = validateM3Snapshot(value, dependencies.now?.() ?? new Date().toISOString());
     ensure(!options.live || !research.evidencePacks.some(pack => pack.evidence.some(card => card.riskTags.includes("synthetic_fixture"))), "live_rejects_synthetic_evidence");
     report.snapshotSha256 = createHash("sha256").update(JSON.stringify({ plan, research })).digest("hex");
-    const aggregate = aggregateResearchEvidence(research.requests, research.evidencePacks);
-    report.evidenceCount = aggregate.evidence.length;
-    research.evidencePacks = aggregate.evidencePacks;
+    if (!research.zhida) {
+      const aggregate = aggregateResearchEvidence(research.requests, research.evidencePacks);
+      report.evidenceCount = aggregate.evidence.length;
+      research.evidencePacks = aggregate.evidencePacks;
+    }
     const input = prepareRoadmapperInput(plan, research, `m3-replay-${randomUUID()}`);
     let output: unknown;
     const modelStarted = performance.now();
@@ -338,8 +369,9 @@ export async function executeM3Replay(value: unknown, options: { live: boolean }
     } catch { throw new ReplayError("model_output_validation_failed"); }
     report.routeCount = proposal.previews.length;
     if (proposal.roadmapper?.warnings.length) report.warnings.push("proposal_has_review_warnings");
-    report.status = proposal.previews.length === 2 ? "structural_pass" : "needs_review";
-    if (proposal.previews.length !== 2) report.warnings.push("two_evidence_backed_routes_not_met");
+    const expectedRoutes = research.zhida ? 1 : 2;
+    report.status = proposal.previews.length === expectedRoutes ? "structural_pass" : "needs_review";
+    if (!research.zhida && proposal.previews.length !== 2) report.warnings.push("two_evidence_backed_routes_not_met");
     return { report, proposal };
   } catch (error) {
     report.failureCode = safeM3ReplayFailure(error);

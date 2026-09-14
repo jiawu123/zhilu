@@ -10,6 +10,12 @@
 - Plan Engine：校验、影响分析、应用用户批准的修改并创建 Commit；
 - Plan Bundle：保存正式计划、待确认修改和历史版本。
 
+### 知乎直答计划体验
+
+开启真实调用后，新计划默认使用知乎 `zhida-agent` 整理研究回答，再由现有 Roadmapper 安排行动与时间。当前保留原有前端，用户仍在查看和调整草稿后确认生成路线图。后端同时支持 JSON 响应和 SSE 流式响应，并保留直答正文与参考来源数据；当前页面尚未展示直答正文、引用卡片或来源列表。没有来源链接也可以生成计划，来源摘要仅用于阅读参考，不计为已核验的 EvidenceCard。
+
+这条默认路径需要知乎 CLI 已登录和 Roadmapper 模型配置，不再需要 Python 研究环境。CLI 路径优先读取 `ZHIHU_CLI_BIN` 或 `ZHIHU_CLI_PATH`；Windows 自动查找当前用户安装目录，其余情况使用 PATH 中的 `zhihu-cli`。保留各自本机的 `.env.local`，不要复制其他系统的绝对路径。旧证据研究路径可通过服务端环境变量 `ZHIHU_RESEARCH_MODE=evidence` 选择；知识缺口事件仍使用原有搜索接口。
+
 ## 仓库结构
 
 ```text
@@ -43,16 +49,81 @@ M2 配置与 PowerShell 命令见 [知乎模块说明](packages/zhihu/README.md#
 
 ## 本地运行
 
+CloudBase 测试部署见 [部署说明](deploy/cloudbase/README.md)。可以直接部署当前分支，无需先合并 `main`；线上环境与本地运行分别配置。
+
+以下命令均从**仓库根目录**执行。需要 Node.js 24 和 pnpm 10.30.2；首次拉取代码后安装依赖：
+
 ```bash
+node --version
+pnpm --version
 pnpm install
-pnpm dev
 ```
 
-- Roadmap：`http://127.0.0.1:5173`
-- Local API：`http://127.0.0.1:8787`
-- Demo project：`agent-engineer-demo`
+如果没有 pnpm，可先执行 `npm install -g pnpm@10.30.2`。
 
-验证命令：
+### 1. 准备后端配置
+
+首次运行时，将 `apps/server/.env.example` 复制为 `apps/server/.env.local`；已有文件时保留原配置，不要覆盖。在 macOS / Linux 下可执行：
+
+```bash
+test -f apps/server/.env.local || cp apps/server/.env.example apps/server/.env.local
+```
+
+- **只看演示 Roadmap**：无需模型、Python 或知乎凭据，保持 `ZHIHU_LIVE_ENABLED=false`。
+- **测试目标访谈、生成背景问题**：填写 `ROADMAP_API_KEY`、`ROADMAP_API_URL` 和 `ROADMAP_MODEL`。URL 必须是完整的 Chat Completions 地址；没有模型配置时，访谈会提示错误，不回退固定题库。
+- **测试直答与计划生成**：另外配置 `ZHIHU_LIVE_ENABLED=true`，准备已登录的知乎 CLI；默认使用 `zhida-agent`，可用 `ZHIDA_TIMEOUT_MS` 调整客户端等待上限（默认 95000 毫秒）。模型配置见 [后端模型配置](apps/server/README.md#roadmapper-模型配置)。
+- **使用旧证据研究或知识缺口搜索**：还需准备 Python 依赖，以及本机绝对路径 `ZHIHU_PYTHON_BIN` 和 `ZHIHU_PYTHON_CWD`。配置方式见 [知乎模块配置](packages/zhihu/README.md#p0-server-真实证据接入)。Python 的 `packages/zhihu/.env` 与 Node 配置分开。
+
+密钥只放本地环境文件，不写入 `VITE_*` 或提交 Git。
+
+### 2. 启动后端（终端一）
+
+显式加载后端环境文件，并监听代码变化：
+
+```bash
+node --env-file=apps/server/.env.local --watch --import tsx apps/server/src/index.ts
+```
+
+后端地址为 `http://127.0.0.1:8787`。修改 `.env.local` 后，需在该终端按 `Ctrl+C`，重新运行启动命令。
+
+**已配置 OAuth、但还没有公网回调时**：任何非空 OAuth 配置都会要求登录，`ZHILU_AUTH_MODE=local` 单独设置不能覆盖它。只测试本地访谈与 Roadmap 时，用下面的命令替代上面的后端启动命令（macOS / Linux）；它仅对当前进程清空 OAuth 配置，保留文件中的凭据和模型配置：
+
+```bash
+NODE_ENV=development ZHILU_AUTH_MODE=local \
+ZHIHU_OAUTH_APP_ID= ZHIHU_OAUTH_APP_KEY= ZHIHU_OAUTH_REDIRECT_URI= \
+node --env-file=apps/server/.env.local --watch --import tsx apps/server/src/index.ts
+```
+
+真实 OAuth 登录需部署后配置已登记的公网 HTTPS 回调地址，路径为 `/api/auth/callback`；本地预览不等于授权联调通过。
+
+### 3. 启动前端（终端二）
+
+在另一个终端进入同一仓库根目录，执行：
+
+```bash
+pnpm --filter @zhilu/web dev
+```
+
+打开 `http://127.0.0.1:5173`。前端通过 Vite 将 `/api` 请求代理到 `127.0.0.1:8787`，无需给前端配置后端密钥。
+
+- 目标访谈：`http://127.0.0.1:5173/?page=interview`
+- 无模型演示：`http://127.0.0.1:5173/?project=agent-engineer-demo&page=roadmap`（本地工作区模式）
+- 后端健康检查：`http://127.0.0.1:8787/api/health`，正常返回 `{"ok":true}`。
+- 登录配置检查：`http://127.0.0.1:8787/api/auth/status`，可查看当前模式和缺失配置，不返回密钥。
+
+首次打开演示项目会初始化本地 `data/`。访谈、答案和计划历史保存在后端数据目录；重启不会删除这些记录。开启 OAuth 后，账号数据与原本地工作区分开。
+
+### 快捷启动与排查
+
+只需无配置演示，或已在终端设置好环境变量时，也可用 `pnpm dev` 同时启动前后端。**当前 `pnpm dev` 和 `pnpm --filter @zhilu/server dev` 不会自动读取 `apps/server/.env.local`**；需要模型配置时，优先使用上面的双终端方式。
+
+- 页面打不开：检查前端终端实际显示的地址；5173 被占用时 Vite 可能改用其他端口。
+- 页面提示网络错误或代理连接失败：检查后端是否启动，以及 `/api/health` 是否正常。
+- 提示缺少模型配置：确认后端使用了 `--env-file`，并在修改配置后重启。
+- 提示知乎登录缺少回调：本地测试使用上面的临时关闭 OAuth 命令。
+- 后端提示 `EADDRINUSE`：已有进程占用 8787，先在原终端停止旧服务；不要重复启动多个后端。
+
+结束开发时，在前后端各自终端按 `Ctrl+C`。代码验证命令：
 
 ```bash
 pnpm typecheck
