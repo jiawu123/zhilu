@@ -1,0 +1,34 @@
+{
+  "mode": "Frontend request interception only; no business service invoked",
+  "globalText": {
+    "type": "custom",
+    "title": "全局变更说明",
+    "description": "预算总额已调整，需要重新核对采购范围。",
+    "targetNodeIds": []
+  },
+  "taskTargets": [
+    "task-1"
+  ],
+  "segmentTargets": [
+    "task-1",
+    "task-2",
+    "task-3",
+    "task-4",
+    "task-5",
+    "task-6",
+    "task-7",
+    "task-8",
+    "task-9"
+  ],
+  "failedDraftRetained": true,
+  "inspectorComposerFocus": true,
+  "shiftEnter": true,
+  "atomicEdit": {
+    "title": "确认更新后的产品需求",
+    "status": "ready"
+  },
+  "nestedEscape": true,
+  "fullHistory": true,
+  "newTaskCancel": true,
+  "hoursValidation": true
+}

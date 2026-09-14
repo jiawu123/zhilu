@@ -1,0 +1,107 @@
+{
+  "results": [
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "height": 503,
+      "available": 503,
+      "header": 35,
+      "card": 82,
+      "overlap": false,
+      "scrollable": true,
+      "composerFits": true,
+      "timelineClear": true,
+      "documentOverflow": false,
+      "connectorEntry": true,
+      "taskEntry": true,
+      "drawerFocus": true,
+      "scrollToGoal": true,
+      "timelineSync": true
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "height": 323,
+      "available": 323,
+      "header": 35,
+      "card": 82,
+      "overlap": false,
+      "scrollable": true,
+      "composerFits": true,
+      "timelineClear": true,
+      "documentOverflow": false,
+      "connectorEntry": true,
+      "taskEntry": true,
+      "drawerFocus": true,
+      "scrollToGoal": true,
+      "timelineSync": true
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 600
+      },
+      "height": 250,
+      "available": 250,
+      "header": 35,
+      "card": 82,
+      "overlap": false,
+      "scrollable": true,
+      "composerFits": true,
+      "timelineClear": true,
+      "documentOverflow": false,
+      "connectorEntry": true,
+      "taskEntry": true,
+      "drawerFocus": true,
+      "scrollToGoal": true,
+      "timelineSync": true
+    },
+    {
+      "viewport": {
+        "width": 768,
+        "height": 1024
+      },
+      "height": 627,
+      "available": 627,
+      "header": 35,
+      "card": 82,
+      "overlap": false,
+      "scrollable": true,
+      "composerFits": true,
+      "timelineClear": true,
+      "documentOverflow": false,
+      "connectorEntry": true,
+      "taskEntry": true,
+      "drawerFocus": true,
+      "scrollToGoal": true,
+      "timelineSync": true
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "height": 452,
+      "available": 452,
+      "header": 35,
+      "card": 82,
+      "overlap": false,
+      "scrollable": true,
+      "composerFits": true,
+      "timelineClear": true,
+      "documentOverflow": false,
+      "connectorEntry": true,
+      "taskEntry": true,
+      "drawerFocus": true,
+      "scrollToGoal": true,
+      "timelineSync": true
+    }
+  ],
+  "missingDatesSeparate": true,
+  "emptyState": true,
+  "pageErrors": []
+}

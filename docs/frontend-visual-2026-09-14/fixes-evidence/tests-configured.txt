@@ -1,0 +1,97 @@
+
+> zhilu@ test /Users/norda/Development/zhilu-roadmapper/zhilu
+> pnpm -r test
+
+Scope: 5 of 6 workspace projects
+packages/contracts test$ vitest run --passWithNoTests
+packages/contracts test:  RUN  v3.2.7 /Users/norda/Development/zhilu-roadmapper/zhilu/packages/contracts
+packages/contracts test: No test files found, exiting with code 0
+packages/contracts test: include: **/*.{test,spec}.?(c|m)[jt]s?(x)
+packages/contracts test: exclude:  **/node_modules/**, **/dist/**, **/cypress/**, **/.{idea,git,cache,output,temp}/**, **/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build,eslint,prettier}.config.*
+packages/contracts test: Done
+apps/web test$ vitest run --passWithNoTests
+packages/plan-engine test$ vitest run
+packages/agent-runtime test$ vitest run
+packages/agent-runtime test:  RUN  v3.2.7 /Users/norda/Development/zhilu-roadmapper/zhilu/packages/agent-runtime
+packages/plan-engine test:  RUN  v3.2.7 /Users/norda/Development/zhilu-roadmapper/zhilu/packages/plan-engine
+apps/web test:  RUN  v3.2.7 /Users/norda/Development/zhilu-roadmapper/zhilu/apps/web
+packages/plan-engine test:  ✓ src/index.test.ts (6 tests) 44ms
+packages/plan-engine test:  Test Files  1 passed (1)
+packages/plan-engine test:       Tests  6 passed (6)
+packages/plan-engine test:    Start at  19:10:43
+packages/plan-engine test:    Duration  2.13s (transform 176ms, setup 0ms, collect 261ms, tests 44ms, environment 0ms, prepare 544ms)
+apps/web test:  ✓ src/roadmap-focus.test.ts (2 tests) 31ms
+apps/web test:  ✓ src/roadmap-date.test.ts (3 tests) 9ms
+apps/web test:  ✓ src/plan-diff.test.ts (5 tests) 27ms
+packages/agent-runtime test:  ✓ src/research-query-policy.test.ts (21 tests) 43ms
+packages/agent-runtime test:  ✓ src/index.test.ts (12 tests) 55ms
+packages/agent-runtime test:  ✓ src/research-evidence.test.ts (32 tests) 187ms
+apps/web test:  ✓ src/pending-selection.test.ts (7 tests) 6ms
+packages/agent-runtime test:  ✓ src/event-replan.test.ts (48 tests) 478ms
+apps/web test:  ✓ src/api-error.test.ts (12 tests) 21ms
+packages/plan-engine test: Done
+apps/web test:  ✓ src/interview-api.test.ts (4 tests) 27ms
+apps/web test:  ✓ src/dogfood-regressions.test.tsx (7 tests) 34ms
+apps/web test:  ✓ src/event-replan.test.tsx (7 tests) 73ms
+packages/agent-runtime test:  ✓ src/roadmapper.test.ts (55 tests) 831ms
+packages/agent-runtime test:  Test Files  5 passed (5)
+packages/agent-runtime test:       Tests  168 passed (168)
+packages/agent-runtime test:    Start at  19:10:43
+packages/agent-runtime test:    Duration  3.38s (transform 1.11s, setup 0ms, collect 2.47s, tests 1.59s, environment 1ms, prepare 2.96s)
+apps/web test:  ✓ src/interview-answers.test.ts (3 tests) 7ms
+apps/web test:  ✓ src/research-evidence.test.tsx (26 tests) 522ms
+apps/web test:  ✓ src/onboarding-model.test.ts (2 tests) 8ms
+apps/web test:  Test Files  11 passed (11)
+apps/web test:       Tests  78 passed (78)
+apps/web test:    Start at  19:10:43
+apps/web test:    Duration  3.61s (transform 1.73s, setup 0ms, collect 6.19s, tests 765ms, environment 3ms, prepare 5.51s)
+packages/agent-runtime test: Done
+apps/web test: Done
+apps/server test$ vitest run --passWithNoTests
+apps/server test:  RUN  v3.2.7 /Users/norda/Development/zhilu-roadmapper/zhilu/apps/server
+apps/server test:  ✓ src/roadmapper-evidence-usage.test.ts (5 tests) 777ms
+apps/server test:    ✓ Roadmapper evidence use at the live Baseline boundary > corrects an all-AI draft when partial research contains usable evidence without repeating research  423ms
+apps/server test:  ✓ src/insufficient-sources-cross-language.test.ts (1 test) 1082ms
+apps/server test:    ✓ passes real Python partial output through spawn, TS validation and model planning without adopting rejected claims  1080ms
+apps/server test:  ✓ src/live-evidence.test.ts (17 tests) 942ms
+apps/server test:  ✓ src/pending-lifecycle.test.ts (6 tests) 1025ms
+apps/server test:    ✓ pending proposal restoration > restores only current-project/current-version proposals, newest event first, without changing saved records  308ms
+apps/server test:  ✓ src/zhihu-cross-language.test.ts (1 test) 1959ms
+apps/server test:    ✓ accepts real Python compiler output across UTF-8 and codepoint offsets  1958ms
+apps/server test:  ✓ src/event-replan.test.ts (15 tests) 1679ms
+apps/server test:    ✓ model event replanning HTTP boundary > proposes dates without retrieval, then stores processing evidence only after approval  364ms
+apps/server test:  ✓ src/live-baseline.test.ts (19 tests) 1714ms
+apps/server test:    ✓ live research Baseline orchestration > keeps live research pending, then commits the user-selected route  419ms
+apps/server test:  ✓ src/roadmapper-budget.test.ts (6 tests) 849ms
+apps/server test:    ✓ Roadmapper weekly tolerance HTTP configuration > accepts a tolerated overrun with explicit warnings and unchanged confirmed hours, and persists the policy before model execution  638ms
+apps/server test:  ✓ src/roadmapper-corrections.test.ts (8 tests) 1051ms
+apps/server test:    ✓ bounded Roadmapper correction at the live Baseline boundary > corrects an unused route citation with 'sufficient' evidence using the same compressed research  441ms
+apps/server test:  ✓ src/zhihu-retrieval-v3.test.ts (12 tests) 1284ms
+apps/server test:  ✓ src/roadmapper-dependencies.test.ts (4 tests) 1181ms
+apps/server test:    ✓ Roadmapper dependency HTTP boundary > accepts an unordered same-week DAG and retains Engine hard dependency enforcement after apply  641ms
+apps/server test:  ✓ src/index.test.ts (6 tests) 834ms
+apps/server test:    ✓ local API > persists an approved event as a new commit  410ms
+apps/server test:  ✓ src/baseline-revision.test.ts (4 tests) 936ms
+apps/server test:    ✓ plan conversation before confirmation > uses cached evidence, preserves conversation, rejects stale confirmation, and writes only when confirmed  696ms
+apps/server test:  ✓ src/m3-replay.test.ts (41 tests) 1199ms
+apps/server test:  ✓ src/research-controller.test.ts (16 tests) 490ms
+apps/server test:  ✓ src/dogfood-regressions.test.ts (3 tests) 537ms
+apps/server test:    ✓ dogfood: protected event records and configuration visibility > keeps a completed node unchanged and saves a separate event only after approval  429ms
+apps/server test:  ✓ scripts/research_zhihu.test.ts (18 tests) 400ms
+apps/server test:  ✓ src/zhihu-provider.test.ts (40 tests) 5136ms
+apps/server test:    ✓ Python provider transport > kills the Python replacement and its descendant on timeout  1510ms
+apps/server test:    ✓ Python provider transport > keeps valid stdout authoritative over contradictory stderr metadata  380ms
+apps/server test:  ✓ src/interview.test.ts (8 tests) 358ms
+apps/server test:  ✓ src/roadmapper-provider.test.ts (42 tests) 253ms
+apps/server test:  ✓ src/zhihu-boundary.test.ts (53 tests) 107ms
+apps/server test:  ✓ scripts/test_m2_followup.test.ts (11 tests) 26ms
+apps/server test:  ✓ src/zhihu-followup.test.ts (11 tests) 6055ms
+apps/server test:    ✓ accepts actual batch worker output for programming  2053ms
+apps/server test:    ✓ accepts actual batch worker output for writing  2149ms
+apps/server test:  ✓ src/m2-context.test.ts (7 tests) 8ms
+apps/server test:  ✓ src/zhihu-adapter.test.ts (1 test) 4ms
+apps/server test:  Test Files  25 passed (25)
+apps/server test:       Tests  355 passed (355)
+apps/server test:    Start at  19:10:47
+apps/server test:    Duration  7.25s (transform 1.77s, setup 0ms, collect 8.85s, tests 29.89s, environment 8ms, prepare 7.84s)
+apps/server test: Done

@@ -1,0 +1,41 @@
+{
+  "mode": "Frontend fixtures and intercepted interview responses",
+  "results": [
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "goalForm": true,
+      "mixedQuestions": true,
+      "summary": true,
+      "summaryFooter": {
+        "x": 349,
+        "y": 795,
+        "width": 742,
+        "height": 75
+      },
+      "researchEntry": true,
+      "candidateSwitch": true,
+      "planConfirmationVisible": true
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "goalForm": true,
+      "mixedQuestions": true,
+      "summary": true,
+      "summaryFooter": {
+        "x": 33,
+        "y": 751,
+        "width": 324,
+        "height": 75
+      },
+      "researchEntry": true,
+      "candidateSwitch": true,
+      "planConfirmationVisible": true
+    }
+  ]
+}

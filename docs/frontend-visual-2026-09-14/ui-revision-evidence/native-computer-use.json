@@ -1,0 +1,23 @@
+{
+  "app": "Google Chrome",
+  "url": "http://127.0.0.1:5178/?project=hybrid-preview&page=roadmap",
+  "observations": [
+    {
+      "action": "点击卡片的记录任务变更按钮",
+      "result": "显示任务范围，焦点进入变更说明文本区域"
+    },
+    {
+      "action": "在同日看板内向下滚动",
+      "result": "最后一项整理验收材料完整显示，其他日期卡片不纵向滚动"
+    },
+    {
+      "action": "点击整理验收材料",
+      "result": "右侧任务详情显示日期、状态、交付要求和依据"
+    },
+    {
+      "action": "详情内点击记录任务变更",
+      "result": "初次复现焦点回到卡片；修复后复验 focused UI element 为变更说明文本输入区"
+    }
+  ],
+  "businessRequestsSent": false
+}

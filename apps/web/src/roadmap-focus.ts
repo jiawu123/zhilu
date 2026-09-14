@@ -15,6 +15,11 @@ export function getWeekFocusTasks(tasks: PlanNode[], todayIso: string, limit = 3
   return candidates.slice(0, limit);
 }
 
+export function weekFocusTitle(tasks: PlanNode[], todayIso: string): string {
+  const end = shiftIsoDate(todayIso, 6);
+  return tasks.length && tasks.every(task => task.startDate && task.startDate > end) ? "后续任务" : "接下来 7 天";
+}
+
 function compareByStartDate(left: PlanNode, right: PlanNode): number {
   return (left.startDate ?? "9999-12-31").localeCompare(right.startDate ?? "9999-12-31");
 }

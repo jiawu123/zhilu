@@ -98,7 +98,7 @@ describe("Roadmap details focus on execution after confirmation", () => {
     node.acceptanceCriteria = ["记录三条反馈"];
     const before = structuredClone(plan), html = renderInspector(plan, taskId);
     expect(html).toContain("保存修改");
-    expect(html).toContain("抵达此站");
+    expect(html).toContain("标记完成");
     expect(html).toContain("提交一份可检查的成果");
     expect(html).toContain("记录本次执行的结果");
     expect(html).toContain("记录三条反馈");
@@ -141,7 +141,7 @@ describe("insufficient research remains visible without becoming adopted evidenc
     expect(html).toContain("未作为计划依据的知乎原帖 · 1");
     expect(html).toContain('class="insufficient-source-tag">证据不足');
     expect(html).not.toContain("查看推荐依据");
-    expect(html).not.toContain("查看这条路线的原始依据");
+    expect(html).not.toContain("查看方案原始依据");
   });
 
   it("preserves CRLF, emoji, escaped text, original source and retrieval time", () => {
@@ -187,7 +187,7 @@ describe("insufficient research remains visible without becoming adopted evidenc
     const mock = proposal([]);
     mock.researchRun.mode = "mock";
     delete mock.roadmapper;
-    expect(renderProposal(mock)).toContain("这是机制演示，不是已验证的知乎研究结论");
+    expect(renderProposal(mock)).toContain("演示方案仅用于功能展示，未经真实研究验证");
     expect(renderProposal(mock)).not.toContain("模型根据已确认的目标与背景生成了暂定计划");
   });
 
@@ -224,8 +224,8 @@ describe("weekly budget flexibility is disclosed for the selected route", () => 
     const before = structuredClone(value);
     const html = renderProposal(value);
     expect(html).toContain("时间安排提醒");
-    expect(html).toContain("第2周：预计需要约5小时30分钟，比你原定的时间多约30分钟。");
-    expect(html).toContain("如果抽不出这些时间");
+    expect(html).toContain("第2周：预计需要约5小时30分钟，比原定投入时间多约30分钟。");
+    expect(html).toContain("如无法增加投入时间");
     expect(html).not.toContain("本周上限");
     expect(value).toEqual(before);
     expect(html).toContain("第一天🗾\r\n第二天 &lt;注意&gt;");
@@ -253,7 +253,7 @@ describe("weekly budget flexibility is disclosed for the selected route", () => 
     const value = proposal();
     value.roadmapper!.weeklyOverruns = [{ ...overrun, capacityHours: 3.33, plannedHours: 3.63, toleranceHours: 0.33 }];
     const html = renderProposal(value);
-    expect(html).toContain("第2周：预计需要约3小时38分钟，比你原定的时间多约18分钟。");
+    expect(html).toContain("第2周：预计需要约3小时38分钟，比原定投入时间多约18分钟。");
     expect(html).not.toContain("3.66小时");
     expect(html).not.toContain("0.299999");
   });
@@ -262,7 +262,7 @@ describe("weekly budget flexibility is disclosed for the selected route", () => 
     const value = proposal();
     value.roadmapper!.weeklyOverruns = [{ ...overrun, week: 14, capacityHours: 0.71, plannedHours: 0.78 }];
     const html = renderProposal(value);
-    expect(html).toContain("第14周：预计需要约47分钟，比你原定的时间多约4分钟。");
+    expect(html).toContain("第14周：预计需要约47分钟，比原定投入时间多约4分钟。");
     expect(html).not.toContain("0.07小时");
   });
 

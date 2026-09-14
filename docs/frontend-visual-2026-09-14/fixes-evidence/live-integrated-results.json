@@ -1,0 +1,53 @@
+{
+  "startedAt": "2026-09-14T11:36:59.890Z",
+  "steps": [
+    {
+      "path": "/research/live/baseline",
+      "status": 502,
+      "durationMs": 8018,
+      "error": {
+        "error": "知乎检索与证据处理：知乎证据编译失败，模型返回未通过证据校验；请查看后端诊断后重试。",
+        "code": "process_failed",
+        "controller": {
+          "coverage": {
+            "status": "insufficient",
+            "evidenceCount": 0,
+            "targetMin": 6,
+            "targetMax": 8,
+            "hasCaveat": false,
+            "gaps": [
+              {
+                "kind": "evidence_count",
+                "reason": "尚未取得研究证据"
+              }
+            ],
+            "reviewStatus": "needs_human_review"
+          },
+          "questionCoverage": [],
+          "rounds": 1,
+          "queryBudget": 6,
+          "queriesAttempted": 2,
+          "searchCallsAttempted": 2,
+          "cacheHits": 0,
+          "stages": [
+            {
+              "stage": "plan",
+              "durationMs": 5819,
+              "status": "ready_for_review"
+            },
+            {
+              "stage": "research",
+              "requestId": "rq-live-ebe99a49-a84d-4a5e-a424-19a5ad17b8c3",
+              "durationMs": 2170,
+              "status": "failed"
+            }
+          ],
+          "stopReason": "compilation_failed"
+        }
+      }
+    }
+  ],
+  "completed": false,
+  "failure": "502 /research/live/baseline",
+  "finishedAt": "2026-09-14T11:37:07.910Z"
+}

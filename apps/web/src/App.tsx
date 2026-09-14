@@ -1,6 +1,7 @@
 import { trackedFetch, useRequestProgress } from "./request-progress";
 import { WaitStatus } from "./WaitStatus";
-import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
+import { RoadmapChat } from "./RoadmapChat";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type {
   BaselineProposal,
   CreateProjectInput,
@@ -16,21 +17,25 @@ import type {
   RoadmapperRun,
   RoadmapView,
 } from "@zhilu/contracts";
-import { positionDateInRange, shiftIsoDate, weeksFromDragDistance } from "./roadmap-date";
-import { getWeekFocusTasks } from "./roadmap-focus";
+import { shiftIsoDate } from "./roadmap-date";
+import { getWeekFocusTasks, weekFocusTitle } from "./roadmap-focus";
 import { getPlanDiff } from "./plan-diff";
-import { RoadmapChat } from "./RoadmapChat";
-import { WorkspaceDialog } from "./WorkspaceDialog";
+import { selectCurrentPending } from "./pending-selection";
 import { formatApiError } from "./api-error";
 import { Onboarding } from "./Onboarding";
 import { readFlowPage, resolveFlowPage, type FlowPage } from "./onboarding-model";
 import { InsufficientEvidenceNotice, InsufficientSourcesDisclosure } from "./ResearchEvidence";
 import { WeeklyOverrunNotice } from "./WeeklyOverrunNotice";
+import { TaskDeadline } from "./RoadmapTimeline";
+import { RoadmapBoard } from "./RoadmapBoard";
+import { ModalSurface, ConfirmDialog } from "./ModalSurface";
+import { Brand } from "./Brand";
+import { globalChangeContext, type ChangeContext } from "./ChangeComposer";
+import { ErrorNotice } from "./ErrorNotice";
+import { draftFromNode, nodeEdits, type NodeDraft } from "./node-edits";
 
 const demoProjectId = "agent-engineer-demo";
 const initialProjectId = new URLSearchParams(window.location.search).get("project") ?? demoProjectId;
-const canvasWidth = 1200;
-const canvasHeight = 650;
 
 interface PendingChange {
   event: PlanEvent;
@@ -63,40 +68,19 @@ interface WorkspacePayload {
   baselineProposals: BaselineProposal[];
 }
 
-interface GraphPoint {
-  id: string;
-  x: number;
-  y: number;
-}
-
-interface NodeDragState {
-  id: string;
-  pointerId: number;
-  startX: number;
-  currentX: number;
-  weeks: number;
-  pixelsPerWeek: number;
-  scale: number;
-}
-
-interface CanvasPanState {
-  pointerId: number;
-  startX: number;
-  startY: number;
-  originX: number;
-  originY: number;
-}
-
-interface PanOffset {
-  x: number;
-  y: number;
-}
-
-export function App({ interviewStorageKey = "zhilu-interview:local", onOpenHistory }: { interviewStorageKey?: string; onOpenHistory?: () => void }) {
+export function App({ interviewStorageKey = "zhilu-interview:local", onOpenHistory, accountControls }: { interviewStorageKey?: string; onOpenHistory?: () => void; accountControls?: ReactNode }) {
   const [activeProjectId, setActiveProjectId] = useState(initialProjectId);
   const [workspace, setWorkspace] = useState<WorkspacePayload | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [roadmapEntry, setRoadmapEntry] = useState<"project" | "generated">("project");
+  const [addingTask, setAddingTask] = useState(false);
+  const [archivingNode, setArchivingNode] = useState<PlanNode | null>(null);
+  const [pending, setPending] = useState<PendingChange | null>(null);
+  const [hoursDialog, setHoursDialog] = useState(false);
+  const [changeContext, setChangeContext] = useState<ChangeContext>(globalChangeContext);
+  const openChange = (context: ChangeContext) => { setSelectedId(null); setError(null); setChangeContext({ ...context, focusKey: Date.now() }); };
+  useEffect(() => { setChangeContext(globalChangeContext); }, [activeProjectId]);
   const [page, setPage] = useState<FlowPage>(() => readFlowPage(window.location.search));
   const navigate = (next: FlowPage, projectId = activeProjectId) => {
     window.history.pushState(null, "", `?project=${encodeURIComponent(projectId)}&page=${next}`);
@@ -115,9 +99,15 @@ export function App({ interviewStorageKey = "zhilu-interview:local", onOpenHisto
   const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [replanning, setReplanning] = useState(false);
+  const [pendingError, setPendingError] = useState<string | null>(null);
+  const [unchangedReplan, setUnchangedReplan] = useState<UnchangedEventReplan | null>(null);
 
   const acceptWorkspace = (payload: WorkspacePayload | null) => {
     setWorkspace(payload);
+    setPending(payload ? selectCurrentPending(payload.pending, payload.plan) : null);
+    setPendingError(null);
+    setUnchangedReplan(null);
   };
 
   const loadGeneration = useRef(0);
@@ -147,6 +137,7 @@ export function App({ interviewStorageKey = "zhilu-interview:local", onOpenHisto
   const selectedNode = workspace?.plan.nodes.find((node) => node.id === selectedId) ?? null;
 
   const updateNode = async (nodeId: string, changes: PlanNodeUpdate) => {
+    if (!Object.keys(changes).length) return;
     setBusy(true);
     try {
       await api(`/api/projects/${activeProjectId}/nodes/${nodeId}`, {
@@ -163,15 +154,14 @@ export function App({ interviewStorageKey = "zhilu-interview:local", onOpenHisto
 
   const rescheduleNode = async (node: PlanNode, weeks: number) => {
     if (weeks === 0) return;
-    const changes: PlanNodeUpdate = { adjustmentReason: `在路线图上拖动，${weeks > 0 ? "顺延" : "提前"} ${Math.abs(weeks)} 周` };
+    const changes: PlanNodeUpdate = { adjustmentReason: `在路线流程图中拖动，${weeks > 0 ? "顺延" : "提前"} ${Math.abs(weeks)} 周` };
     if (node.startDate) changes.startDate = shiftIsoDate(node.startDate, weeks * 7);
     if (node.endDate) changes.endDate = shiftIsoDate(node.endDate, weeks * 7);
     await updateNode(node.id, changes);
   };
 
-  const addTask = async () => {
-    const title = window.prompt("给这枚新路标起个名字");
-    if (!title?.trim() || !workspace) return;
+  const addTask = async (title: string) => {
+    if (!title.trim() || !workspace || busy) return;
     const milestone = workspace.view.milestones[0]?.milestone;
     const today = new Date().toISOString().slice(0, 10);
     const node: PlanNode = {
@@ -190,6 +180,7 @@ export function App({ interviewStorageKey = "zhilu-interview:local", onOpenHisto
     setBusy(true);
     try {
       await api(`/api/projects/${activeProjectId}/nodes`, { method: "POST", body: JSON.stringify(node) });
+      setAddingTask(false);
       setSidebarOpen(false);
       setSelectedId(node.id);
       await load();
@@ -200,17 +191,82 @@ export function App({ interviewStorageKey = "zhilu-interview:local", onOpenHisto
     }
   };
 
+  const submitHoursEvent = async (weeklyHours: number) => {
+    setBusy(true);
+    try {
+      const result = await api<PendingChange & { before: PlanState }>(`/api/projects/${activeProjectId}/events`, {
+        method: "POST",
+        body: JSON.stringify({
+          type: "constraint_changed",
+          title: "每周可投入时间变化",
+          description: `每周投入调整为 ${weeklyHours} 小时`,
+          targetNodeIds: [],
+          changes: { weeklyHours },
+        }),
+      });
+      setPending(result);
+      setPendingError(null);
+      setUnchangedReplan(null);
+      setHoursDialog(false);
+      setSelectedId(null);
+      setError(null);
+    } catch (requestError) {
+      setError(toMessage(requestError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const archiveNode = async (node: PlanNode) => {
-    if (!window.confirm(`收起“${node.title}”？它会保留在版本历史中。`)) return;
     setBusy(true);
     try {
       await api(`/api/projects/${activeProjectId}/nodes/${node.id}`, { method: "DELETE" });
+      setArchivingNode(null);
       setSelectedId(null);
       await load();
     } catch (requestError) {
       setError(toMessage(requestError));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const applyPending = async () => {
+    if (!pending || unchangedReplan?.patchId === pending.patch.id || pending.patch.baseVersion !== workspace?.plan.version) return;
+    setBusy(true);
+    setPendingError(null);
+    try {
+      await api(`/api/projects/${activeProjectId}/diff/apply`, {
+        method: "POST",
+        body: JSON.stringify({ patchId: pending.patch.id }),
+      });
+      setPending(null);
+      await load();
+    } catch (requestError) {
+      setPendingError(toMessage(requestError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const replanPending = async () => {
+    if (!pending || pending.patch.baseVersion !== workspace?.plan.version) return;
+    setBusy(true);
+    setReplanning(true);
+    setPendingError(null);
+    try {
+      const result = await api<EventReplanResponse>(`/api/projects/${activeProjectId}/diff/replan`, {
+        method: "POST",
+        body: JSON.stringify({ patchId: pending.patch.id }),
+      });
+      const next = mergeEventReplanResponse(pending, result);
+      setPending(next.pending);
+      setUnchangedReplan(next.unchangedReplan);
+    } catch (requestError) {
+      setPendingError(`AI 排期未完成，原变更预览已保留。${toMessage(requestError)}`);
+    } finally {
+      setBusy(false);
+      setReplanning(false);
     }
   };
 
@@ -224,6 +280,7 @@ export function App({ interviewStorageKey = "zhilu-interview:local", onOpenHisto
       });
       loadGeneration.current += 1;
       sessionStorage.removeItem(interviewStorageKey);
+      setRoadmapEntry("generated");
       acceptWorkspace(created);
       setBaselineProposal(null);
       setSelectedRouteId(null);
@@ -275,6 +332,7 @@ export function App({ interviewStorageKey = "zhilu-interview:local", onOpenHisto
         method: "POST",
         body: JSON.stringify({ proposalId: baselineProposal.id, routeId: selectedRouteId }),
       });
+      setRoadmapEntry("generated");
       acceptWorkspace(payload);
       setBaselineProposal(null);
       setSelectedRouteId(null);
@@ -301,11 +359,11 @@ export function App({ interviewStorageKey = "zhilu-interview:local", onOpenHisto
     finally { setBusy(false); }
   };
 
-  if (page === "interview") return <Onboarding storageKey={interviewStorageKey} busy={busy} error={error}
+  if (page === "interview") return <Onboarding accountControls={accountControls} storageKey={interviewStorageKey} busy={busy} error={error}
     onClose={() => { setError(null); navigate("roadmap"); }} onCreate={input => void createProject(input)} />;
 
   if (workspace?.plan.projectId === activeProjectId && resolveFlowPage(page, workspace.plan.evidence.some(item => item.riskTags.includes("等待知乎研究"))) === "plan" && (baselineProposal || workspace.plan.evidence.some(item => item.riskTags.includes("等待知乎研究")))) {
-    return <ResearchStudio proposal={baselineProposal} selectedRouteId={selectedRouteId} busy={busy} error={error}
+    return <ResearchStudio accountControls={accountControls} proposal={baselineProposal} selectedRouteId={selectedRouteId} busy={busy} error={error}
       onClose={() => { setError(null); navigate("interview"); }} onRunLive={() => void runLiveResearch()}
       onRunMock={() => void runMockResearch()} onSelectRoute={setSelectedRouteId}
       onRevise={message => void revisePlan(message)} onApply={() => void applyBaseline()} />;
@@ -313,9 +371,9 @@ export function App({ interviewStorageKey = "zhilu-interview:local", onOpenHisto
 
   if (!workspace || workspace.plan.projectId !== activeProjectId) {
     return (
-      <main className="loading-screen">
-        <div className="loading-orbit"><span>路</span></div>
-        <p>{error ?? "正在展开你的路线…"}</p>
+      <main className="loading-screen"><div className="flow-account-controls">{accountControls}</div>
+        <Brand />
+        <p>{error ?? "正在加载项目计划"}</p>
         {error && <button onClick={() => void load()}>重新连接</button>}
       </main>
     );
@@ -330,59 +388,55 @@ export function App({ interviewStorageKey = "zhilu-interview:local", onOpenHisto
   return (
     <div className={`app-shell ${sidebarOpen ? "sidebar-is-open" : ""} ${selectedNode ? "inspector-is-open" : ""}`}>
       <header className="floating-header">
-        <button className="brand-toggle" onClick={() => setSidebarOpen((open) => !open)} aria-label="打开计划菜单">
-          <span className="brand-symbol">路</span><span className="brand-word">知路</span><span className="menu-glyph">{sidebarOpen ? "×" : "≡"}</span>
-        </button>
-        <button className="goal-capsule" onClick={() => setSidebarOpen(true)}>
-          <span className="goal-spark">✦</span>
-          <span className="goal-copy"><small>{researchPending ? "研究准备版" : workspace.plan.research?.mode === "mock" ? "Mock 研究路线" : "正在前往"}</small><strong>{workspace.plan.goal}</strong></span>
-          <span className="goal-progress">{progress}%</span>
-        </button>
+        <button className="brand-toggle" onClick={() => setSidebarOpen(true)} aria-label="打开计划菜单"><Brand /></button>
+        <nav className="workspace-nav" aria-label="项目导航"><span aria-current="page">任务流程</span><button onClick={() => setSidebarOpen(true)}>项目信息</button></nav>
+        <div className="workspace-project"><small>{researchPending ? "待研究" : workspace.plan.research?.mode === "mock" ? "演示计划" : workspace.plan.research?.roadmapper?.evidenceStatus === "insufficient" ? "证据待补充" : "项目计划"}</small><strong title={workspace.plan.goal}>{workspace.plan.goal}</strong></div>
+        <span className="workspace-progress">完成率 <strong>{progress}%</strong></span>
+        <button className="header-add-task" disabled={busy} onClick={() => { setError(null); setAddingTask(true); }}>＋ 新增任务</button>
+        {accountControls}
       </header>
-
-      {error && <div className="error-toast">{error}<button onClick={() => setError(null)}>×</button></div>}
-
-      <RoadmapGraph workspace={workspace} selectedId={selectedId} focusId={focusTasks[0]?.id ?? null} pending={null} onSelect={setSelectedId} onReschedule={(node, weeks) => void rescheduleNode(node, weeks)} />
-
-      <div className="canvas-hint"><span className="hint-dot" /> 拖动画布查看全图 · 横向拖动路标按周改期</div>
-      <div className="commit-whisper">v{workspace.plan.currentCommitId}</div>
-
+      <RoadmapBoard entryMode={roadmapEntry} plan={workspace.plan} selectedId={selectedId} focusId={focusTasks[0]?.id ?? null} affectedIds={pending?.impact.affectedNodeIds ?? []} busy={busy} onSelect={setSelectedId} onReschedule={(node, weeks) => void rescheduleNode(node, weeks)} onChange={openChange} />
+      <RoadmapChat key={activeProjectId} plan={workspace.plan} onApplied={load} context={changeContext} onResetContext={() => openChange(globalChangeContext)} onEditHours={() => { setError(null); setHoursDialog(true); }} externalBusy={busy} externalError={!hoursDialog && !addingTask && !archivingNode && !selectedNode ? error : null} />
+      <div className="canvas-hint">滚动查看任务流程 · 点击任务查看详情</div>
+      <div className="commit-whisper">版本 {workspace.plan.currentCommitId}</div>
 
       <Sidebar
         open={sidebarOpen}
         plan={workspace.plan}
         projectId={activeProjectId}
         history={workspace.history}
-        {...(onOpenHistory ? { onOpenHistory } : {})}
+        onOpenHistory={onOpenHistory ? () => { setSidebarOpen(false); onOpenHistory(); } : undefined}
         focusTasks={focusTasks}
-        pendingCount={0}
+        pendingCount={pending ? 1 : 0}
         busy={busy}
         onClose={() => setSidebarOpen(false)}
-        onAddTask={() => void addTask()}
-        onNewProject={() => { setSidebarOpen(false); setError(null); navigate("interview"); }}
+        onAddTask={() => { setError(null); setAddingTask(true); }}
+        onNewProject={() => { window.location.assign("/?page=interview&new=1"); }}
         onSelectTask={(id) => { setSidebarOpen(false); setSelectedId(id); }}
       />
 
       <Inspector
         node={selectedNode}
+        error={error}
         busy={busy}
         onClose={() => setSelectedId(null)}
         onSave={(changes) => selectedNode && void updateNode(selectedNode.id, changes)}
-        onComplete={() => selectedNode && void updateNode(selectedNode.id, { status: "done", adjustmentReason: "用户在路线图中标记抵达" })}
-        onArchive={() => selectedNode && void archiveNode(selectedNode)}
+        onComplete={() => selectedNode && void updateNode(selectedNode.id, { status: "done", adjustmentReason: "用户在任务流程图中标记完成" })}
+        onReportChange={() => selectedNode && openChange({ kind: "task", label: selectedNode.title, nodeIds: [selectedNode.id] })}
+        onArchive={() => { setError(null); setArchivingNode(selectedNode); }}
       />
 
-      {(sidebarOpen || selectedNode) && (
-        <button className="drawer-scrim" aria-label="关闭面板" onClick={() => { setSidebarOpen(false); setSelectedId(null); }} />
-      )}
-
-      <RoadmapChat key={activeProjectId} plan={workspace.plan} onApplied={load} />
+      {addingTask && <NewTaskDialog busy={busy} error={error} onClose={() => setAddingTask(false)} onSubmit={title => void addTask(title)} />}
+      {archivingNode && <ConfirmDialog title="归档任务？" description={`确认归档“${archivingNode.title}”。归档后将从当前视图移除，相关记录保留在版本历史中。`} confirmLabel="确认归档" busy={busy} onCancel={() => setArchivingNode(null)} onConfirm={() => void archiveNode(archivingNode)}>{error && <ErrorNotice message={error} />}</ConfirmDialog>}
+      {hoursDialog && <EventDialog error={error} currentHours={workspace.plan.weeklyHours} busy={busy} onClose={() => { setHoursDialog(false); setError(null); }} onSubmitHours={(hours) => void submitHoursEvent(hours)} />}
+      {pending && <DiffPanel pending={pending} before={workspace.plan} busy={busy} replanning={replanning} error={pendingError} unchangedReplan={unchangedReplan} onApply={() => void applyPending()} onReplan={() => void replanPending()} onClose={() => { setPending(null); setUnchangedReplan(null); }} />}
 
     </div>
   );
 }
 
-export function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose, onRunLive, onRunMock, onSelectRoute, onApply, onRevise }: {
+export function ResearchStudio({ accountControls, proposal, selectedRouteId, busy, error, onClose, onRunLive, onRunMock, onSelectRoute, onApply, onRevise }: {
+  accountControls?: ReactNode;
   proposal: BaselineProposal | null;
   selectedRouteId: string | null;
   busy: boolean;
@@ -398,19 +452,23 @@ export function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose
   const requests = useRequestProgress();
   const progress = requests.filter(item => item.path.includes("/baseline")).at(-1);
   const applying = busy && progress?.path.endsWith("/baseline/apply");
+  const pageRef = useRef<HTMLElement>(null);
+  const hasProposal = Boolean(proposal);
+  useEffect(() => { pageRef.current?.scrollTo(0, 0); }, [hasProposal]);
   useEffect(() => { setMessage(""); }, [proposal?.id]);
   if (!proposal) {
-    return <main className="flow-page plan-page"><section className="research-intro" aria-labelledby="research-title">
-      <button className="research-close" disabled={busy} onClick={onClose}>返回访谈</button>
-      <div className="research-constellation"><span>问</span><i /><i /><i /></div>
+    return <main ref={pageRef} className="flow-page plan-page"><div className="flow-account-controls">{accountControls}</div><section className="research-intro" aria-labelledby="research-title">
+      <button className="research-close" disabled={busy} onClick={onClose}>返回背景资料</button>
+      <Brand />
       <p className="section-kicker">02 · 生成计划草稿</p>
-      <h2 id="research-title">先让证据回来，<br />再决定走哪条路。</h2>
-      <p>从你的目标与背景出发，检索知乎证据，再规划路线、任务与时间。你可以检查依据，选好路线后再点亮图。</p>
-      <div className="research-steps"><span><b>01</b>拆出研究问题</span><span><b>02</b>检索并压缩证据</span><span><b>03</b>你确认后写入图</span></div>
-      {error && <div className="research-error" role="alert">{error}</div>}
-      {busy && <div className="inline-operation-status"><WaitStatus label="正在准备知乎研究与计划生成…" progress={progress} /></div>}
-      <button className="research-primary" disabled={busy} onClick={onRunLive}>{busy ? "正在研究并规划路线…" : "用知乎证据规划路线"}<span>→</span></button>
-      <button className="research-secondary" disabled={busy} onClick={onRunMock}>本机尚未配置？使用 Mock 演示</button>
+      <h2 id="research-title">研究依据与计划编制</h2>
+      <p>根据已确认的目标与背景检索相关依据，形成候选方案及任务安排。请审阅方案内容后确认应用。</p>
+      <div className="research-steps"><span><b>01</b>明确研究问题</span><span><b>02</b>检索与整理依据</span><span><b>03</b>确认并生成计划</span></div>
+      {error && <ErrorNotice message={error} />}
+      {busy && <div className="inline-operation-status"><WaitStatus label="正在准备研究与计划生成" progress={progress} /></div>}
+      {busy && <div className="plan-loading-preview" aria-hidden="true"><div><i /><span /><span /></div><b>→</b><div><i /><span /><span /></div><b>→</b><div><i /><span /><span /></div></div>}
+      <button className="research-primary" disabled={busy} onClick={onRunLive}>{busy ? "正在生成研究方案" : "生成研究方案"}<span>→</span></button>
+      <button className="research-secondary" disabled={busy} onClick={onRunMock}>查看演示方案</button>
     </section></main>;
   }
   const isLive = proposal.researchRun.mode === "live";
@@ -425,29 +483,29 @@ export function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose
   const routeEvidence = researchEvidence.filter((card) => route?.evidenceIds.includes(card.id));
   const queryCount = proposal.researchRun.questions.reduce((sum, question) => sum + question.searchQueries.length, 0);
   return (
-    <main className="flow-page plan-page">
+    <main ref={pageRef} className="flow-page plan-page"><div className="flow-account-controls">{accountControls}</div>
       <section className="route-lab" aria-labelledby="route-lab-title">
-        <button className="research-close" disabled={busy} onClick={onClose}>返回访谈</button>
+        <button className="research-close" disabled={busy} onClick={onClose}>返回背景资料</button>
         <header>
           <div>
-            <p className="section-kicker">{roadmapper ? "模型路线草案" : isLive ? "规则路线草案" : "演示路线草案"} · 尚未写入</p>
-            <h2 id="route-lab-title">先把计划商量好</h2>
+            <Brand /><p className="section-kicker">{roadmapper ? "模型路线草案" : isLive ? "规则路线草案" : "演示路线草案"} · 尚未写入</p>
+            <h2 id="route-lab-title">候选方案审阅</h2>
           </div>
           <div className="research-metrics">
             <span><b>{proposal.researchRun.questions.length}</b>问题</span>
             <span><b>{queryCount}</b>检索词</span>
             <span><b>{researchEvidence.length}</b>{isLive ? "知乎证据" : "演示证据"}</span>
           </div>
-          {error && <div className="research-error" role="alert">{error}</div>}
+          {error && <ErrorNotice message={error} />}
         </header>
         {insufficient && <InsufficientEvidenceNotice />}
         <InsufficientSourcesDisclosure sources={insufficientSources} showEmpty={insufficient && !researchEvidence.some(card => card.sourceType === "zhihu")} />
         <div className="route-lab-grid">
           <section className="route-choice">
-            <p className="section-kicker">选择路线</p>
+            <p className="section-kicker">选择方案</p>
             {roadmapper && (
               <div className="route-recommendation">
-                <small>为什么推荐这个起点</small>
+                <small>推荐依据</small>
                 <p>{roadmapper.recommendationReason}</p>
                 <EvidenceDisclosure label="查看推荐依据" evidence={recommendationEvidence} />
               </div>
@@ -456,8 +514,8 @@ export function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose
               <button key={candidate.id} aria-pressed={candidate.id === route?.id} className={candidate.id === route?.id ? "is-selected" : ""} disabled={busy} onClick={() => onSelectRoute(candidate.id)}>
                 <span className="route-radio" />
                 <div>
-                  <small>{candidate.id === proposal.recommendedRouteId ? "推荐起点" : "另一种节奏"}</small>
-                  <h3>{candidate.title}</h3>
+                  <small>{candidate.id === proposal.recommendedRouteId ? "推荐方案" : "备选方案"}</small>
+                  <h3>{candidate.title === "先做出来" ? "成果导向方案" : candidate.title === "先练基本功" ? "能力建设方案" : candidate.title}</h3>
                   <p>{candidate.summary}</p>
                   <em>适合：{candidate.applicableWhen.join(" · ")}</em>
                 </div>
@@ -467,11 +525,11 @@ export function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose
               <div className="selected-route-details" key={route.id}>
                 {route.risks.length > 0 && (
                   <details className="research-details planning-warnings">
-                    <summary>这条路线的 {route.risks.length} 个风险与取舍</summary>
+                    <summary>方案风险与取舍：{route.risks.length} 项</summary>
                     <ul>{route.risks.map((risk, index) => <li key={index}>{risk}</li>)}</ul>
                   </details>
                 )}
-                <EvidenceDisclosure label="查看这条路线的原始依据" evidence={routeEvidence} />
+                <EvidenceDisclosure label="查看方案原始依据" evidence={routeEvidence} />
                 {preview && <EvidenceApplications applications={roadmapper?.evidenceApplications} routeId={route.id}
                   evidence={preview.evidence} nodes={preview.nodes} />}
               </div>
@@ -480,15 +538,16 @@ export function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose
           <section className="preview-rail" key={route?.id}>
             <p className="section-kicker">计划内容</p>
             <WeeklyOverrunNotice overruns={roadmapper?.weeklyOverruns} routeId={route?.id} />
-            {roadmapper && <p className="preview-note">任务拆分、日期与工时是 AI 推断，确认后仍可在图上调整。</p>}
+            {roadmapper && <p className="preview-note">任务拆分、日期与工时是 AI 推断，确认后仍可在任务详情中调整。</p>}
             {preview?.nodes.filter((node) => node.type === "task").map((node, index) => (
               <article className="preview-task" key={node.id}>
                 <span>{index + 1}</span>
                 <div>
                   <strong>{node.title}</strong>
                   <small>{formatDateRange(node)} · {node.estimatedHours ?? "—"}h</small>
+                  <TaskDeadline task={node} />
                   {roadmapper && !preview.evidence.some(card => card.sourceType === "zhihu" && node.evidenceIds.includes(card.id))
-                    && <p className="inference-note">AI规划／待验证：这项任务尚无直接采用的知乎依据。</p>}
+                    && <p className="inference-note">AI规划／待验证：该任务尚无直接采用的知乎依据。</p>}
                   <details className="research-details">
                     <summary>产出、验收与依据</summary>
                     {node.deliverable && <p>{node.deliverable}</p>}
@@ -513,21 +572,18 @@ export function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose
             <div className="preview-note">应用后生成 v{preview?.currentCommitId}。原研究准备版仍保留在版本历史中。</div>
           </section>
           <aside className="plan-chat" aria-label="调整计划对话">
-            <h3>一起调整计划</h3>
-            <p>告诉我哪些安排不合适。每次调整都会更新左侧草稿，确认后才生成路线图。</p>
+            <h3>计划调整意见</h3>
+            <p>请填写调整事项及理由。调整结果以草案形式呈现，经确认后应用。</p>
             <div className="plan-messages" aria-live="polite">
-              {(proposal.conversation ?? []).map((entry, index) => <article key={index} className={`message-${entry.role}`}><small>{entry.role === "user" ? "你" : "知路"}</small><p>{entry.content}</p></article>)}
-              {busy && <div className="inline-operation-status"><WaitStatus label="正在发送你的调整意见…" progress={progress} /></div>}
+              {(proposal.conversation ?? []).map((entry, index) => <article key={index} className={`message-${entry.role}`}><small>{entry.role === "user" ? "提交人" : "知路"}</small><p>{entry.content}</p></article>)}
+              {busy && <div className="inline-operation-status"><WaitStatus label="正在处理调整意见" progress={progress} /></div>}
             </div>
             <form onSubmit={event => { event.preventDefault(); if (message.trim() && !busy) onRevise(message.trim()); }}>
-              <label htmlFor="plan-adjustment">你的调整意见</label>
-              <textarea id="plan-adjustment" maxLength={2000} value={message} disabled={busy || !isLive} onChange={event => setMessage(event.target.value)} placeholder="例如：前两周先做一个小成果，减少纯理论任务" />
+              <label htmlFor="plan-adjustment">调整意见</label>
+              <textarea id="plan-adjustment" maxLength={2000} value={message} disabled={busy || !isLive} onChange={event => setMessage(event.target.value)} placeholder="例如：前两周优先安排实践任务，并减少理论学习时数。" />
               <button className="research-primary" type="submit" disabled={busy || !isLive || !message.trim()}>发送并调整草稿</button>
             </form>
-            <div className="plan-confirm-action">
-              <button className="research-primary" disabled={busy || !selectedRouteId} onClick={onApply}>{applying ? "正在保存路线图…" : "直接确认当前计划 →"}</button>
-              <small>{busy && !applying ? "调整结束后即可确认最新草稿。" : "采用当前草稿，直接进入路线图，无需再次生成。"}</small>
-            </div>
+            <div className="plan-confirm-action"><button className="research-primary" disabled={busy || !selectedRouteId} onClick={onApply}>{applying ? "正在保存计划" : "确认当前方案"}</button><small>{busy && !applying ? "调整完成后可确认最新草稿。" : "应用当前草稿并进入任务流程，无需重新生成。"}</small></div>
             {!isLive && <small>演示草稿无法调用真实模型调整，请先生成知乎计划。</small>}
             <details className="research-details"><summary>查看研究问题与待确认点</summary>
               {proposal.researchRun.questions.map(question => <p key={question.question}>{question.question}</p>)}
@@ -536,8 +592,8 @@ export function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose
           </aside>
         </div>
         <footer>
-          <div><span className="route-proof-dot" /><small>{isLive ? insufficient ? "证据不足：这份暂定计划由模型推断，确认前请核实关键安排。" : "知乎内容提供依据；路线安排仍需结合你的实际情况确认。" : "这是机制演示，不是已验证的知乎研究结论。"}</small></div>
-          <button className="research-primary" disabled={busy || !selectedRouteId} onClick={onApply}>{applying ? "正在保存路线图…" : "确认当前计划，进入路线图"}<span>→</span></button>
+          <div><span className="route-proof-dot" /><small>{isLive ? insufficient ? "证据不足：当前暂定计划由模型推断，确认前请核实关键安排。" : "知乎内容提供依据；路线安排仍需结合实际情况确认。" : "演示方案仅用于功能展示，未经真实研究验证。"}</small></div>
+          <button className="research-primary" disabled={busy || !selectedRouteId} onClick={onApply}>{applying ? "正在保存计划" : "确认并应用方案"}<span>→</span></button>
         </footer>
       </section>
     </main>
@@ -573,7 +629,7 @@ function EvidenceCardView({ card, application, nodes = [] }: {
 }) {
   return (
     <article className="evidence-card">
-      <div><span>{card.sourceType === "zhihu" ? "知乎" : card.sourceType === "ai" ? "AI 推断" : card.sourceType}</span><small>{contentTypeLabel(card.contentType)} · {card.verificationStatus}</small></div>
+      <div><span>{{ zhihu: "知乎", ai: "AI 推断", user: "用户提供", official: "官方来源", engine: "计划规则" }[card.sourceType]}</span><small>{contentTypeLabel(card.contentType)} · {{ verified: "已核实", unverified: "尚未核实", not_applicable: "无需核实" }[card.verificationStatus]}</small></div>
       <h3>{card.title}</h3>
       {application && <div className="inference-note">
         <strong>模型的采用说明 · 待核实</strong>
@@ -594,127 +650,22 @@ function EvidenceCardView({ card, application, nodes = [] }: {
   );
 }
 
-function RoadmapGraph({ workspace, selectedId, focusId, pending, onSelect, onReschedule }: { workspace: WorkspacePayload; selectedId: string | null; focusId: string | null; pending: PendingChange | null; onSelect: (id: string) => void; onReschedule: (node: PlanNode, weeks: number) => void }) {
-  const [dragging, setDragging] = useState<NodeDragState | null>(null);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [panning, setPanning] = useState<CanvasPanState | null>(null);
-  const suppressClick = useRef(false);
-  const tasks = workspace.view.milestones.flatMap((group) => group.tasks);
-  const milestones = workspace.view.milestones.map((group) => group.milestone);
-  const isDense = tasks.length > 8;
-  const denseLayout = isDense ? buildDenseGraphLayout(tasks, milestones) : null;
-  const graphWidth = denseLayout?.width ?? canvasWidth;
-  const points = denseLayout?.points ?? buildGraphPoints(tasks, milestones);
-  const dateStart = milestones.flatMap(node => node.startDate ? [node.startDate] : []).sort()[0];
-  const dateEnd = milestones.flatMap(node => node.endDate ? [node.endDate] : []).sort().at(-1);
-  const pixelsPerWeek = denseLayout?.pixelsPerWeek ?? (dateStart && dateEnd && dateEnd > dateStart ? 895 * 7 / ((Date.parse(dateEnd) - Date.parse(dateStart)) / 86400000) : 72);
-  const pointMap = new Map(points.map((point) => [point.id, point]));
-  const start = { id: "start", x: 70, y: 355 };
-  const goal = { id: "goal", x: graphWidth - 70, y: 270 };
-  const mainPath = smoothPath([start, ...points, goal]);
-  const milestoneSpots = workspace.view.milestones.map((group, index) => {
-    const groupPoints = group.tasks.map((task) => pointMap.get(task.id)).filter((point): point is GraphPoint => Boolean(point));
-    return {
-      milestone: group.milestone,
-      x: groupPoints.length ? groupPoints.reduce((sum, point) => sum + point.x, 0) / groupPoints.length : 240 + index * 340,
-      y: groupPoints.length ? groupPoints.reduce((sum, point) => sum + point.y, 0) / groupPoints.length : 330,
-      rx: Math.max(150, groupPoints.length * 105),
-      index,
-    };
-  });
-  useEffect(() => { setPan({ x: 0, y: 0 }); setPanning(null); }, [workspace.plan.projectId, workspace.plan.research?.selectedRouteId, isDense]);
-
-  return (
-    <main
-      className={`graph-viewport ${panning ? "is-panning" : ""}`}
-      aria-label="Roadmap 路线图"
-      onPointerDown={(event) => beginCanvasPan(event, pan, setPanning)}
-      onPointerMove={(event) => moveCanvasPan(event, panning, setPan, denseLayout ? { width: graphWidth, height: canvasHeight } : undefined)}
-      onPointerUp={(event) => endCanvasPan(event, panning, setPanning)}
-      onPointerCancel={() => setPanning(null)}
-      onDoubleClick={(event) => { if (!(event.target as Element).closest("button")) setPan({ x: 0, y: 0 }); }}
-    >
-      <div className="ambient ambient-one" /><div className="ambient ambient-two" />
-      <div className={`graph-stage ${isDense ? "is-dense" : ""}`} style={{ "--pan-x": `${pan.x}px`, "--pan-y": `${pan.y}px`, ...(isDense ? { width: `${graphWidth}px`, height: `${canvasHeight}px` } : {}) } as CSSProperties}>
-        <svg className="route-svg" viewBox={`0 0 ${graphWidth} ${canvasHeight}`} role="img" aria-label={workspace.plan.title}>
-          <defs>
-            <linearGradient id="routeGradient" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stopColor="#f2b45a" /><stop offset="0.45" stopColor="#ff7e67" /><stop offset="1" stopColor="#8c7dff" /></linearGradient>
-            <filter id="softGlow"><feGaussianBlur stdDeviation="5" result="blur" /><feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge></filter>
-            <pattern id="dotGrid" width="28" height="28" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1.2" fill="rgba(255,255,255,.13)" /></pattern>
-          </defs>
-          <rect width={graphWidth} height={canvasHeight} fill="url(#dotGrid)" />
-          {milestoneSpots.map((spot) => <g key={spot.milestone.id} className={`phase-cloud phase-cloud-${spot.index % 3}`}><ellipse cx={spot.x} cy={spot.y} rx={spot.rx} ry="205" /></g>)}
-          <path className="route-shadow" d={mainPath} /><path className="route-path" d={mainPath} /><path className="route-spark-line" d={mainPath} />
-          {workspace.plan.relations.filter((relation) => relation.type === "depends_on").map((relation) => {
-            const source = pointMap.get(relation.sourceId); const target = pointMap.get(relation.targetId);
-            if (!source || !target) return null;
-            const affected = pending?.impact.affectedNodeIds.includes(source.id) || pending?.impact.affectedNodeIds.includes(target.id);
-            return <path key={relation.id} className={`dependency-thread ${affected ? "is-affected" : ""}`} d={smoothPath([target, source])} />;
-          })}
-          <circle className="path-traveler" r="5" filter="url(#softGlow)"><animateMotion dur="9s" repeatCount="indefinite" path={mainPath} /></circle>
-          <circle className="path-traveler path-traveler-late" r="3"><animateMotion dur="9s" begin="-4.5s" repeatCount="indefinite" path={mainPath} /></circle>
-          <g className="start-marker" transform={`translate(${start.x} ${start.y})`}><circle r="24" /><circle r="7" /><text x="0" y="45" textAnchor="middle">你在这里</text></g>
-          <g className="goal-marker" transform={`translate(${goal.x} ${goal.y})`}><circle className="goal-orbit" r="43" /><circle className="goal-core" r="24" /><text x="0" y="5" textAnchor="middle">✓</text><text x="0" y="65" textAnchor="middle">目标</text></g>
-        </svg>
-
-        {milestoneSpots.map((spot) => (
-          <button key={spot.milestone.id} className={`phase-label phase-label-${spot.index % 3}`} style={{ "--x": `${(spot.x / graphWidth) * 100}%` } as CSSProperties} onPointerDown={(event) => event.stopPropagation()} onClick={() => onSelect(spot.milestone.id)}>
-            <span>0{spot.index + 1}</span><strong>{spot.milestone.title}</strong>
-          </button>
-        ))}
-
-        {tasks.map((task, index) => {
-          const point = pointMap.get(task.id); if (!point) return null;
-          const affected = pending?.impact.affectedNodeIds.includes(task.id);
-          const dragX = dragging?.id === task.id ? dragging.weeks * dragging.pixelsPerWeek / dragging.scale : 0;
-          return (
-            <button
-              key={task.id}
-              className={`route-node status-${task.status} ${selectedId === task.id ? "is-selected" : ""} ${focusId === task.id ? "is-focus" : ""} ${affected ? "is-affected" : ""} ${dragging?.id === task.id ? "is-dragging" : ""}`}
-              style={{ "--x": `${(point.x / graphWidth) * 100}%`, "--y": `${(point.y / canvasHeight) * 100}%`, "--delay": `${index * -0.55}s`, "--drag-x": `${dragX}px` } as CSSProperties}
-              title={`${task.title} · ${formatDateRange(task)}；点击查看，水平拖动按周调整日期`}
-              onClick={(event) => { if (suppressClick.current) event.preventDefault(); else onSelect(task.id); }}
-              onPointerDown={(event) => beginNodePointerDrag(event, task.id, pixelsPerWeek, graphWidth, setDragging)}
-              onPointerMove={(event) => moveNodePointerDrag(event, dragging, setDragging)}
-              onPointerUp={(event) => endNodePointerDrag(event, task, dragging, setDragging, suppressClick, onReschedule)}
-              onPointerCancel={() => setDragging(null)}
-            >
-              {focusId === task.id && <span className="next-badge">下一站</span>}
-              {dragging?.id === task.id && dragging.weeks !== 0 && <span className="drag-badge">{task.startDate ? shiftIsoDate(task.startDate, dragging.weeks * 7) : ""} · {dragging.weeks > 0 ? `顺延 ${dragging.weeks} 周` : `提前 ${Math.abs(dragging.weeks)} 周`}</span>}
-              <span className="node-index">{String(index + 1).padStart(2, "0")}</span><span className="node-status-dot" /><strong>{task.title}</strong><small>{formatDateRange(task)} · {task.estimatedHours ?? "—"}h</small><span className="node-arrow">↗</span>
-            </button>
-          );
-        })}
-      </div>
-      {(pan.x !== 0 || pan.y !== 0) && <button className="reset-canvas" onPointerDown={(event) => event.stopPropagation()} onClick={() => setPan({ x: 0, y: 0 })}>{isDense ? "回到起点" : "回到全图"}</button>}
-    </main>
-  );
-}
-
-export function Sidebar({ open, plan, projectId, history, focusTasks, pendingCount, busy, onClose, onAddTask, onNewProject, onSelectTask, onOpenHistory }: { open: boolean; plan: PlanState; projectId: string; history: PlanCommit[]; focusTasks: PlanNode[]; pendingCount: number; busy: boolean; onClose: () => void; onAddTask: () => void; onNewProject: () => void; onSelectTask: (id: string) => void; onOpenHistory?: () => void }) {
-  const [dialog, setDialog] = useState<"changes" | "export" | null>(null);
+export function Sidebar({ open, plan, projectId, history, focusTasks, pendingCount, busy, onClose, onAddTask, onNewProject, onSelectTask, onOpenHistory }: { open: boolean; plan: PlanState; projectId: string; history: PlanCommit[]; focusTasks: PlanNode[]; pendingCount: number; busy: boolean; onClose: () => void; onAddTask: () => void; onNewProject: () => void; onSelectTask: (id: string) => void; onOpenHistory?: (() => void) | undefined }) {
+  const [showAllHistory, setShowAllHistory] = useState(false);
+  useEffect(() => { setShowAllHistory(false); }, [projectId]);
   const tasks = plan.nodes.filter((node) => node.type === "task" && node.status !== "archived");
   const done = tasks.filter((task) => task.status === "done").length;
   return (
-    <><aside className={`side-drawer ${open ? "is-open" : ""}`} aria-hidden={!open}>
-      <div className="drawer-head"><div><span className="brand-symbol">路</span><strong>路线背包</strong></div><button onClick={onClose}>×</button></div>
+    <ModalSurface open={open} label="项目信息" busy={busy} onClose={onClose}><aside className="side-drawer is-open">
+      <div className="drawer-head"><div><Brand /><strong>项目信息</strong></div><button data-initial-focus disabled={busy} aria-label="关闭计划菜单" onClick={onClose}>×</button></div>
       <div className="drawer-scroll">
-        <section className="drawer-goal"><small>你的目的地</small><p>{plan.goal}</p></section>
-        <section className="progress-card"><div className="progress-ring" style={{ "--progress": `${tasks.length ? (done / tasks.length) * 360 : 0}deg` } as CSSProperties}><span>{done}/{tasks.length}</span></div><div><strong>{plan.weeklyHours} 小时</strong><small>每周探索时间</small></div></section>
-        {pendingCount > 0 && <div className="pending-callout"><span>↯</span><div><strong>{pendingCount} 个变化待确认</strong><small>正式路线还没有被改变</small></div></div>}
-        <section className="week-focus"><p className="section-kicker">接下来 7 天</p>{focusTasks.length === 0 ? <div className="focus-empty">这周没有必须抵达的路标。</div> : focusTasks.map((task, index) => <button key={task.id} onClick={() => onSelectTask(task.id)}><span>{index === 0 ? "下一站" : formatDateRange(task)}</span><strong>{task.title}</strong><small>{task.estimatedHours ?? "—"}h · {statusLabel(task.status)}</small></button>)}</section>
-
-      </div>
-      <div className="drawer-footer"><div className="drawer-actions"><button disabled={busy} onClick={onNewProject}>✦ 新路线</button><button disabled={busy} onClick={onAddTask}>＋ 新路标</button></div>
-        <nav className="drawer-utilities" aria-label="路线工具">
-          {onOpenHistory && <button onClick={onOpenHistory}>历史记录 <span aria-hidden="true">↗</span></button>}
-          <button onClick={() => setDialog("changes")}>修改记录 <span aria-hidden="true">↗</span></button>
-          <button onClick={() => setDialog("export")}>带走这张路线 <span aria-hidden="true">↗</span></button>
-        </nav>
-      </div>
-    </aside>
-    {dialog && <WorkspaceDialog title={dialog === "changes" ? "修改记录" : "带走这张路线"} onClose={() => setDialog(null)}>
-      {dialog === "changes" ? <section className="drawer-history">{history.map((commit) => <div className="history-step" key={commit.id}>
+        <section className="drawer-goal"><small>项目目标</small><p>{plan.goal}</p></section>
+        <section className="progress-card"><div className="progress-ring" style={{ "--progress": `${tasks.length ? (done / tasks.length) * 360 : 0}deg` } as CSSProperties}><span>{done}/{tasks.length}</span></div><div><strong>{plan.weeklyHours} 小时</strong><small>每周投入时间</small></div></section>
+        {pendingCount > 0 && <div className="pending-callout"><span aria-hidden="true">○</span><div><strong>{pendingCount} 项变更待确认</strong><small>变更尚未应用于正式计划</small></div></div>}
+        <section className="week-focus"><p className="section-kicker">{weekFocusTitle(focusTasks, new Date().toISOString().slice(0, 10))}</p>{focusTasks.length === 0 ? <div className="focus-empty">未来七日暂无待办任务。</div> : focusTasks.map((task, index) => <button key={task.id} onClick={() => onSelectTask(task.id)}><span>{index === 0 ? "待执行" : formatDateRange(task)}</span><strong>{task.title}</strong><small>{task.estimatedHours ?? "—"}h · {statusLabel(task.status)}</small><TaskDeadline task={task} /></button>)}</section>
+        {onOpenHistory && <button className="account-history-trigger" onClick={onOpenHistory}>账号历史记录</button>}
+        <section className="export-panel"><p className="section-kicker">导出项目资料</p><div><a href={`/api/projects/${projectId}/export/json`} download>结构化数据（JSON）</a><a href={`/api/projects/${projectId}/export/markdown`} download>可读文档（Markdown）</a><a href={`/api/projects/${projectId}/export/zip`} download>完整计划包（ZIP）</a></div></section>
+        <section className="drawer-history"><p className="section-kicker">版本历史 · 共 {history.length} 个版本</p>{(showAllHistory ? history : history.slice(0, 5)).map((commit) => <div className="history-step" key={commit.id}>
           <span />
           <div>
             <strong>v{commit.id}</strong><small>{commit.reason}</small>
@@ -725,36 +676,75 @@ export function Sidebar({ open, plan, projectId, history, focusTasks, pendingCou
               {commit.processing.warnings.length > 0 && <ul>{commit.processing.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>}
             </details>}
           </div>
-        </div>)}</section> : <section className="export-panel"><div><a href={`/api/projects/${projectId}/export/json`} download>JSON</a><a href={`/api/projects/${projectId}/export/markdown`} download>Markdown</a><a href={`/api/projects/${projectId}/export/zip`} download>Plan Bundle</a></div></section>}
-    </WorkspaceDialog>}</>
+        </div>)}{history.length > 5 && <button className="history-toggle" aria-expanded={showAllHistory} onClick={() => setShowAllHistory(value => !value)}>{showAllHistory ? "收起较早版本" : `查看全部 ${history.length} 个版本`}</button>}</section>
+      </div>
+      <div className="drawer-actions"><button disabled={busy} onClick={onNewProject}>创建项目</button><button disabled={busy} onClick={onAddTask}>新增任务</button></div>
+    </aside></ModalSurface>
   );
 }
 
-export function Inspector({ node, busy, onClose, onSave, onComplete, onArchive }: { node: PlanNode | null; busy: boolean; onClose: () => void; onSave: (changes: PlanNodeUpdate) => void; onComplete: () => void; onArchive: () => void }) {
-  const [title, setTitle] = useState(""); const [startDate, setStartDate] = useState(""); const [endDate, setEndDate] = useState("");
-  useEffect(() => { setTitle(node?.title ?? ""); setStartDate(node?.startDate ?? ""); setEndDate(node?.endDate ?? ""); }, [node]);
+export function Inspector({ node, busy, error, onClose, onSave, onComplete, onReportChange, onArchive }: { node: PlanNode | null; plan?: PlanState; evidence?: EvidenceCard[]; busy: boolean; error?: string | null; onClose: () => void; onSave: (changes: PlanNodeUpdate) => void; onComplete: () => void; onReportChange?: () => void; onArchive: () => void }) {
+  const [draft, setDraft] = useState<NodeDraft>(() => node ? draftFromNode(node) : { title: "", startDate: "", endDate: "", status: "todo" });
+  const [discarding, setDiscarding] = useState(false);
+  useEffect(() => { if (node) setDraft(draftFromNode(node)); setDiscarding(false); }, [node]);
+  const changes = node ? nodeEdits(node, draft) : {};
+  const dirty = Object.keys(changes).length > 0;
+  const close = () => { if (!busy) { if (dirty) setDiscarding(true); else onClose(); } };
   return (
-    <aside className={`inspector-drawer ${node ? "is-open" : ""}`} aria-hidden={!node}>
-      {node && <><div className="drawer-head"><div><span className="node-mini-dot" /><strong>{nodeTypeLabel(node.type)}详情</strong></div><button onClick={onClose}>×</button></div>
+    <ModalSurface open={Boolean(node)} label="任务详情" busy={busy} onClose={close}>
+    <aside className="inspector-drawer is-open">
+      {node && <><div className="drawer-head"><div><span className="node-mini-dot" /><strong>{nodeTypeLabel(node.type)}详情</strong></div><button data-initial-focus disabled={busy} aria-label="关闭任务详情" onClick={close}>×</button></div>
         <div className="inspector-scroll">
           <div className="status-row"><span className={`status-chip status-${node.status}`}>{statusLabel(node.status)}</span><span>{node.estimatedHours ? `${node.estimatedHours}h` : nodeTypeLabel(node.type)}</span></div>
-          <label>名称<input value={title} onChange={(event) => setTitle(event.target.value)} /></label>
-          <div className="date-row"><label>开始<input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} /></label><label>结束<input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} /></label></div>
-          <label>状态<select value={node.status} onChange={(event) => onSave({ status: event.target.value as PlanNode["status"] })}><option value="draft">草稿</option><option value="todo">待开始</option><option value="ready">可开始</option><option value="in_progress">进行中</option><option value="blocked">受阻</option><option value="done">已完成</option><option value="archived">已归档</option></select></label>
-          <div className="node-actions"><button className="save-node" disabled={busy || !title.trim()} onClick={() => onSave({ title: title.trim(), startDate, endDate })}>保存修改</button>{node.type === "task" && node.status !== "done" && <button className="complete-node" disabled={busy} onClick={onComplete}>✓ 抵达此站</button>}</div>
-          {node.type === "task" && <div className="node-secondary-actions"><button className="archive-node" disabled={busy} onClick={onArchive}>收起此路标</button></div>}
-          <section className="node-story"><p className="section-kicker">抵达证明</p><h3>{node.deliverable ?? "待补充可检查的产出"}</h3>{node.description && <p className="inference-note">{node.description}</p>}<ul>{node.acceptanceCriteria?.map((item) => <li key={item}>{item}</li>) ?? <li>尚未补充完成标准</li>}</ul></section>
-
+          {error && <ErrorNotice message={error} />}
+          <form className="node-edit-form" onSubmit={event => { event.preventDefault(); if (!busy && dirty) onSave(changes); }}>
+            <fieldset disabled={busy}>
+              <label>名称<input required maxLength={2000} value={draft.title} onChange={event => setDraft({ ...draft, title: event.target.value })} /></label>
+              <div className="date-row"><label>开始日期<input type="date" required={node.type === "task" || Boolean(node.startDate)} max={draft.endDate || undefined} value={draft.startDate} onChange={event => setDraft({ ...draft, startDate: event.target.value })} /></label>
+                <label>截止日期<input type="date" required={node.type === "task" || Boolean(node.endDate)} min={draft.startDate || undefined} value={draft.endDate} onChange={event => setDraft({ ...draft, endDate: event.target.value })} /></label></div>
+              <label>状态<select value={draft.status} onChange={event => setDraft({ ...draft, status: event.target.value as PlanNode["status"] })}><option value="draft">草稿</option><option value="todo">待开始</option><option value="ready">可开始</option><option value="in_progress">进行中</option><option value="blocked">受阻</option><option value="done">已完成</option><option value="archived">已归档</option></select></label>
+              <p className="edit-save-hint" role="status">{dirty ? "存在未保存的修改。名称、日期和状态将统一保存。" : "修改名称、日期或状态后，点击保存修改。"}</p>
+              <div className="node-actions"><button className="save-node" type="submit" disabled={busy || !dirty || !draft.title.trim()}>保存修改</button>{node.type === "task" && node.status !== "done" && <button className="complete-node" type="button" disabled={busy || dirty} onClick={onComplete}>标记完成</button>}</div>
+            </fieldset>
+          </form>
+          {node.type === "task" && <div className="node-secondary-actions">{onReportChange && <button disabled={busy || dirty} onClick={onReportChange}>记录任务变更</button>}<button className="archive-node" disabled={busy || dirty} onClick={onArchive}>归档任务</button></div>}
+          {dirty && <p className="edit-save-hint">请先保存修改，再标记完成、记录变更或归档任务。</p>}
+          <section className="node-story"><p className="section-kicker">交付要求与验收标准</p><h3>{node.deliverable ?? "待补充可检查的产出"}</h3>{node.description && <p className="inference-note">{node.description}</p>}<ul>{node.acceptanceCriteria?.map((item) => <li key={item}>{item}</li>) ?? <li>尚未补充完成标准</li>}</ul></section>
         </div></>}
     </aside>
+    {discarding && <ConfirmDialog title="放弃未保存的修改？" description="名称、日期和状态的修改尚未保存。取消可继续编辑。" confirmLabel="放弃修改" onCancel={() => setDiscarding(false)} onConfirm={() => { setDiscarding(false); onClose(); }} />}
+    </ModalSurface>
   );
 }
 
-export function DiffPanel({ pending, before, busy, replanning, error, unchangedReplan, onApply, onReplan, onClose }: {
+function NewTaskDialog({ busy, error, onClose, onSubmit }: { busy: boolean; error: string | null; onClose: () => void; onSubmit: (title: string) => void }) {
+  const [title, setTitle] = useState("");
+  return <ModalSurface label="添加新任务" busy={busy} onClose={onClose}><section className="event-modal">
+    <button className="modal-close" disabled={busy} aria-label="关闭新任务" onClick={onClose}>×</button>
+    <h2>添加新任务</h2><p>填写任务名称。创建后可编辑日期、状态及其他信息。</p>
+    <form onSubmit={event => { event.preventDefault(); if (!busy && title.trim()) onSubmit(title.trim()); }}>
+      <label className="event-note-label">任务名称<input data-initial-focus required maxLength={2000} value={title} disabled={busy} onChange={event => setTitle(event.target.value)} placeholder="请输入任务名称" /></label>
+      {error && <ErrorNotice message={error} />}
+      <div className="confirm-actions"><button type="button" disabled={busy} onClick={onClose}>取消</button><button className="research-primary" disabled={busy || !title.trim()}>{busy ? "正在创建" : "创建任务"}</button></div>
+    </form>
+  </section></ModalSurface>;
+}
+
+function EventDialog({ busy, error, currentHours, onClose, onSubmitHours }: { busy: boolean; error: string | null; currentHours: number; onClose: () => void; onSubmitHours: (hours: number) => void }) {
+  const [hours, setHours] = useState(currentHours);
+  return <ModalSurface label="调整时间约束" busy={busy} onClose={onClose}><form className="event-modal" onSubmit={event => { event.preventDefault(); if (!busy && Number.isFinite(hours) && hours >= 1 && hours <= 80) onSubmitHours(hours); }}>
+    <button type="button" className="modal-close" aria-label="关闭时间约束" disabled={busy} onClick={onClose}>×</button><h2>调整时间约束</h2><p>更新每周可投入时间。请核对变更预览后确认应用。</p>
+    <label>每周投入时间<input data-initial-focus required disabled={busy} type="number" min="1" max="80" step="0.5" value={Number.isFinite(hours) ? hours : ""} onChange={event => setHours(event.target.valueAsNumber)} /><span>小时</span></label>
+    {error && <ErrorNotice message={error} />}<button className="research-primary" disabled={busy || !Number.isFinite(hours) || hours < 1 || hours > 80} type="submit">{busy ? "正在处理" : "生成变更预览"}</button>
+  </form></ModalSurface>;
+}
+
+export function DiffPanel({ pending, before, busy, replanning, error, unchangedReplan, onApply, onReplan, onClose, replanAvailable = true }: {
   pending: PendingChange;
   before: PlanState;
   busy: boolean;
   replanning: boolean;
+  replanAvailable?: boolean;
   error: string | null;
   unchangedReplan?: UnchangedEventReplan | null;
   onApply: () => void;
@@ -765,26 +755,29 @@ export function DiffPanel({ pending, before, busy, replanning, error, unchangedR
   const stale = pending.patch.baseVersion !== before.version;
   const unchanged = !stale && unchangedReplan?.patchId === pending.patch.id;
   const diff = stale || unchanged ? [] : getPlanDiff(before, pending.afterPreview);
+  const recordOnly = !stale && !unchanged && pending.event.confirmed && pending.event.type === "custom" && pending.patch.operations.length === 0 && diff.length === 0;
   const processing = unchanged ? unchangedReplan.processing : pending.processing;
   const model = processing?.mode === "model";
   const canReplan = pending.event.confirmed && pending.event.type === "constraint_changed" && pending.event.changes?.weeklyHours !== undefined;
   const dateChanges = diff.filter((entry) => entry.fields.some((field) => field.key === "startDate" || field.key === "endDate")).length;
   const usedEvidence = pending.afterPreview.evidence.filter((card) => processing?.usedEvidenceIds.includes(card.id));
   const kindLabel = { global: "约束", changed: "修改", added: "新增", removed: "移除", archived: "归档", relation: "关系" };
-  return <section className="impact-dock" aria-label="待确认的路线变化" aria-busy={replanning}>
-    <div className="impact-icon" aria-hidden="true">↯</div>
+  return <section className="impact-dock" aria-label="待确认的计划变更" aria-busy={replanning}>
+
     <div className="impact-copy">
-      <small>{unchanged ? "AI 排期检查" : `${model ? "AI 排期草案" : "规则预演"} · 尚未生效`}</small>
-      <strong>{stale ? "这份预演已过期" : unchanged ? "当前排期已满足约束，无需调整" : summary}</strong>
-      <span>{replanning ? "AI 正在检查受影响任务的排期，正式计划保持不变…" : stale ? `预演基于 v${pending.patch.baseVersion}，当前已是 v${before.version}` : unchanged ? "检查已完成，原预演已保留" : model ? `${dateChanges} 个节点的日期调整 · 等你确认` : canReplan ? "只更新约束和原因，任务日期尚未调整" : "只记录影响，尚未调整任务安排"}</span>
+      <small>{unchanged ? "AI 排期检查" : `${model ? "AI 排期草案" : "变更预览"} · 尚未生效`}</small>
+      <strong>{stale ? "变更预览已失效" : unchanged ? "当前排期已满足约束，无需调整" : summary}</strong>
+      <span>{replanning ? "AI 正在检查受影响任务的排期，正式计划保持不变…" : stale ? `预览基于 v${pending.patch.baseVersion}，当前已是 v${before.version}` : unchanged ? "检查已完成，原变更预览已保留" : model ? `${dateChanges} 个节点的日期调整 · 待确认` : canReplan ? "只更新约束和原因，任务日期尚未调整" : "只记录影响，尚未调整任务安排"}</span>
     </div>
     <div className="impact-actions">
-      <button disabled={busy} onClick={onClose}>稍后</button>
-      {canReplan && <button className="impact-replan" disabled={busy || stale} onClick={onReplan}>{replanning ? "正在排期…" : model ? "重新生成 AI 方案" : "用 AI 重新排期"}</button>}
-      {!unchanged && <button disabled={busy || stale || diff.length === 0} onClick={onApply}>{model ? "确认当前方案" : canReplan ? "确认约束变更" : "确认当前记录"} →</button>}
+      <button disabled={busy} onClick={onClose}>关闭预览</button>
+      {canReplan && <button className="impact-replan" disabled={busy || stale || !replanAvailable} onClick={onReplan}>{replanning ? "正在排期…" : model ? "重新生成 AI 方案" : "生成调整方案"}</button>}
+      {!unchanged && <button disabled={busy || stale || (diff.length === 0 && !recordOnly)} onClick={onApply}>{model ? "确认当前方案" : canReplan ? "确认约束变更" : "确认变更记录"}</button>}
     </div>
-    {error && <p className="impact-error" role="alert">{error}</p>}
-    {stale ? <p className="impact-stale">正式计划已发生变化。这份旧预演不能应用或重排；请基于当前路线重新记录事件。</p> : <details className="impact-details" key={pending.patch.id}>
+    {error && <ErrorNotice message={error} className="impact-error" />}
+    {canReplan && !replanAvailable && <p className="impact-record-only">AI 排期尚未配置或开启。可以先确认每周时间约束；任务日期不会自动调整。</p>}
+    {recordOnly && <p className="impact-record-only">确认后仅新增一条历史记录，原任务和手动设置不变：{pending.event.description}</p>}
+    {stale ? <p className="impact-stale">正式计划版本已更新，当前预览无法应用或重排。请基于最新计划重新提交变更。</p> : <details className="impact-details" key={pending.patch.id}>
       <summary>{unchanged ? "查看排期检查" : <>查看修改详情 <span>{diff.reduce((count, entry) => count + entry.fields.length, 0)} 处字段变化</span></>}</summary>
       <div className="impact-detail-scroll">
         {!unchanged && <p className="impact-review-note">以下是正式计划与当前草案的实际差异。节点存在依赖，确认时整组应用；展开查看不会修改计划。</p>}
@@ -797,7 +790,7 @@ export function DiffPanel({ pending, before, busy, replanning, error, unchangedR
             <EvidenceDisclosure label="查看使用的既有证据" evidence={usedEvidence} />
           </details>
         </div>}
-        {!unchanged && diff.length === 0 && <p className="impact-review-note">当前草案没有实际字段变化，无需应用。</p>}
+        {!unchanged && diff.length === 0 && <p className="impact-review-note">{recordOnly ? "本条变更仅记录情况说明；确认后可在版本历史中查看。" : "当前草案无字段变更，无需应用。"}</p>}
         {diff.map((entry) => <article className="impact-change" key={entry.id}>
           <h3><span>{kindLabel[entry.kind]}</span>{entry.title}</h3>
           <dl>{entry.fields.map((field) => <div className="impact-field" key={field.key}>
@@ -810,107 +803,13 @@ export function DiffPanel({ pending, before, busy, replanning, error, unchangedR
   </section>;
 }
 
-function buildGraphPoints(tasks: PlanNode[], milestones: PlanNode[]): GraphPoint[] {
-  const yPattern = [355, 245, 405, 285, 390, 235];
-  const start = milestones.map((item) => item.startDate).filter((value): value is string => Boolean(value)).sort()[0];
-  const end = milestones.map((item) => item.endDate).filter((value): value is string => Boolean(value)).sort().at(-1);
-  const fallbackSpan = tasks.length > 1 ? 870 / (tasks.length - 1) : 0;
-  return tasks.map((task, index) => ({
-    id: task.id,
-    x: start && end ? positionDateInRange(task.startDate, start, end, 145, 1040) ?? 165 + fallbackSpan * index : 165 + fallbackSpan * index,
-    y: yPattern[index % yPattern.length] ?? 330,
-  }));
-}
-
-export function buildDenseGraphLayout(tasks: PlanNode[], milestones: PlanNode[]): { width: number; points: GraphPoint[]; pixelsPerWeek: number } {
-  const dayOf = (date: string | undefined) => date ? Date.parse(date) / 86_400_000 : NaN;
-  const dates = [...tasks, ...milestones].flatMap((node) => [dayOf(node.startDate), dayOf(node.endDate)]).filter(Number.isFinite);
-  const start = dates.length ? Math.min(...dates) : 0;
-  const end = dates.length ? Math.max(start + 1, ...dates) : tasks.length;
-  const byDate = new Map<number, PlanNode[]>();
-  tasks.forEach((task, index) => {
-    const date = dayOf(task.startDate);
-    const day = Number.isFinite(date) ? date : start + (end - start) * index / Math.max(1, tasks.length - 1);
-    byDate.set(day, [...(byDate.get(day) ?? []), task]);
-  });
-  const days = [...byDate.keys()].sort((a, b) => a - b);
-  const gaps = days.slice(1).map((day, index) => day - days[index]!);
-  const columnsPerDate = Math.max(...[...byDate.values()].map((group) => Math.ceil(group.length / 4)));
-  const columnGap = 230;
-  const pixelsPerDay = columnsPerDate * columnGap / (gaps.length ? Math.min(...gaps) : end - start);
-  const width = Math.max(canvasWidth, Math.ceil(tasks.length / 4) * columnGap + 320, (end - start) * pixelsPerDay + 320 + (columnsPerDate - 1) * columnGap);
-  const laneY = [160, 270, 380, 490];
-  let taskIndex = 0;
-  const points = days.flatMap((day) => byDate.get(day)!.map((task, index) => ({
-    id: task.id,
-    x: 145 + (day - start) * pixelsPerDay + Math.floor(index / 4) * columnGap,
-    y: laneY[taskIndex++ % 4]!,
-  })));
-  return { width, points, pixelsPerWeek: pixelsPerDay * 7 };
-}
-
-function smoothPath(points: Array<Pick<GraphPoint, "x" | "y">>): string {
-  if (points.length === 0) return ""; let path = `M ${points[0]?.x ?? 0} ${points[0]?.y ?? 0}`;
-  for (let index = 1; index < points.length; index += 1) { const previous = points[index - 1]; const current = points[index]; if (!previous || !current) continue; const middleX = (previous.x + current.x) / 2; path += ` C ${middleX} ${previous.y}, ${middleX} ${current.y}, ${current.x} ${current.y}`; }
-  return path;
-}
-
-function beginNodePointerDrag(event: ReactPointerEvent<HTMLButtonElement>, id: string, pixelsPerWeek: number, graphWidth: number, setDragging: (value: NodeDragState) => void): void {
-  if (event.button !== 0) return;
-  event.stopPropagation();
-  event.currentTarget.setPointerCapture(event.pointerId);
-  const stage = event.currentTarget.parentElement!;
-  const scale = stage.getBoundingClientRect().width / graphWidth;
-  setDragging({ id, pointerId: event.pointerId, startX: event.clientX, currentX: event.clientX, weeks: 0, pixelsPerWeek: pixelsPerWeek * scale, scale });
-}
-
-function moveNodePointerDrag(event: ReactPointerEvent<HTMLButtonElement>, dragging: NodeDragState | null, setDragging: (value: NodeDragState | null) => void): void {
-  if (!dragging || dragging.pointerId !== event.pointerId) return;
-  const distance = event.clientX - dragging.startX;
-  setDragging({ ...dragging, currentX: event.clientX, weeks: weeksFromDragDistance(distance, dragging.pixelsPerWeek) });
-}
-
-function endNodePointerDrag(event: ReactPointerEvent<HTMLButtonElement>, task: PlanNode, dragging: NodeDragState | null, setDragging: (value: null) => void, suppressClick: { current: boolean }, onReschedule: (node: PlanNode, weeks: number) => void): void {
-  if (!dragging || dragging.pointerId !== event.pointerId) return;
-  event.stopPropagation();
-  event.currentTarget.releasePointerCapture(event.pointerId);
-  const weeks = weeksFromDragDistance(event.clientX - dragging.startX, dragging.pixelsPerWeek);
-  setDragging(null);
-  if (weeks === 0) return;
-  suppressClick.current = true;
-  window.setTimeout(() => { suppressClick.current = false; }, 0);
-  onReschedule(task, weeks);
-}
-
-function beginCanvasPan(event: ReactPointerEvent<HTMLElement>, pan: PanOffset, setPanning: (value: CanvasPanState) => void): void {
-  if (event.button !== 0 || (event.target as Element).closest("button")) return;
-  event.currentTarget.setPointerCapture(event.pointerId);
-  setPanning({ pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, originX: pan.x, originY: pan.y });
-}
-
-function moveCanvasPan(event: ReactPointerEvent<HTMLElement>, panning: CanvasPanState | null, setPan: (value: PanOffset) => void, canvas?: { width: number; height: number }): void {
-  if (!panning || panning.pointerId !== event.pointerId) return;
-  const minX = canvas ? Math.min(0, event.currentTarget.clientWidth - canvas.width - 60) : -320;
-  const minY = canvas ? Math.min(-120, event.currentTarget.clientHeight - canvas.height - 100) : -120;
-  setPan({
-    x: Math.max(minX, Math.min(canvas ? 60 : 320, panning.originX + event.clientX - panning.startX)),
-    y: Math.max(minY, Math.min(120, panning.originY + event.clientY - panning.startY)),
-  });
-}
-
-function endCanvasPan(event: ReactPointerEvent<HTMLElement>, panning: { pointerId: number } | null, setPanning: (value: null) => void): void {
-  if (!panning || panning.pointerId !== event.pointerId) return;
-  event.currentTarget.releasePointerCapture(event.pointerId);
-  setPanning(null);
-}
-
 async function api<T = unknown>(path: string, init?: RequestInit): Promise<T> {
   const response = await trackedFetch(path, { ...init, headers: { "content-type": "application/json", ...(init?.headers ?? {}) } }); const body: unknown = await response.json();
   if (!response.ok) throw new Error(formatApiError(body, response.status)); return body as T;
 }
 
-function statusLabel(status: PlanNode["status"]): string { return { draft: "草稿", todo: "等待探索", ready: "下一站", in_progress: "正在前往", blocked: "前方受阻", done: "已经抵达", archived: "已收起" }[status]; }
-function nodeTypeLabel(type: PlanNode["type"]): string { return { task: "路标", milestone: "里程碑", checkpoint: "复盘", assumption: "假设", decision: "决策" }[type]; }
+function statusLabel(status: PlanNode["status"]): string { return { draft: "草稿", todo: "未开始", ready: "待执行", in_progress: "进行中", blocked: "受阻", done: "已完成", archived: "已归档" }[status]; }
+function nodeTypeLabel(type: PlanNode["type"]): string { return { task: "任务", milestone: "里程碑", checkpoint: "复盘", assumption: "假设", decision: "决策" }[type]; }
 function contentTypeLabel(contentType: EvidenceCard["contentType"]): string { return { user_fact: "用户事实", advice: "建议", experience: "经验", opinion: "观点", factual_claim: "事实主张", rule: "规则", ai_inference: "AI 推断" }[contentType]; }
 function formatDateRange(node: PlanNode): string { return node.startDate && node.endDate ? `${node.startDate.slice(5)} → ${node.endDate.slice(5)}` : "待安排"; }
 function toMessage(error: unknown): string { return error instanceof Error ? error.message : "未知错误"; }

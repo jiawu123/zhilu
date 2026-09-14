@@ -1,0 +1,15 @@
+
+> zhilu@ typecheck /Users/norda/Development/zhilu-roadmapper/zhilu
+> pnpm -r typecheck
+
+Scope: 5 of 6 workspace projects
+packages/contracts typecheck$ tsc --noEmit
+packages/contracts typecheck: Done
+apps/web typecheck$ tsc --noEmit
+packages/plan-engine typecheck$ tsc --noEmit
+packages/agent-runtime typecheck$ tsc --noEmit
+packages/plan-engine typecheck: Done
+packages/agent-runtime typecheck: Done
+apps/web typecheck: Done
+apps/server typecheck$ tsc --noEmit
+apps/server typecheck: Done

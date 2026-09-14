@@ -1,0 +1,24 @@
+
+> @zhilu/web@0.0.1 test /Users/norda/Development/zhilu-roadmapper/zhilu/apps/web
+> vitest run --passWithNoTests
+
+
+ RUN  v3.2.7 /Users/norda/Development/zhilu-roadmapper/zhilu/apps/web
+
+ ✓ src/api-error.test.ts (12 tests) 8ms
+ ✓ src/roadmap-date.test.ts (3 tests) 6ms
+ ✓ src/roadmap-focus.test.ts (2 tests) 32ms
+ ✓ src/interview-api.test.ts (4 tests) 31ms
+ ✓ src/onboarding-model.test.ts (2 tests) 7ms
+ ✓ src/plan-diff.test.ts (5 tests) 18ms
+ ✓ src/interview-answers.test.ts (3 tests) 7ms
+ ✓ src/pending-selection.test.ts (7 tests) 6ms
+ ✓ src/dogfood-regressions.test.tsx (7 tests) 29ms
+ ✓ src/event-replan.test.tsx (7 tests) 32ms
+ ✓ src/research-evidence.test.tsx (26 tests) 167ms
+
+ Test Files  11 passed (11)
+      Tests  78 passed (78)
+   Start at  19:26:18
+   Duration  1.70s (transform 878ms, setup 0ms, collect 3.26s, tests 341ms, environment 3ms, prepare 2.89s)
+

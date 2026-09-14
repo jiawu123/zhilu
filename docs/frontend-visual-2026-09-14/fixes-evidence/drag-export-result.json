@@ -1,0 +1,25 @@
+{
+  "pointerDrag": {
+    "startDate": "2026-09-22",
+    "endDate": "2026-09-24",
+    "persistedAfterReload": true
+  },
+  "panDoesNotChangeDates": true,
+  "downloads": [
+    {
+      "format": "json",
+      "filename": "zhilu-project-39e7d158.json"
+    },
+    {
+      "format": "md",
+      "filename": "zhilu-project-39e7d158.md"
+    },
+    {
+      "format": "zip",
+      "filename": "zhilu-project-39e7d158.planbundle.zip"
+    }
+  ],
+  "projectId": "project-39e7d158",
+  "version": 5,
+  "currentCommitId": "000005"
+}

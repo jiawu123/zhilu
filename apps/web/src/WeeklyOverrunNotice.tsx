@@ -18,8 +18,8 @@ export function WeeklyOverrunNotice({ overruns, routeId }: {
   return <section className="weekly-overrun-notice" role="status">
     <strong>时间安排提醒</strong>
     {weeks.map(item => <p key={item.week}>
-      {`第${item.week}周：预计需要${duration(item.plannedHours)}，比你原定的时间多${duration(item.plannedHours - item.capacityHours)}。`}
+      {`第${item.week}周：预计需要${duration(item.plannedHours)}，比原定投入时间多${duration(item.plannedHours - item.capacityHours)}。`}
     </p>)}
-    <p>如果抽不出这些时间，可以在「一起调整计划」里要求减少任务。</p>
+    <p>如无法增加投入时间，请通过「计划调整意见」申请减少任务。</p>
   </section>;
 }

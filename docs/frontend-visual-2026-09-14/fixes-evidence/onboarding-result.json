@@ -1,0 +1,19 @@
+{
+  "import": true,
+  "mixedInterview": true,
+  "summaryFooter": {
+    "x": 33,
+    "y": 751,
+    "width": 324,
+    "height": 75
+  },
+  "planFooter": {
+    "x": 23,
+    "y": 721.203125,
+    "width": 344,
+    "height": 104.796875
+  },
+  "planScrollReset": true,
+  "earlyReadiness": true,
+  "projectUrl": "http://127.0.0.1:5178/?project=project-39e7d158&page=plan"
+}
