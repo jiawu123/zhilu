@@ -1,0 +1,74 @@
+[
+  {
+    "viewport": {
+      "width": 1280,
+      "height": 720
+    },
+    "groupCount": 4,
+    "taskCount": 16,
+    "columnHeights": [
+      445.453125,
+      445.453125,
+      445.453125,
+      445.453125
+    ],
+    "scrollToLastTask": true,
+    "scrollToGoal": true,
+    "timelineSync": true,
+    "focusAndEscape": true
+  },
+  {
+    "viewport": {
+      "width": 1280,
+      "height": 600
+    },
+    "groupCount": 4,
+    "taskCount": 16,
+    "columnHeights": [
+      325.453125,
+      325.453125,
+      325.453125,
+      325.453125
+    ],
+    "scrollToLastTask": true,
+    "scrollToGoal": true,
+    "timelineSync": true,
+    "focusAndEscape": true
+  },
+  {
+    "viewport": {
+      "width": 768,
+      "height": 1024
+    },
+    "groupCount": 4,
+    "taskCount": 16,
+    "columnHeights": [
+      749.453125,
+      749.453125,
+      749.453125,
+      749.453125
+    ],
+    "scrollToLastTask": true,
+    "scrollToGoal": true,
+    "timelineSync": true,
+    "focusAndEscape": true
+  },
+  {
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "groupCount": 4,
+    "taskCount": 16,
+    "columnHeights": [
+      560.03125,
+      560.03125,
+      560.03125,
+      560.03125
+    ],
+    "scrollToLastTask": true,
+    "scrollToGoal": true,
+    "timelineSync": true,
+    "focusAndEscape": true
+  }
+]

@@ -1,0 +1,71 @@
+async(page)=>{
+ const assert=(ok,msg)=>{if(!ok)throw new Error(msg);};
+ await page.unrouteAll({behavior:"wait"});
+ await page.setViewportSize({width:1440,height:900});
+ let workspace=await (await page.request.get('http://127.0.0.1:5178/api/projects/hybrid-preview')).json();
+ const submissions=[],patches=[];let failNext=false;
+ await page.route('**/api/projects/hybrid-preview',route=>route.fulfill({json:workspace}));
+ await page.route('**/api/projects/hybrid-preview/events',async route=>{
+  const body=route.request().postDataJSON();submissions.push(body);
+  if(failNext){failNext=false;await route.fulfill({status:409,json:{error:'Agent 不能覆盖用户字段：adjustmentReason'}});return;}
+  const event={...body,id:'frontend-event-'+submissions.length,occurredAt:'2026-09-15',confirmed:true};
+  await route.fulfill({json:{event,patch:{id:'frontend-patch-'+submissions.length,baseVersion:workspace.plan.version,origin:'agent',reason:body.description,eventId:event.id,operations:[]},impact:{eventId:event.id,affectedNodeIds:body.targetNodeIds,invalidatedAssumptionIds:[],decisionsToReevaluateIds:[],tasksToRescheduleIds:[],blockedNodeIds:[],unaffectedNodeIds:[]},afterPreview:workspace.plan}});
+ });
+ await page.route('**/api/projects/hybrid-preview/nodes/*',async route=>{
+  if(route.request().method()!=='PATCH'){await route.abort();return;}
+  const data=route.request().postDataJSON();patches.push(data);const id=route.request().url().split('/').pop();
+  workspace.plan.nodes=workspace.plan.nodes.map(n=>n.id===id?{...n,...data}:n);
+  workspace.plan.version++;workspace.plan.currentCommitId=String(workspace.plan.version);
+  await route.fulfill({json:{ok:true}});
+ });
+ await page.goto('http://127.0.0.1:5178/?project=hybrid-preview&page=roadmap');await page.getByRole('main',{name:'任务流程图'}).waitFor();
+ const input=page.getByLabel('变更说明',{exact:true});
+ assert(await page.getByRole('button',{name:'提交变更说明',exact:true}).isDisabled(),'blank text allowed');
+ await input.fill('预算总额已调整，需要重新核对采购范围。');await input.press('Shift+Enter');
+ assert(submissions.length===0 && (await input.inputValue()).endsWith('\n'),'Shift+Enter submitted');
+ await input.press('Enter');await page.getByRole('region',{name:'待确认的计划变更'}).waitFor();
+ assert(submissions[0].type==='custom'&&submissions[0].targetNodeIds.length===0&&!('changes' in submissions[0]),'global text was reduced to weekly hours');
+ assert(await input.inputValue()==='','successful submit did not clear draft');
+ await page.getByRole('button',{name:'关闭预览',exact:true}).click();
+ await page.getByRole('button',{name:'记录任务变更：确认产品需求范围',exact:true}).click();
+ failNext=true;await input.fill('该任务所需资料发生变化。');await input.press('Enter');
+ await page.getByRole('alert').waitFor();assert(await input.inputValue()==='该任务所需资料发生变化。','failed submit lost draft');
+ assert((await page.getByRole('alert').textContent()).includes('手动设置并保护'),'friendly error absent');
+ await input.press('Enter');await page.getByRole('region',{name:'待确认的计划变更'}).waitFor();
+ assert(JSON.stringify(submissions[2].targetNodeIds)===JSON.stringify(['task-1']),'task scope wrong');
+ await page.screenshot({path:'output/playwright/ui-revision/task-change-preview.png'});
+ await page.getByRole('button',{name:'关闭预览',exact:true}).click();
+ const connector=page.locator('.flow-connector').first();await connector.hover();await connector.getByRole('button').click();
+ await input.fill('本阶段的验收要求已调整。');await input.press('Enter');await page.getByRole('region',{name:'待确认的计划变更'}).waitFor();
+ assert(JSON.stringify(submissions[3].targetNodeIds)===JSON.stringify(Array.from({length:9},(_,i)=>'task-'+(i+1))),'segment does not include both adjoining groups');
+ await page.screenshot({path:'output/playwright/ui-revision/segment-change-preview.png'});
+ await page.getByRole('button',{name:'关闭预览',exact:true}).click();
+ await page.getByRole('button',{name:'查看任务：确认产品需求范围',exact:true}).click();
+ let dialog=page.getByRole('dialog',{name:'任务详情',exact:true});await dialog.waitFor();
+ await dialog.getByRole('button',{name:'记录任务变更',exact:true}).click();
+ await page.waitForFunction(()=>document.activeElement===document.querySelector('.change-composer textarea'));
+ assert(await page.getByRole('dialog').count()===0,'inspector still open');
+ await page.getByRole('button',{name:'查看任务：确认产品需求范围',exact:true}).click();await dialog.waitFor();
+ await dialog.getByLabel('名称',{exact:true}).fill('确认更新后的产品需求');
+ await dialog.getByRole('combobox',{name:'状态',exact:true}).selectOption('ready');
+ assert(patches.length===0,'status saved before confirmation');
+ await page.keyboard.press('Escape');await page.getByRole('dialog',{name:'放弃未保存的修改？',exact:true}).waitFor();
+ await page.keyboard.press('Escape');assert(await page.getByRole('dialog').count()===1,'nested escape closed parent');
+ assert((await dialog.getByLabel('名称',{exact:true}).inputValue())==='确认更新后的产品需求','draft lost on cancel');
+ await dialog.getByRole('button',{name:'保存修改',exact:true}).click();
+ await page.waitForFunction(()=>document.querySelector('.edit-save-hint').textContent.includes('点击保存修改'));
+ assert(JSON.stringify(patches[0])===JSON.stringify({title:'确认更新后的产品需求',status:'ready'}),'atomic edit payload wrong '+JSON.stringify(patches[0]));
+ await page.screenshot({path:'output/playwright/ui-revision/task-inspector.png'});
+ await page.keyboard.press('Escape');
+ assert(await page.getByRole('dialog').count()===0,'escape close failed');
+ await page.getByRole('button',{name:'打开计划菜单',exact:true}).click();
+ await page.getByRole('button',{name:'查看全部 7 个版本',exact:true}).click();assert(await page.locator('.history-step').count()===7,'full history missing');
+ await page.screenshot({path:'output/playwright/ui-revision/project-sidebar.png'});
+ await page.getByRole('button',{name:'新增任务',exact:true}).click();
+ const create=page.getByRole('dialog',{name:'添加新任务',exact:true});await create.waitFor();assert(await create.getByRole('button',{name:'创建任务',exact:true}).isDisabled(),'empty task allowed');
+ await page.keyboard.press('Escape');assert(await page.getByRole('dialog').count()===1,'new task cancel closed sidebar');await page.keyboard.press('Escape');
+ await page.getByRole('button',{name:'时间约束',exact:true}).click();await page.getByRole('dialog',{name:'调整时间约束',exact:true}).waitFor();
+ await page.getByRole('dialog',{name:'调整时间约束',exact:true}).getByRole('spinbutton').fill('');assert(await page.getByRole('button',{name:'生成变更预览',exact:true}).isDisabled(),'empty hours allowed');await page.keyboard.press('Escape');
+ await page.unrouteAll({behavior:'wait'});
+ return {mode:'Frontend request interception only; no business service invoked',globalText:submissions[0],taskTargets:submissions[2].targetNodeIds,segmentTargets:submissions[3].targetNodeIds,failedDraftRetained:true,inspectorComposerFocus:true,shiftEnter:true,atomicEdit:patches[0],nestedEscape:true,fullHistory:true,newTaskCancel:true,hoursValidation:true};
+}

@@ -3,6 +3,8 @@ import type { CreateProjectInput, InterviewAnswer, InterviewSession } from "@zhi
 import { requestSession } from "./interview-api";
 import { InterviewQuestionCard } from "./InterviewQuestionCard";
 import { answerIsComplete, formatInterviewAnswer } from "./interview-answers";
+import { Brand } from "./Brand";
+import { ErrorNotice } from "./ErrorNotice";
 
 interface OnboardingProps {
   busy: boolean;
@@ -70,12 +72,12 @@ export function Onboarding({ busy, error, onClose, onCreate }: OnboardingProps) 
   };
 
   return <main className="flow-page interview-page">
-    <header className="flow-header"><button onClick={onClose} disabled={locked}>知路 · 返回已有计划</button><span>01 了解背景 → 02 确认计划 → 03 路线图</span></header>
+    <header className="flow-header"><button onClick={onClose} disabled={locked}><Brand /><span>返回项目</span></button><span>01 背景登记 · 02 计划确认 · 03 任务执行</span></header>
     <section className="interview-page-content">
-      <p className="section-kicker">{summary ? "确认目标与背景" : session ? `已处理 ${processedCount} 题 · 最多 30 题` : "从你的目标出发"}</p>
-      <h1>{summary ? "这是我理解的你" : session ? "再了解你一点" : "你想完成什么？"}</h1>
-      <p>{summary ? "检查并修改摘要。确认后将结合知乎证据生成计划草稿。" : session ? session.goal : "后续问题根据你的目标和每轮回答生成，信息足够就停止。"}</p>
-      {!session && <label className="interview-field">你的目标<textarea autoFocus maxLength={2000} value={goal} disabled={locked} onChange={event => setGoal(event.target.value)} placeholder="例如：我想在三个月内发布自己的第一款产品" /></label>}
+      <p className="section-kicker">{summary ? "确认目标与背景" : session ? `已处理 ${processedCount} 题 · 最多 30 题` : "项目目标登记"}</p>
+      <h1>{summary ? "目标与背景确认" : session ? "背景信息补充" : "登记项目目标"}</h1>
+      <p>{summary ? "检查并修改摘要。确认后将结合知乎证据生成计划草稿。" : session ? session.goal : "系统根据项目目标与已提交资料生成补充问题，信息完整后进入确认环节。"}</p>
+      {!session && <label className="interview-field">项目目标<textarea autoFocus maxLength={2000} value={goal} disabled={locked} onChange={event => setGoal(event.target.value)} placeholder="例如：三个月内完成首款产品的开发与发布" /></label>}
       {!session && <label className="background-import">＋ 导入已有 Markdown / TXT（可选）<input disabled={locked} type="file" accept=".md,.txt,text/plain,text/markdown" onChange={async event => {
         const file = event.target.files?.[0];
         if (!file) return;
@@ -90,11 +92,11 @@ export function Onboarding({ busy, error, onClose, onCreate }: OnboardingProps) 
         {!summary && <small>本轮 {batchCompleted} / {pending.length} 题已回答或跳过 · 信息足够即可提前结束</small>}
       </div>}
       {waiting && <div className="model-running" role="status" aria-live="polite"><span className="model-spinner" aria-hidden="true" /><div>
-        <strong>{restoring ? "正在恢复上次访谈…" : session ? "正在结合你的回答分析背景…" : "正在根据目标生成背景问题…"}</strong>
+        <strong>{restoring ? "正在恢复上次访谈…" : session ? "正在结合回答内容分析背景…" : "正在根据目标生成背景问题…"}</strong>
         <small>{restoring ? "正在读取已保存的题目" : "请求已发送，等待模型返回"} · 已等待 {elapsed} 秒</small>
         {elapsed >= 30 && <small>等待时间较长，请稍候；失败或超时会在此提示，不会自动重试。</small>}
       </div></div>}
-      {(localError || error) && <p className="research-error" role="alert">{localError || error}</p>}
+      {(localError || error) && <ErrorNotice message={(localError || error)!} />}
       {session && !summary && <div className="question-batch">{pending.map((question, index) => <InterviewQuestionCard key={question.id} question={question}
         number={session.answers.length + index + 1} answer={selected[question.id]} disabled={locked}
         onChange={answer => setSelected(current => ({ ...current, [question.id]: answer }))} />)}</div>}
@@ -112,10 +114,10 @@ export function Onboarding({ busy, error, onClose, onCreate }: OnboardingProps) 
         <label>复盘频率<select disabled={locked} value={summary.goalContract.reviewCadence} onChange={event => setSummary({ ...summary, goalContract: { ...summary.goalContract, reviewCadence: event.target.value as "weekly" | "biweekly" | "monthly" } })}><option value="weekly">每周</option><option value="biweekly">每两周</option><option value="monthly">每月</option></select></label>
         <details><summary>查看全部 {session?.answers.length} 道访谈问题</summary>{session?.questions.map(question => <p key={question.id}><strong>{question.question}</strong><br />{formatInterviewAnswer(question, session.answers.find(answer => answer.questionId === question.id))}</p>)}</details>
       </div>}
-      <footer className="flow-actions">
-        <button disabled={locked} onClick={() => { sessionStorage.removeItem("zhilu-interview"); setSession(null); setSummary(null); setSelected({}); setBackgroundNotes(""); setFileMessage(""); setLocalError(null); }}>重新开始</button>
-        {summary ? <button className="research-primary" disabled={locked} onClick={() => onCreate({ ...summary, userContext: { ...summary.userContext, confirmed: true }, goalContract: { ...summary.goalContract, confirmed: true } })}>{busy ? "正在创建…" : "确认背景，生成知乎计划 →"}</button>
-          : <button className="research-primary" disabled={locked || (!session ? !goal.trim() : pending.some(question => !answerIsComplete(question, selected[question.id])))} onClick={() => void submit()}>{waiting ? "正在生成…" : session ? `提交本轮 ${pending.length} 题 →` : "开始了解背景 →"}</button>}
+      <footer className="flow-actions sticky-flow-actions">
+        <button disabled={locked} onClick={() => { sessionStorage.removeItem("zhilu-interview"); setSession(null); setSummary(null); setSelected({}); setBackgroundNotes(""); setFileMessage(""); setLocalError(null); }}>重新填写</button>
+        {summary ? <button className="research-primary" disabled={locked} onClick={() => onCreate({ ...summary, userContext: { ...summary.userContext, confirmed: true }, goalContract: { ...summary.goalContract, confirmed: true } })}>{busy ? "正在创建" : "确认资料并生成方案"}</button>
+          : <button className="research-primary" disabled={locked || (!session ? !goal.trim() : pending.some(question => !answerIsComplete(question, selected[question.id])))} onClick={() => void submit()}>{waiting ? "正在生成" : session ? `提交本轮 ${pending.length} 题` : "开始填写背景资料"}</button>}
       </footer>
     </section>
   </main>;

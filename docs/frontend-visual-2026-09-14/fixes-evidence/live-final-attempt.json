@@ -1,0 +1,47 @@
+{
+  "startedAt": "2026-09-14T11:11:30.705Z",
+  "steps": [
+    {
+      "path": "/research/live/baseline",
+      "status": 502,
+      "durationMs": 641,
+      "error": {
+        "error": "研究问题规划：研究模型调用失败，请检查模型服务、授权或额度。",
+        "code": "process_failed",
+        "controller": {
+          "coverage": {
+            "status": "insufficient",
+            "evidenceCount": 0,
+            "targetMin": 6,
+            "targetMax": 8,
+            "hasCaveat": false,
+            "gaps": [
+              {
+                "kind": "evidence_count",
+                "reason": "尚未取得研究证据"
+              }
+            ],
+            "reviewStatus": "needs_human_review"
+          },
+          "questionCoverage": [],
+          "rounds": 0,
+          "queryBudget": 6,
+          "queriesAttempted": 0,
+          "searchCallsAttempted": 0,
+          "cacheHits": 0,
+          "stages": [
+            {
+              "stage": "plan",
+              "durationMs": 606,
+              "status": "failed"
+            }
+          ],
+          "stopReason": "llm_error"
+        }
+      }
+    }
+  ],
+  "completed": false,
+  "failure": "502 /research/live/baseline",
+  "finishedAt": "2026-09-14T11:11:31.348Z"
+}

@@ -1,0 +1,32 @@
+
+> zhilu@ build /Users/norda/Development/zhilu-roadmapper/zhilu
+> pnpm -r build
+
+Scope: 5 of 6 workspace projects
+packages/contracts build$ tsc -p tsconfig.build.json
+packages/contracts build: Done
+apps/web build$ vite build
+packages/agent-runtime build$ tsc -p tsconfig.build.json
+packages/plan-engine build$ tsc -p tsconfig.build.json
+apps/web build: vite v7.3.6 building client environment for production...
+apps/web build: transforming...
+packages/plan-engine build: Done
+apps/web build: ✓ 48 modules transformed.
+apps/web build: rendering chunks...
+apps/web build: computing gzip size...
+apps/web build: dist/index.html                   0.53 kB │ gzip:  0.34 kB
+apps/web build: dist/assets/index-CMXdWBb6.css   49.49 kB │ gzip: 11.05 kB
+apps/web build: dist/assets/index-BaFko9fv.js   291.26 kB │ gzip: 91.65 kB
+apps/web build: ✓ built in 5.65s
+apps/web build: Done
+packages/agent-runtime build: Done
+apps/server build$ tsup src/index.ts --format esm --out-dir dist --clean
+apps/server build: CLI Building entry: src/index.ts
+apps/server build: CLI Using tsconfig: tsconfig.json
+apps/server build: CLI tsup v8.5.1
+apps/server build: CLI Target: es2022
+apps/server build: CLI Cleaning output folder
+apps/server build: ESM Build start
+apps/server build: ESM dist/index.js 117.87 KB
+apps/server build: ESM ⚡️ Build success in 54ms
+apps/server build: Done

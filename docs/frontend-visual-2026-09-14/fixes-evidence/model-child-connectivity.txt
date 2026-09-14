@@ -1,0 +1,7 @@
+{"pythonBin":"/Users/norda/Development/zhilu-roadmapper/zhilu/.venv/bin/python","pythonCwd":"/Users/norda/Development/zhilu-roadmapper/zhilu/packages/zhihu","proxyVariableNames":[]}
+Calling deepseek-v4-pro on the official DeepSeek API...
+{
+  "status": "ok"
+}
+
+

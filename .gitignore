@@ -28,3 +28,7 @@ data/
 # Local research runs (already tracked artifacts are intentionally left alone)
 packages/zhihu/artifacts/
 packages/zhihu/latest_*.json
+
+# Local browser QA sessions; selected evidence is copied into docs.
+.playwright-cli/
+output/playwright/

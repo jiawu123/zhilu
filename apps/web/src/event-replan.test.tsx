@@ -43,7 +43,7 @@ describe("event replan no-change result", () => {
     const result = mergeEventReplanResponse(pending, response);
     expect(result.pending).toBe(response);
     expect(result.unchangedReplan).toBeNull();
-    expect(renderPanel(result.pending, result.unchangedReplan)).toContain("<button>确认当前方案 →</button>");
+    expect(renderPanel(result.pending, result.unchangedReplan)).toContain("<button>确认当前方案</button>");
   });
 
   it("shows a successful check without confirmation while preserving the pending proposal", () => {
@@ -53,7 +53,7 @@ describe("event replan no-change result", () => {
     const html = renderPanel(pending, { patchId: pending.patch.id, processing });
     expect(html).toContain("当前排期已满足约束，无需调整");
     expect(html).toContain("现有任务已满足当前周预算。");
-    expect(html).toContain(">稍后</button>");
+    expect(html).toContain(">关闭预览</button>");
     expect(html).not.toMatch(/<button[^>]*>确认/);
     expect(html).not.toContain("AI 排期未完成");
     expect(html).not.toContain('role="alert"');
@@ -65,19 +65,29 @@ describe("event replan no-change result", () => {
     const html = renderPanel(proposal(10));
     expect(html).toContain("8h → 10h / 周");
     expect(html).toContain("0 个节点的日期调整");
-    expect(html).toContain("<button>确认当前方案 →</button>");
+    expect(html).toContain("<button>确认当前方案</button>");
     expect(html).not.toContain("当前排期已满足约束，无需调整");
   });
 
   it("does not carry a no-change check over to a different pending patch", () => {
     const html = renderPanel(proposal(10), { patchId: "earlier-patch", processing });
-    expect(html).toContain("<button>确认当前方案 →</button>");
+    expect(html).toContain("<button>确认当前方案</button>");
     expect(html).not.toContain("当前排期已满足约束，无需调整");
   });
 
   it("invalidates the no-change check when the formal plan version advances", () => {
     const html = renderPanel(proposal(), { patchId: "patch-1", processing }, { ...plan(), version: 3 });
-    expect(html).toContain("这份预演已过期");
+    expect(html).toContain("变更预览已失效");
     expect(html).not.toContain("当前排期已满足约束，无需调整");
+  });
+
+  it("allows confirmation of a protected-node event record without fabricating field changes", () => {
+    const pending = { ...proposal(), event: { ...proposal().event, type: "custom" as const, description: "保留手动原因，独立记录反馈" },
+      patch: { ...proposal().patch, operations: [] }, processing: { ...processing, mode: "deterministic" as const } };
+    const html = renderPanel(pending);
+    expect(html).toContain("<button>确认变更记录</button>");
+    expect(html).toContain("确认后仅新增一条历史记录");
+    expect(html).not.toContain("当前草案没有实际字段变化，无需应用");
+    expect(renderPanel(pending, null, { ...plan(), version: 3 })).not.toContain("<button>确认变更记录</button>");
   });
 });

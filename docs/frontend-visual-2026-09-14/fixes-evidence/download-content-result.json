@@ -1,0 +1,18 @@
+{
+  "jsonEqualsSavedPlan": true,
+  "markdownContainsGoalAndAllTasks": true,
+  "zipPlanAndMarkdownMatchDownloads": true,
+  "allHistoryIncluded": 5,
+  "entries": [
+    "manifest.json",
+    "README.md",
+    ".plan/plan.json",
+    ".plan/commits/000005.json",
+    ".plan/commits/000004.json",
+    ".plan/commits/000003.json",
+    ".plan/commits/000002.json",
+    ".plan/commits/000001.json"
+  ],
+  "projectId": "project-39e7d158",
+  "currentCommitId": "000005"
+}

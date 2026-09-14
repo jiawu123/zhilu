@@ -2,7 +2,9 @@
 
 日期：2026-09-14。分支：`codex/frontend-visual-copy`。
 
-本轮完成现有前端的视觉替换、底部时间轴和任务截止日期展示。Computer Use 走查已经结束；走查发现的问题仅记录和排期，没有在走查后修改应用代码。详见 [Dogfood 记录与提升计划](DOGFOOD.md)。
+首轮视觉替换已保存为本地 commit `0d3049a`（未 push）。用户随后授权修复走查问题，并要求改为同日任务合并、卡片内滚动的日期看板。最新要求已进一步调整为“同日合并、其余连线、底部变更输入、正式文案与知乎品牌视觉”。当前交付请看 [前端升级与验证记录](UI-REVISION-2.md)。
+
+下文保留首轮视觉交付的历史记录，其修改范围、时间轴形式和验证结果描述的是 `0d3049a`，不代表后续修复状态。首轮问题见 [Dogfood 记录与提升计划](DOGFOOD.md)。
 
 ## 审美判断与落地
 
@@ -21,7 +23,7 @@
 
 ## 仓库基线与结构分析
 
-当前本地最新 commit 是 `804903d1ae4e10179f18fc66b6a6f5b11b9a3fdf`：
+开始视觉重构时的本地基线 commit 是 `804903d1ae4e10179f18fc66b6a6f5b11b9a3fdf`：
 
 > fix: strengthen evidence planning and preview lifecycle
 
@@ -97,4 +99,4 @@
 | 16 任务密集画布 | [14](screenshots/14-dense-roadmap.png) |
 | 节点事件及保护拦截 | [15](screenshots/15-node-event.png)、[16](screenshots/16-manual-field-event-error.png) |
 
-常规开发仍使用仓库原有的 `pnpm dev`。本次临时走查使用独立的 5178 / 8797 端口和 `/tmp` 数据，没有改动正式配置或用户原有项目数据。分支上的改动尚未 commit 或 push。
+常规开发仍使用仓库原有的 `pnpm dev`。本次临时走查使用独立的 5178 / 8797 端口和 `/tmp` 数据，没有改动正式配置或用户原有项目数据。首轮交付随后保存为本地 commit `0d3049a`，没有 push。

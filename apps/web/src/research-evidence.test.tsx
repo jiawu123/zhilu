@@ -97,7 +97,7 @@ describe("model evidence applications remain distinct from source material", () 
     expect(html).not.toContain("模型的采用说明 · 待核实");
     expect(html).toContain("先做小样本，再检验反馈。");
     expect(html).toContain("另一任务的原文。");
-    expect(html).toContain("当前路标未采用");
+    expect(html).toContain("当前任务未采用");
     expect(html).not.toContain("另一任务专属的采用说明。");
     expect(html).not.toContain("另一条路线的采用说明。");
     expect(html).not.toContain("尚未取得可展示的知乎原帖");
@@ -143,7 +143,7 @@ describe("Inspector keeps research material visible for the user to verify", () 
     expect(disclosure).toContain("search_snippet_only");
     expect(disclosure).toContain("not_independently_verified");
     expect(disclosure).toContain("自定义风险🧭");
-    expect(disclosure).toMatch(/本次研究[\s\S]*?不代表[^<]*支持当前路标/);
+    expect(disclosure).toMatch(/本次研究[\s\S]*?不代表[^<]*支持当前任务/);
     for (const item of sources) expect(disclosure).toContain(`href="${item.source.url}"`);
     expect(html.indexOf("第一天🗾")).toBeLessThan(html.indexOf("较长的AI证据说明应出现在参考原文之后。"));
     expect(html).toContain("AI规划／待验证");
@@ -174,7 +174,7 @@ describe("Inspector keeps research material visible for the user to verify", () 
     expect(html).toContain("2026-09-14T10:00:00Z");
     expect(html).toContain("search_snippet_only");
     expect(html).toContain("needs_human_review");
-    expect(html).toContain("当前路标未采用");
+    expect(html).toContain("当前任务未采用");
     expect(html.indexOf("其他原文🧭")).toBeLessThan(html.indexOf("当前路标的AI证据长说明。"));
     expect(html.match(/先做小样本，再检验反馈。/g)).toHaveLength(1);
     expect(html.match(/href="https:\/\/www.zhihu.com\/answer\/123"/g)).toHaveLength(1);
@@ -209,11 +209,11 @@ describe("Inspector keeps research material visible for the user to verify", () 
     const withoutPlan = renderToStaticMarkup(createElement(Inspector, props));
     expect(withoutPlan).toContain("AI规划／待验证");
     expect(withoutPlan).not.toContain("先做小样本，再检验反馈。");
-    expect(withoutPlan).not.toContain("当前路标未采用");
+    expect(withoutPlan).not.toContain("当前任务未采用");
     plan.evidence = props.evidence;
     const before = structuredClone(plan), withoutSources = renderInspector(plan, "t-ai");
     expect(withoutSources).toContain("AI规划／待验证");
-    expect(withoutSources).not.toContain("当前路标未采用");
+    expect(withoutSources).not.toContain("当前任务未采用");
     expect(withoutSources).not.toContain("模型的采用说明 · 待核实");
     expect(plan).toEqual(before);
   });
@@ -282,7 +282,7 @@ describe("insufficient research remains visible without becoming adopted evidenc
     const mock = proposal([]);
     mock.researchRun.mode = "mock";
     delete mock.roadmapper;
-    expect(renderProposal(mock)).toContain("这是机制演示，不是已验证的知乎研究结论");
+    expect(renderProposal(mock)).toContain("演示方案仅用于功能展示，未经真实研究验证。");
     expect(renderProposal(mock)).not.toContain("模型根据已确认的目标与背景生成了暂定计划");
   });
 

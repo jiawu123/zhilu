@@ -1,0 +1,4 @@
+
+> @zhilu/web@0.0.1 typecheck /Users/norda/Development/zhilu-roadmapper/zhilu/apps/web
+> tsc --noEmit
+

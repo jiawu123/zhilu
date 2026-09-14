@@ -1,0 +1,31 @@
+async (page) => {
+ const assert=(v,m)=>{if(!v)throw new Error(m);};
+ const base='http://127.0.0.1:5178/api/projects/project-39e7d158';
+ const read=async()=>{const r=await page.request.get(base);return r.json();};
+ await page.goto('http://127.0.0.1:5178/?project=project-39e7d158&page=roadmap');
+ const title='导出走查：鼠标改期任务';
+ const original=await read();
+ await page.getByRole('button',{name:new RegExp('^\\d+\\.\\d+ '+title+'$')}).click();
+ await page.getByLabel('开始日期',{exact:true}).fill('2026-09-23');
+ await page.getByLabel('截止日期',{exact:true}).fill('2026-09-26');
+ await page.locator('.node-edit-form select').selectOption('in_progress');
+ assert((await read()).plan.version===original.plan.version,'WebKit status write before save');
+ await page.keyboard.press('Escape');
+ await page.getByRole('dialog',{name:'放弃未保存的修改？'}).waitFor();
+ await page.keyboard.press('Escape');
+ await page.getByRole('dialog',{name:'放弃未保存的修改？'}).waitFor({state:'hidden'});
+ assert(await page.getByLabel('开始日期',{exact:true}).inputValue()==='2026-09-23','cancel discarded date draft');
+ assert(await page.evaluate(()=>Boolean(document.activeElement.closest('dialog[open]'))),'nested dialog focus not returned');
+ await Promise.all([page.waitForResponse(r=>r.url().includes(base+'/nodes/')&&r.request().method()==='PATCH'),page.getByRole('button',{name:'保存修改',exact:true}).click()]);
+ await page.getByText('修改名称、日期或状态后，点击保存修改。',{exact:true}).waitFor();
+ await page.reload();
+ await page.getByRole('button',{name:new RegExp('^\\d+\\.\\d+ '+title+'$')}).click();
+ assert(await page.getByLabel('开始日期',{exact:true}).inputValue()==='2026-09-23','WebKit start date not persisted');
+ assert(await page.getByLabel('截止日期',{exact:true}).inputValue()==='2026-09-26','WebKit deadline not persisted');
+ assert(await page.locator('.node-edit-form select').inputValue()==='in_progress','WebKit status not persisted');
+ await page.getByLabel('名称',{exact:true}).fill('不应保存的草稿');await page.keyboard.press('Escape');
+ await page.getByRole('button',{name:'放弃修改',exact:true}).click();
+ assert(await page.getByRole('dialog').count()===0,'discard did not close inspector');
+ assert((await read()).plan.nodes.some(n=>n.title===title),'discard wrote name');
+ return {dateStatusPersistence:true,nestedEscapeKeepsDraft:true,discardLeavesSavedName:true};
+}

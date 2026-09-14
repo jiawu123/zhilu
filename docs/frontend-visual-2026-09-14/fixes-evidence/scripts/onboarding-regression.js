@@ -1,0 +1,34 @@
+async (page) => {
+ const assert=(v,m)=>{if(!v)throw new Error(m);};
+ await page.setViewportSize({width:390,height:844});
+ await page.goto('http://127.0.0.1:5178/?page=interview');
+ await page.getByRole('button',{name:'重新开始',exact:true}).click();
+ await page.getByLabel('你的目标',{exact:true}).fill('回归测试：十二周内完成一个可演示的笔记网页');
+ await page.locator('input[type=file]').setInputFiles('/tmp/zhilu-fixes-qa/dogfood-background.md');
+ await page.getByText('已读取 dogfood-background.md',{exact:false}).waitFor();
+ assert(await page.getByText('模型访谈已配置。知乎研究尚未开启，确认背景后可先查看演示路线。',{exact:true}).isVisible(),'readiness missing before interview');
+ await Promise.all([page.waitForResponse(r=>r.url().endsWith('/api/interviews')&&r.request().method()==='POST'),page.getByRole('button',{name:'开始了解背景 →',exact:true}).click()]);
+ await page.getByRole('radio',{name:'做过一个小项目',exact:true}).check();
+ await page.getByRole('checkbox',{name:'可运行的网页',exact:true}).check();
+ await page.getByRole('checkbox',{name:'用户反馈记录',exact:true}).check();
+ await page.getByRole('button',{name:'循序渐进',exact:true}).click();
+ await page.locator('.text-answer textarea').fill('每周八小时，优先完成可演示的小产品。');
+ await Promise.all([page.waitForResponse(r=>r.url().includes('/answers')&&r.request().method()==='POST'),page.getByRole('button',{name:'提交本轮 4 题 →',exact:true}).click()]);
+ await page.locator('.summary-fields').waitFor();
+ await page.waitForFunction(()=>document.querySelector('.interview-page').scrollTop===0);
+ const footer=await page.locator('.flow-actions').boundingBox();
+ assert(footer.y>=0&&footer.y+footer.height<=844,'summary confirmation is below viewport '+JSON.stringify(footer));
+ await page.screenshot({path:'output/playwright/dogfood-fixes/chrome-mobile-summary.png'});
+ await page.getByText('查看已导入背景材料',{exact:true}).click();
+ assert(await page.locator('.imported-background').textContent() === '# 走查背景\n每周八小时，已有基础经验。此文件仅用于导入回归测试。','imported material changed');
+ await Promise.all([page.waitForResponse(r=>r.url().endsWith('/api/projects')&&r.request().method()==='POST'),page.getByRole('button',{name:'确认背景，选择计划方式 →',exact:true}).click()]);
+ await page.getByRole('button',{name:'先查看演示路线（不调用真实研究）',exact:true}).waitFor();
+ assert(await page.getByRole('button',{name:'用知乎证据规划路线→',exact:true}).isDisabled(),'unconfigured live call is offered without warning');
+ await page.getByRole('button',{name:'先查看演示路线（不调用真实研究）',exact:true}).click();
+ await page.getByRole('heading',{name:'先把计划商量好',exact:true}).waitFor();
+ await page.waitForFunction(()=>document.querySelector('.plan-page').scrollTop===0);
+ const planFooter=await page.locator('.route-lab > footer').boundingBox();
+ assert(planFooter.y>=0&&planFooter.y+planFooter.height<=844,'plan confirmation is below viewport '+JSON.stringify(planFooter));
+ await page.screenshot({path:'output/playwright/dogfood-fixes/chrome-mobile-plan-confirmation.png'});
+ return {import:true,mixedInterview:true,summaryFooter:footer,planFooter,planScrollReset:true,earlyReadiness:true,projectUrl:page.url()};
+}
