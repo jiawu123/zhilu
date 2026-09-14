@@ -49,6 +49,8 @@ M2 配置与 PowerShell 命令见 [知乎模块说明](packages/zhihu/README.md#
 
 ## 本地运行
 
+CloudBase 测试部署见 [部署说明](deploy/cloudbase/README.md)。可以直接部署当前分支，无需先合并 `main`；线上环境与本地运行分别配置。
+
 以下命令均从**仓库根目录**执行。需要 Node.js 24 和 pnpm 10.30.2；首次拉取代码后安装依赖：
 
 ```bash

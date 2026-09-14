@@ -39,6 +39,8 @@ def no_network(monkeypatch):
     monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
     monkeypatch.delenv("ZHIHU_RETRIEVAL_PROFILE", raising=False)
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.delenv("ZHIHU_PLANNER_DIAGNOSTIC_DIR", raising=False)
+    monkeypatch.delenv("ZHIHU_PLANNER_DIAGNOSTIC_FILE", raising=False)
     def forbidden(*args, **kwargs):
         raise AssertionError("Unexpected real HTTP request in an offline test")
     monkeypatch.setattr(httpx.Client, "send", forbidden)
@@ -47,7 +49,7 @@ def no_network(monkeypatch):
 @pytest.fixture
 def fake_model(monkeypatch):
     state = {"calls": [], "response": model_plan(), "error": None}
-    def generate(system_prompt, user_prompt, *, max_tokens):
+    def generate(system_prompt, user_prompt, *, max_tokens, diagnostic=None):
         state["calls"].append((system_prompt, json.loads(user_prompt), max_tokens))
         if state["error"] is not None:
             raise state["error"]
@@ -321,6 +323,58 @@ def test_production_diagnostic_records_deferred_queries(tmp_path, fake_model, mo
     assert report["query_selection"] == result["query_selection"]
     assert report["query_selection"]["proposed_query_count"] == 4
     assert report["model_response"] == fake_model["response"]
+
+
+def test_diagnostic_directory_keeps_failure_and_success_separately(tmp_path, fake_model, monkeypatch):
+    root = tmp_path / "private" / "planner"
+    monkeypatch.setenv("ZHIHU_PLANNER_DIAGNOSTIC_DIR", str(root))
+    fake_model["response"] = {"bad_schema": "model output"}
+    with pytest.raises(qp.PlannerValidationError):
+        qp.plan_research(GOAL, CONTEXT, planning_profile=qp.INITIAL_PROFILE)
+    fake_model["response"] = model_plan()
+    qp.plan_research(GOAL, CONTEXT, planning_profile=qp.INITIAL_PROFILE)
+    files = sorted(root.glob("planner-*.json"))
+    failed, passed = map(read, files)
+    assert len(files) == 2
+    assert failed["status"] == "failed" and passed["status"] == "passed"
+    assert failed["stage"] == "validation"
+    assert failed["validation_message"] == "Model output has missing or extra top-level fields."
+    assert failed["input_sha256"] == passed["input_sha256"]
+    assert failed["run_id"] != passed["run_id"]
+    assert failed["prompts"]["system"] and failed["prompts"]["user"]
+    assert len(failed["planner_source_sha256"]) == 64
+    assert len(failed["llm_client_source_sha256"]) == 64
+    assert failed["new_zhihu_search"] is False
+    assert failed["duration_ms"] >= 0
+    assert len(fake_model["calls"]) == 2
+    if qp.os.name != "nt":
+        assert root.stat().st_mode & 0o777 == 0o700
+        assert all(path.stat().st_mode & 0o777 == 0o600 for path in files)
+
+
+@pytest.mark.parametrize("content,finish_reason", [('{"status":', "stop"), ('{"status":"ok"}', "length")])
+def test_diagnostic_preserves_raw_output_when_transport_validation_fails(tmp_path, monkeypatch, content, finish_reason):
+    monkeypatch.setenv("ZHIHU_PLANNER_DIAGNOSTIC_DIR", str(tmp_path))
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "private-test-key")
+    def send(client, request, **kwargs):
+        # The initial record exists before any response arrives.
+        initial = read(next(tmp_path.glob("planner-*.json")))
+        assert initial["status"] == "running"
+        assert initial["input"]["goal"] == GOAL
+        return httpx.Response(200, request=request, json={"id": "completion-test",
+            "choices": [{"finish_reason": finish_reason, "message": {"content": content}}]})
+    monkeypatch.setattr(httpx.Client, "send", send)
+    with pytest.raises(llm_client.LLMError):
+        qp.plan_research(GOAL, CONTEXT, planning_profile=qp.INITIAL_PROFILE)
+    path = next(tmp_path.glob("planner-*.json"))
+    report = read(path)
+    assert report["status"] == "failed" and report["stage"] == "model_call"
+    assert report["transport"]["raw_content"] == content
+    assert report["transport"]["finish_reason"] == finish_reason
+    assert report["transport"]["response_id"] == "completion-test"
+    assert report["transport"]["request"]["max_tokens"] == 2400
+    assert "private-test-key" not in path.read_text()
+    assert "Authorization" not in path.read_text()
 
 
 def test_initial_diagnostic_cli_uses_production_prompt(request_file, tmp_path, fake_model, capsys):

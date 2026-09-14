@@ -92,6 +92,29 @@ def test_http_errors_are_not_empty_evidence_or_automatic_retries(status, fake_ht
     assert len(fake_http["requests"]) == 1
 
 
+def test_diagnostic_records_usage_and_model_content_without_authentication(fake_http):
+    fake_http["body"].update(id="completion-test", usage={"prompt_tokens": 8, "completion_tokens": 4, "total_tokens": 12})
+    diagnostic = {}
+    llm_client.generate_json("Return JSON.", "Test.", diagnostic=diagnostic)
+    assert diagnostic["http_status"] == 200
+    assert diagnostic["raw_content"] == '{"status":"ok"}'
+    assert diagnostic["finish_reason"] == "stop"
+    assert diagnostic["usage"]["total_tokens"] == 12
+    assert diagnostic["request"]["messages"] == json.loads(fake_http["requests"][0].content)["messages"]
+    assert "unit-test-placeholder" not in json.dumps(diagnostic)
+    assert "authorization" not in json.dumps(diagnostic).lower()
+
+
+def test_diagnostic_does_not_capture_http_error_body(fake_http):
+    fake_http["status"] = 401
+    fake_http["body"] = {"error": {"message": "unit-test-placeholder"}}
+    diagnostic = {}
+    with pytest.raises(llm_client.LLMError):
+        llm_client.generate_json("Return JSON.", "Test.", diagnostic=diagnostic)
+    assert diagnostic["http_status"] == 401
+    assert "unit-test-placeholder" not in json.dumps(diagnostic)
+
+
 def test_timeout_is_explicit(fake_http):
     fake_http["error"] = httpx.ReadTimeout("Do not print raw transport details.")
     with pytest.raises(RuntimeError, match="timed out"):

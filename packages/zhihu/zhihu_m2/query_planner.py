@@ -11,6 +11,7 @@ import json
 import math
 import os
 import re
+import time
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
@@ -345,28 +346,62 @@ def plan_research(
     """Make ONE model call and return a pending-review plan. No search or retry.
 
     This public function is live. Use the CLI without --call-model for preview.
-    Acceptance runs may opt into a local diagnostic file via the trusted
-    ZHIHU_PLANNER_DIAGNOSTIC_FILE environment variable; no credentials are saved.
+    Trusted ZHIHU_PLANNER_DIAGNOSTIC_DIR enables a unique private report per call.
+    ZHIHU_PLANNER_DIAGNOSTIC_FILE remains compatible with acceptance runs.
     """
     frozen = build_planner_input(goal, user_context, max_questions=max_questions,
                                  queries_per_question=queries_per_question, planning_profile=planning_profile)
     load_local_env()
     profile = options_from_env(os.environ).profile
     system_prompt, user_prompt = build_planner_prompts(frozen, retrieval_profile=profile)
-    payload = llm_client.generate_json(system_prompt, user_prompt, max_tokens=2400)
-    diagnostic = {"status": "failed", "input": frozen, "model_response": payload}
+    diagnostic_paths = []
+    now = datetime.now(timezone.utc)
+    run_id = "planner-" + now.strftime("%Y%m%dT%H%M%S%fZ-") + uuid4().hex[:8]
+    directory = os.environ.get("ZHIHU_PLANNER_DIAGNOSTIC_DIR")
+    if directory:
+        root = Path(directory)
+        if not root.is_absolute():
+            raise ValueError("ZHIHU_PLANNER_DIAGNOSTIC_DIR must be an absolute private directory.")
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        diagnostic_paths.append(root / (run_id + ".json"))
+    if os.environ.get("ZHIHU_PLANNER_DIAGNOSTIC_FILE"):
+        diagnostic_paths.append(Path(os.environ["ZHIHU_PLANNER_DIAGNOSTIC_FILE"]))
+    diagnostic = {"run_id": run_id, "status": "running", "stage": "model_call",
+                  "started_at": now.isoformat(), "input": frozen, "input_sha256": _hash(_json(frozen)),
+                  "prompts": {"system": system_prompt, "user": user_prompt},
+                  "model": llm_client.MODEL, "max_tokens": 2400,
+                  "planner_version": PLANNER_VERSION, "retrieval_profile": profile,
+                  "new_zhihu_search": False, "model_calls_attempted": 1, "transport": {}}
+    if diagnostic_paths:
+        diagnostic.update(planner_source_sha256=_hash(Path(__file__).read_text(encoding="utf-8")),
+                          llm_client_source_sha256=_hash(Path(llm_client.__file__).read_text(encoding="utf-8")))
+    # A running record survives process termination during a model request.
+    for path in diagnostic_paths:
+        _write(path, diagnostic)
+    started = time.perf_counter()
     try:
+        capture = {"diagnostic": diagnostic["transport"]} if diagnostic_paths else {}
+        payload = llm_client.generate_json(system_prompt, user_prompt, max_tokens=2400, **capture)
+        diagnostic.update(stage="validation", model_response=payload)
         result = compile_planner_response(payload, frozen)
-        diagnostic.update(status="passed", planned_query_count=result["planned_query_count"],
+        diagnostic.update(status="passed", stage="finished", planned_query_count=result["planned_query_count"],
                           query_selection=result.get("query_selection"))
         return result
-    except PlannerValidationError as error:
-        diagnostic["validation_message"] = str(error)
+    except KeyboardInterrupt:
+        diagnostic.update(status="interrupted", error_code="interrupted")
+        raise
+    except Exception as error:
+        diagnostic.update(status="failed", error_type=type(error).__name__, error_code=_safe_error_code(error))
+        if isinstance(error, PlannerValidationError):
+            diagnostic["validation_message"] = str(error)
+        elif isinstance(error, llm_client.LLMError):
+            diagnostic["model_error"] = str(error)
         raise
     finally:
-        diagnostic_file = os.environ.get("ZHIHU_PLANNER_DIAGNOSTIC_FILE")
-        if diagnostic_file:
-            _write(Path(diagnostic_file), diagnostic)
+        diagnostic.update(completed_at=datetime.now(timezone.utc).isoformat(),
+                          duration_ms=round((time.perf_counter() - started) * 1000))
+        for path in diagnostic_paths:
+            _write(path, diagnostic)
 
 
 SUPPLEMENTAL_PROMPT = """你是知乎 M2 的补充查询规划器，只返回最终 JSON。
@@ -486,7 +521,10 @@ def _load_request(path: Path) -> dict:
 def _write(path: Path, value: Any) -> None:
     text = json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
     temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(text, encoding="utf-8")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+        os.chmod(temporary, 0o600)
+        output.write(text)
     temporary.replace(path)
 
 

@@ -54,8 +54,8 @@ function appliedEvidenceProposal(): BaselineProposal {
 
 const renderInspector = (plan: PlanState, taskId: string) => {
   const node = plan.nodes.find(item => item.id === taskId)!;
-  return renderToStaticMarkup(createElement(Inspector, { node, plan, evidence: plan.evidence.filter(card => node.evidenceIds.includes(card.id)),
-    busy: false, onClose() {}, onSave() {}, onComplete() {}, onReportChange() {}, onArchive() {} }));
+  return renderToStaticMarkup(createElement(Inspector, { node,
+    busy: false, onClose() {}, onSave() {}, onComplete() {}, onArchive() {} }));
 };
 
 describe("model evidence applications remain distinct from source material", () => {
@@ -79,147 +79,47 @@ describe("model evidence applications remain distinct from source material", () 
     expect(html).toMatch(/整理每周日历[\s\S]*?AI规划／待验证/);
   });
 
-  it("shows only the selected formal task's application and preserves its source card", () => {
-    const plan = appliedEvidenceProposal().previews[0]!.plan, before = structuredClone(plan);
-    const html = renderInspector(plan, "t-source");
-    expect(html).toContain("模型的采用说明 · 待核实");
-    expect(html).toContain("先写一篇样稿并收集三条反馈，再决定后续选题。");
-    expect(html).toContain("先做小样本，再检验反馈。");
-    expect(html).not.toContain("另一任务专属的采用说明。");
-    expect(html).not.toContain("另一条路线的采用说明。");
-    expect(html).not.toContain("AI规划／待验证");
-    expect(plan).toEqual(before);
-  });
-
-  it("hides AI inference while showing collected material without adoption explanations", () => {
-    const html = renderInspector(appliedEvidenceProposal().previews[0]!.plan, "t-ai");
-    expect(html).not.toContain("AI规划／待验证");
-    expect(html).not.toContain("AI 推断");
-    expect(html).not.toContain("工时和排期由模型提出。");
-    expect(html).not.toContain("模型的采用说明 · 待核实");
-    expect(html).toContain("先做小样本，再检验反馈。");
-    expect(html).toContain("另一任务的原文。");
-    expect(html).toContain("当前路标未采用");
-    expect(html).not.toContain("另一任务专属的采用说明。");
-    expect(html).not.toContain("另一条路线的采用说明。");
-    expect(html).not.toContain("尚未取得可展示的知乎原帖");
-  });
-
-  it("keeps old source-backed proposals and formal tasks readable without application metadata", () => {
+  it("keeps older source-backed proposals readable without application metadata", () => {
     const value = appliedEvidenceProposal();
     delete value.roadmapper!.evidenceApplications;
-    const preview = renderProposal(value), inspector = renderInspector(value.previews[0]!.plan, "t-source");
-    for (const html of [preview, inspector]) {
-      expect(html).toContain("先做小样本，再检验反馈。");
-      expect(html).not.toContain("模型的采用说明 · 待核实");
-    }
-    expect(inspector).not.toContain("AI规划／待验证");
-  });
-
-  it("does not describe a partially sourced formal plan as having no viewable posts", () => {
-    const plan = appliedEvidenceProposal().previews[0]!.plan;
-    const html = renderToStaticMarkup(createElement(Sidebar, { open: true, plan, projectId: plan.projectId, history: [],
-      focusTasks: [], pendingCount: 0, busy: false, onClose() {}, onAddTask() {}, onNewProject() {}, onSelectTask() {} }));
-    expect(html).toContain("证据不足");
-    expect(html).not.toContain("尚未取得可展示的知乎原帖");
+    const html = renderProposal(value);
+    expect(html).toContain("先做小样本，再检验反馈。");
+    expect(html).not.toContain("模型的采用说明 · 待核实");
   });
 });
 
-describe("Inspector keeps research material visible for the user to verify", () => {
-  it("keeps insufficient-source snippets collapsed for optional reading without changing the plan", () => {
+describe("Roadmap details focus on execution after confirmation", () => {
+  it.each(["t-source", "t-ai"])("keeps task %s editable without research explanations", (taskId) => {
     const plan = appliedEvidenceProposal().previews[0]!.plan;
-    const sources = [source, ...Array.from({ length: 4 }, (_, index) => ({ ...source,
-      source: { ...source.source, id: `post-${index + 2}`, title: `补充原帖 ${index + 2}`,
-        url: `https://www.zhihu.com/answer/${index + 1000}`, snippet: `第${index + 2}条原始片段` } }))];
-    plan.research!.insufficientSources = sources;
-    plan.evidence.find(card => card.id === "e-ai")!.summary = "较长的AI证据说明应出现在参考原文之后。";
-    const before = structuredClone(plan), html = renderInspector(plan, "t-ai");
-    const disclosure = html.match(/<details(?=[^>]*\binsufficient-sources\b)[^>]*>[\s\S]*?<\/details>/)?.[0];
-    expect(disclosure).toBeDefined();
-    expect(disclosure).not.toMatch(/^<details[^>]*\bopen(?:=|[ >])/);
-    expect(disclosure).toContain("第一天🗾\r\n第二天 &lt;注意&gt;");
-    expect(disclosure).toContain('style="white-space:pre-wrap"');
-    expect(disclosure).not.toContain("<注意>");
-    expect(disclosure).toContain("旅行者");
-    expect(disclosure).toContain("2026-09-13T12:34:56Z");
-    expect(disclosure).toContain("search_snippet_only");
-    expect(disclosure).toContain("not_independently_verified");
-    expect(disclosure).toContain("自定义风险🧭");
-    expect(disclosure).toMatch(/本次研究[\s\S]*?不代表[^<]*支持当前路标/);
-    for (const item of sources) expect(disclosure).toContain(`href="${item.source.url}"`);
-    expect(html).not.toContain("较长的AI证据说明应出现在参考原文之后。");
-    expect(html).not.toContain("AI规划／待验证");
-    expect(html).not.toContain("模型的采用说明 · 待核实");
+    plan.research!.insufficientSources = [source];
+    const node = plan.nodes.find(item => item.id === taskId)!;
+    node.deliverable = "提交一份可检查的成果";
+    node.description = "记录本次执行的结果";
+    node.acceptanceCriteria = ["记录三条反馈"];
+    const before = structuredClone(plan), html = renderInspector(plan, taskId);
+    expect(html).toContain("保存修改");
+    expect(html).toContain("抵达此站");
+    expect(html).toContain("提交一份可检查的成果");
+    expect(html).toContain("记录本次执行的结果");
+    expect(html).toContain("记录三条反馈");
+    for (const text of ["证据不足", "待核实", "AI规划／待验证", "这枚路标从哪里来", "当前路标未采用", "日本旅行分享", "先做小样本，再检验反馈。", "unverified"]) {
+      expect(html).not.toContain(text);
+    }
     expect(plan).toEqual(before);
   });
 
-  it("shows other collected quotes and source links without duplicating the selected task's adopted source", () => {
+  it("does not expose retired reviews or planning assumptions in the backpack", () => {
     const plan = appliedEvidenceProposal().previews[0]!.plan;
-    const extra = plan.evidence.find(card => card.id === "e-other")!;
-    extra.supportingQuote = "其他原文🧭\r\n保留 <引文> 和换行";
-    extra.sourceUrl = "https://www.zhihu.com/answer/other-collected";
-    extra.author = "参考资料作者";
-    extra.retrievedAt = "2026-09-14T10:00:00Z";
-    extra.riskTags = ["search_snippet_only", "needs_human_review"];
-    plan.evidence.push({ ...extra, id: "e-unrelated-user", sourceType: "user", supportingQuote: "未被当前路标引用的用户资料不应作为知乎材料展示" });
-    plan.evidence.find(card => card.id === "e-ai")!.summary = "当前路标的AI证据长说明。";
-    const before = structuredClone(plan), html = renderInspector(plan, "t-source");
-    const collected = html.match(/<details(?=[^>]*\bcollected-sources\b)[^>]*>[\s\S]*?<\/details>/)?.[0];
-    expect(collected).toBeDefined();
-    expect(collected).not.toMatch(/^<details[^>]*\bopen(?:=|[ >])/);
-    expect(collected).toContain("已保存的原文摘录");
-    expect(collected).not.toContain("先做小样本，再检验反馈。");
-    expect(html).toContain("其他原文🧭\r\n保留 &lt;引文&gt; 和换行");
-    expect(html).not.toContain("<引文>");
-    expect(html).toContain(`href="${extra.sourceUrl}"`);
-    expect(html).toContain("参考资料作者");
-    expect(html).toContain("2026-09-14T10:00:00Z");
-    expect(html).toContain("search_snippet_only");
-    expect(html).toContain("needs_human_review");
-    expect(html).toContain("当前路标未采用");
-    expect(html).not.toContain("当前路标的AI证据长说明。");
-    expect(html.match(/先做小样本，再检验反馈。/g)).toHaveLength(1);
-    expect(html.match(/href="https:\/\/www.zhihu.com\/answer\/123"/g)).toHaveLength(1);
-    expect(html.match(/先写一篇样稿并收集三条反馈，再决定后续选题。/g)).toHaveLength(1);
-    expect(html).not.toContain("另一任务专属的采用说明。");
-    expect(html).not.toContain("另一条路线的采用说明。");
-    expect(html).not.toContain("未被当前路标引用的用户资料不应作为知乎材料展示");
-    expect(html).not.toContain("尚未取得可展示的知乎原帖");
-    expect(plan).toEqual(before);
-  });
-
-  it("labels a missing collected quote instead of presenting a model summary as original text", () => {
-    const plan = appliedEvidenceProposal().previews[0]!.plan;
-    const extra = plan.evidence.find(card => card.id === "e-other")!;
-    delete extra.supportingQuote;
-    delete extra.retrievedAt;
-    extra.summary = "模型概括不能冒充原文片段";
-    extra.sourceUrl = "https://www.zhihu.com/answer/missing-quote";
-    const before = structuredClone(plan), html = renderInspector(plan, "t-ai");
-    expect(html).toMatch(/(?:未保存[^<]*原文|原文[^<]*未保存)/);
-    expect(html).not.toMatch(/<blockquote[^>]*>模型概括不能冒充原文片段<\/blockquote>/);
-    expect(html).toContain('href="https://www.zhihu.com/answer/missing-quote"');
-    expect(html).toContain("检索时间未提供");
-    expect(html).not.toContain("尚未取得可展示的知乎原帖");
-    expect(plan).toEqual(before);
-  });
-
-  it("keeps older no-plan and no-source Inspector callers renderable", () => {
-    const plan = appliedEvidenceProposal().previews[0]!.plan, node = plan.nodes.find(item => item.id === "t-ai")!;
-    const props = { node, evidence: plan.evidence.filter(card => node.evidenceIds.includes(card.id)), busy: false,
-      onClose() {}, onSave() {}, onComplete() {}, onReportChange() {}, onArchive() {} };
-    const withoutPlan = renderToStaticMarkup(createElement(Inspector, props));
-    expect(withoutPlan).not.toContain("AI规划／待验证");
-    expect(withoutPlan).not.toContain("AI 推断");
-    expect(withoutPlan).not.toContain("这枚路标从哪里来");
-    expect(withoutPlan).not.toContain("先做小样本，再检验反馈。");
-    expect(withoutPlan).not.toContain("当前路标未采用");
-    plan.evidence = props.evidence;
-    const before = structuredClone(plan), withoutSources = renderInspector(plan, "t-ai");
-    expect(withoutSources).not.toContain("AI规划／待验证");
-    expect(withoutSources).not.toContain("AI 推断");
-    expect(withoutSources).not.toContain("当前路标未采用");
-    expect(withoutSources).not.toContain("模型的采用说明 · 待核实");
+    plan.nodes.push(
+      { id: "review", type: "checkpoint", title: "第 1 周复盘", status: "todo", evidenceIds: [], manualFields: [] },
+      { id: "assumption", type: "assumption", title: "待核实的前提条件", status: "draft", evidenceIds: [], manualFields: [] },
+    );
+    const before = structuredClone(plan);
+    const html = renderToStaticMarkup(createElement(Sidebar, { open: true, plan, projectId: plan.projectId, history: [],
+      focusTasks: [], pendingCount: 0, busy: false, onClose() {}, onAddTask() {}, onNewProject() {}, onSelectTask() {} }));
+    expect(html).not.toContain("每周复盘");
+    expect(html).not.toContain("第 1 周复盘");
+    expect(html).not.toContain("待核实的前提条件");
     expect(plan).toEqual(before);
   });
 });
@@ -291,17 +191,20 @@ describe("insufficient research remains visible without becoming adopted evidenc
     expect(renderProposal(mock)).not.toContain("模型根据已确认的目标与背景生成了暂定计划");
   });
 
-  it("keeps the warning and original posts accessible after applying the baseline", () => {
+  it("does not repeat confirmation warnings or research sources in the Roadmap backpack", () => {
     const plan: PlanState = {
       schemaVersion: "bundle@1", projectId: "travel", title: "日本旅行", goal: "游览日本", version: 1, currentCommitId: "commit-1", weeklyHours: 6, updatedAt: "2026-09-13T12:34:56Z",
       nodes: [], relations: [], evidence: [],
       research: { mode: "live", runId: "research-1", selectedRouteId: route.id, routeCandidates: [route], roadmapper: proposal().roadmapper!, insufficientSources: [source] },
     };
+    const before = structuredClone(plan);
     const html = renderToStaticMarkup(createElement(Sidebar, { open: true, plan, projectId: "travel", history: [], focusTasks: [], pendingCount: 0, busy: false, onClose() {}, onAddTask() {}, onNewProject() {}, onSelectTask() {} }));
-    expect(html).toContain("证据不足");
-    expect(html).toContain("日本旅行分享");
-    expect(html).toContain(`href="${source.source.url}"`);
-    expect(html).toContain("第一天🗾\r\n第二天 &lt;注意&gt;");
+    expect(html).not.toContain("证据不足");
+    expect(html).not.toContain("日本旅行分享");
+    expect(html).not.toContain(`href="${source.source.url}"`);
+    expect(html).not.toContain("第一天🗾\r\n第二天 &lt;注意&gt;");
+    expect(html).toContain("游览日本");
+    expect(plan).toEqual(before);
   });
 });
 
@@ -309,20 +212,21 @@ describe("weekly budget flexibility is disclosed for the selected route", () => 
   const overrun = { routeId: route.id, week: 2, capacityHours: 5, plannedHours: 5.5, toleranceHours: 0.5 };
 
   it("keeps older and within-budget proposals free of an overrun warning", () => {
-    expect(renderProposal(proposal())).not.toContain("部分周需要额外投入");
+    expect(renderProposal(proposal())).not.toContain("时间安排提醒");
     const value = proposal();
     value.roadmapper!.weeklyOverruns = [];
-    expect(renderProposal(value)).not.toContain("部分周需要额外投入");
+    expect(renderProposal(value)).not.toContain("时间安排提醒");
   });
 
-  it("explains planned hours including review, original budget, actual extra time and weekly limit", () => {
+  it("explains total and extra time in readable hours and minutes", () => {
     const value = proposal();
     value.roadmapper!.weeklyOverruns = [overrun];
     const before = structuredClone(value);
     const html = renderProposal(value);
-    expect(html).toContain("部分周需要额外投入");
-    expect(html).toContain("第2周计划5.5小时（含复盘），原预算5小时，使用0.5小时弹性；请确认可投入这部分额外时间。");
-    expect(html).toContain("本周上限5.5小时");
+    expect(html).toContain("时间安排提醒");
+    expect(html).toContain("第2周：预计需要约5小时30分钟，比你原定的时间多约30分钟。");
+    expect(html).toContain("如果抽不出这些时间");
+    expect(html).not.toContain("本周上限");
     expect(value).toEqual(before);
     expect(html).toContain("第一天🗾\r\n第二天 &lt;注意&gt;");
   });
@@ -332,29 +236,37 @@ describe("weekly budget flexibility is disclosed for the selected route", () => 
     value.researchRun.routeCandidates.push({ ...route, id: "route-2" });
     value.roadmapper!.weeklyOverruns = [overrun, { ...overrun, routeId: "route-2", week: 7 }];
     const first = renderProposal(value), second = renderProposal(value, "route-2");
-    expect(first).toContain("第2周计划");
-    expect(first).not.toContain("第7周计划");
-    expect(second).toContain("第7周计划");
-    expect(second).not.toContain("第2周计划");
+    expect(first).toContain("第2周：预计需要");
+    expect(first).not.toContain("第7周：预计需要");
+    expect(second).toContain("第7周：预计需要");
+    expect(second).not.toContain("第2周：预计需要");
   });
 
   it("does not show another route's overrun or warn for zero or negative excess", () => {
     const value = proposal();
     value.roadmapper!.weeklyOverruns = [{ ...overrun, routeId: "route-2" },
       { ...overrun, plannedHours: 5 }, { ...overrun, week: 3, plannedHours: 4 }];
-    expect(renderProposal(value)).not.toContain("部分周需要额外投入");
+    expect(renderProposal(value)).not.toContain("时间安排提醒");
   });
 
   it("formats decimal allowances without floating-point noise or treating the full allowance as used", () => {
     const value = proposal();
     value.roadmapper!.weeklyOverruns = [{ ...overrun, capacityHours: 3.33, plannedHours: 3.63, toleranceHours: 0.33 }];
     const html = renderProposal(value);
-    expect(html).toContain("第2周计划3.63小时（含复盘），原预算3.33小时，使用0.3小时弹性");
-    expect(html).toContain("本周上限3.66小时");
+    expect(html).toContain("第2周：预计需要约3小时38分钟，比你原定的时间多约18分钟。");
+    expect(html).not.toContain("3.66小时");
     expect(html).not.toContain("0.299999");
   });
 
-  it("keeps the selected route's budget warning accessible after apply", () => {
+  it("shows the final partial week's small overrun in minutes", () => {
+    const value = proposal();
+    value.roadmapper!.weeklyOverruns = [{ ...overrun, week: 14, capacityHours: 0.71, plannedHours: 0.78 }];
+    const html = renderProposal(value);
+    expect(html).toContain("第14周：预计需要约47分钟，比你原定的时间多约4分钟。");
+    expect(html).not.toContain("0.07小时");
+  });
+
+  it("does not repeat the approved budget warning in the Roadmap backpack", () => {
     const roadmapper = proposal().roadmapper!;
     roadmapper.weeklyOverruns = [overrun, { ...overrun, routeId: "route-2", week: 7 }];
     const plan: PlanState = {
@@ -364,9 +276,9 @@ describe("weekly budget flexibility is disclosed for the selected route", () => 
     };
     const before = structuredClone(plan);
     const html = renderToStaticMarkup(createElement(Sidebar, { open: true, plan, projectId: "travel", history: [], focusTasks: [], pendingCount: 0, busy: false, onClose() {}, onAddTask() {}, onNewProject() {}, onSelectTask() {} }));
-    expect(html).toContain("部分周需要额外投入");
-    expect(html).toContain("第2周计划5.5小时（含复盘），原预算5小时");
-    expect(html).not.toContain("第7周计划");
+    expect(html).not.toContain("时间安排提醒");
+    expect(html).not.toContain("第2周：预计需要约5小时30分钟");
+    expect(html).not.toContain("第7周：预计需要");
     expect(plan).toEqual(before);
   });
 });

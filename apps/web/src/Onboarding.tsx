@@ -1,17 +1,21 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CreateProjectInput, InterviewAnswer, InterviewSession } from "@zhilu/contracts";
-import { requestSession } from "./interview-api";
+import { INTERVIEW_MAX_QUESTIONS } from "@zhilu/contracts";
+import { requestSession, InterviewRequestError } from "./interview-api";
 import { InterviewQuestionCard } from "./InterviewQuestionCard";
 import { answerIsComplete, formatInterviewAnswer } from "./interview-answers";
+import { useRequestProgress } from "./request-progress";
+import { WaitStatus } from "./WaitStatus";
 
 interface OnboardingProps {
+  storageKey: string;
   busy: boolean;
   error: string | null;
   onClose: () => void;
   onCreate: (input: CreateProjectInput) => void;
 }
 
-export function Onboarding({ busy, error, onClose, onCreate }: OnboardingProps) {
+export function Onboarding({ storageKey, busy, error, onClose, onCreate }: OnboardingProps) {
   const [goal, setGoal] = useState("");
   const [backgroundNotes, setBackgroundNotes] = useState("");
   const [fileMessage, setFileMessage] = useState("");
@@ -20,31 +24,30 @@ export function Onboarding({ busy, error, onClose, onCreate }: OnboardingProps) 
   const [summary, setSummary] = useState<CreateProjectInput | null>(null);
   const [waiting, setWaiting] = useState(false);
   const [restoring, setRestoring] = useState(false);
-  const [elapsed, setElapsed] = useState(0);
+  const requests = useRequestProgress();
+  const progress = requests.filter(item => item.path.includes("/interviews") && !item.path.endsWith("/draft")).at(-1);
   const [localError, setLocalError] = useState<string | null>(null);
   const locked = busy || waiting;
   const pending = session?.questions.slice(session.answers.length) ?? [];
   const batchCompleted = pending.filter(question => answerIsComplete(question, selected[question.id])).length;
   const processedCount = (session?.answers.length ?? 0) + batchCompleted;
   const skippedCount = (session?.answers.filter(answer => answer.skipped).length ?? 0) + pending.filter(question => selected[question.id]?.skipped).length;
-  useEffect(() => {
-    if (!waiting) return;
-    setElapsed(0);
-    const start = Date.now();
-    const timer = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 1000);
-    return () => clearInterval(timer);
-  }, [waiting]);
+  const answeredCount = processedCount - skippedCount;
+  const understandingPercent = Math.min(summary ? 100 : 99, Math.round(answeredCount / Math.max(1,
+    summary && !session?.finishRequested ? session!.questions.length : INTERVIEW_MAX_QUESTIONS) * 100));
 
   const receive = (next: InterviewSession) => {
+    setSaveState("");
     setSession(next);
     setSummary(next.summary ?? null);
     setGoal(next.goal);
     setBackgroundNotes(next.backgroundNotes ?? "");
-    setSelected({});
-    sessionStorage.setItem("zhilu-interview", next.id);
+    setSelected(Object.fromEntries((next.draftAnswers ?? []).map(answer => [answer.questionId, answer])));
+    setLocalError(next.generationError ?? null);
+    sessionStorage.setItem(storageKey, next.id);
   };
   useEffect(() => {
-    const id = sessionStorage.getItem("zhilu-interview");
+    const id = new URLSearchParams(window.location.search).get("interview") ?? sessionStorage.getItem(storageKey) ?? (storageKey.endsWith(":local") ? sessionStorage.getItem("zhilu-interview") : null);
     if (!id) return;
     let cancelled = false;
     setWaiting(true);
@@ -55,24 +58,50 @@ export function Onboarding({ busy, error, onClose, onCreate }: OnboardingProps) 
     return () => { cancelled = true; };
   }, []);
 
-  const submit = async () => {
+  const draftQueue = useRef<Promise<void>>(Promise.resolve());
+  const [saveState, setSaveState] = useState("");
+  useEffect(() => {
+    if (!session || summary || waiting || pending.length === 0 || Object.keys(selected).length === 0) return;
+    setSaveState("正在保存回答…");
+    let active = true;
+    const id = session.id;
+    const timer = setTimeout(() => {
+      draftQueue.current = draftQueue.current.then(async () => {
+        try {
+          await requestSession(`/api/interviews/${id}/draft`, { answers: Object.values(selected) });
+          if (active) setSaveState("回答已保存到服务器");
+        } catch { if (active) setSaveState("回答保存失败，请提交本轮重试；离开前请确认已保存。"); }
+      });
+    }, 500);
+    return () => { active = false; clearTimeout(timer); };
+  }, [selected, session?.id, waiting, summary]);
+  useEffect(() => {
+    if (!saveState || saveState === "回答已保存到服务器") return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [saveState]);
+
+  const submit = async (finish = false) => {
+    if (finish && !window.confirm("确定跳过全部剩余问题吗？\n\n已完成的回答会保留。由于缺少背景信息，你的 roadmapper 生成的计划可能不够贴合你的目标，结果可能不如预期。\n\n确认后将直接整理背景摘要，你仍可检查和补充。")) return;
     setWaiting(true);
     setLocalError(null);
     document.querySelector(".interview-page")?.scrollTo(0, 0);
     try {
+      await draftQueue.current;
       const next = session
-        ? await requestSession(`/api/interviews/${session.id}/answers`, { answers: pending.map(question => selected[question.id]) })
+        ? await requestSession(`/api/interviews/${session.id}/${finish ? "finish" : pending.length ? "answers" : "next"}`, { answers: pending.map(question => finish && !answerIsComplete(question, selected[question.id]) ? { questionId: question.id, skipped: true } : selected[question.id]) })
         : await requestSession("/api/interviews", { goal, backgroundNotes });
       receive(next);
       document.querySelector(".interview-page")?.scrollTo(0, 0);
-    } catch (failure) { setLocalError(failure instanceof Error ? failure.message : String(failure)); }
+    } catch (failure) { if (failure instanceof InterviewRequestError && failure.session) receive(failure.session); setLocalError(failure instanceof Error ? failure.message : String(failure)); }
     finally { setWaiting(false); }
   };
 
   return <main className="flow-page interview-page">
-    <header className="flow-header"><button onClick={onClose} disabled={locked}>知路 · 返回已有计划</button><span>01 了解背景 → 02 确认计划 → 03 路线图</span></header>
+    <header className="flow-header"><button onClick={onClose} disabled={locked || saveState === "正在保存回答…"}>知路 · 返回已有计划</button><span>01 了解背景 → 02 确认计划 → 03 路线图</span></header>
     <section className="interview-page-content">
-      <p className="section-kicker">{summary ? "确认目标与背景" : session ? `已处理 ${processedCount} 题 · 最多 30 题` : "从你的目标出发"}</p>
+      <p className="section-kicker">{summary ? "确认目标与背景" : session ? `已处理 ${processedCount} 题 · 信息足够即结束` : "从你的目标出发"}</p>
       <h1>{summary ? "这是我理解的你" : session ? "再了解你一点" : "你想完成什么？"}</h1>
       <p>{summary ? "检查并修改摘要。确认后将结合知乎证据生成计划草稿。" : session ? session.goal : "后续问题根据你的目标和每轮回答生成，信息足够就停止。"}</p>
       {!session && <label className="interview-field">你的目标<textarea autoFocus maxLength={2000} value={goal} disabled={locked} onChange={event => setGoal(event.target.value)} placeholder="例如：我想在三个月内发布自己的第一款产品" /></label>}
@@ -84,16 +113,17 @@ export function Onboarding({ busy, error, onClose, onCreate }: OnboardingProps) 
         if (content.length > 100000) { setLocalError("文件超过 100,000 字符，请先精简"); return; }
         setBackgroundNotes(content); setFileMessage(`已读取 ${file.name}`); setLocalError(null);
       }} />{fileMessage}</label>}
+      {session?.projectId && <p>已关联计划：<a href={`?project=${session.projectId}&page=roadmap`}>打开计划</a></p>}
       {session && <div className="interview-progress-card">
-        <div><strong>{summary ? `访谈完成 · 共 ${session.questions.length} 题` : `已处理 ${processedCount} / 最多 30 题`}</strong><span>已跳过 {skippedCount} 题</span></div>
-        <progress aria-label="访谈进度" max={summary ? Math.max(1, session.questions.length) : 30} value={summary ? Math.max(1, session.questions.length) : processedCount} />
-        {!summary && <small>本轮 {batchCompleted} / {pending.length} 题已回答或跳过 · 信息足够即可提前结束</small>}
+        <div><strong>你的 roadmapper 已了解了你的目标 {understandingPercent}%</strong></div>
+        <progress aria-label="目标了解进度" max={100} value={understandingPercent} />
+        <div><span>最多 {INTERVIEW_MAX_QUESTIONS} 个问题 · 信息足够即可提前结束</span><span>已回答 {answeredCount} 题 · 已跳过 {skippedCount} 题</span></div>
+        <small>百分比按回答进度估算，跳过不计入已了解。{summary && (session.finishRequested ? "已提前结束访谈，可在下方补充背景。" : "访谈已完成，请检查下方摘要。")}</small>
+        {!summary && <small>{pending.length ? `本轮 ${batchCompleted} / ${pending.length} 题已回答或跳过 · ${session.questions.length >= INTERVIEW_MAX_QUESTIONS ? "提交后整理背景摘要" : "提交后由 AI 判断是否需要继续补充背景"}` : "本轮已提交，可继续判断是否需要补问或生成摘要。"}</small>}
+        {!summary && <button className="interview-skip-all" disabled={locked} onClick={() => void submit(true)}>跳过全部剩余问题</button>}
       </div>}
-      {waiting && <div className="model-running" role="status" aria-live="polite"><span className="model-spinner" aria-hidden="true" /><div>
-        <strong>{restoring ? "正在恢复上次访谈…" : session ? "正在结合你的回答分析背景…" : "正在根据目标生成背景问题…"}</strong>
-        <small>{restoring ? "正在读取已保存的题目" : "请求已发送，等待模型返回"} · 已等待 {elapsed} 秒</small>
-        {elapsed >= 30 && <small>等待时间较长，请稍候；失败或超时会在此提示，不会自动重试。</small>}
-      </div></div>}
+      {waiting && <div className="inline-operation-status"><WaitStatus label={restoring ? "正在恢复上次访谈…" : "正在发送背景信息…"} progress={progress} /></div>}
+      {session && !summary && <p className="answer-save-status" role="status">{pending.length ? saveState : "本轮回答已保存，可继续生成。"}</p>}
       {(localError || error) && <p className="research-error" role="alert">{localError || error}</p>}
       {session && !summary && <div className="question-batch">{pending.map((question, index) => <InterviewQuestionCard key={question.id} question={question}
         number={session.answers.length + index + 1} answer={selected[question.id]} disabled={locked}
@@ -113,9 +143,9 @@ export function Onboarding({ busy, error, onClose, onCreate }: OnboardingProps) 
         <details><summary>查看全部 {session?.answers.length} 道访谈问题</summary>{session?.questions.map(question => <p key={question.id}><strong>{question.question}</strong><br />{formatInterviewAnswer(question, session.answers.find(answer => answer.questionId === question.id))}</p>)}</details>
       </div>}
       <footer className="flow-actions">
-        <button disabled={locked} onClick={() => { sessionStorage.removeItem("zhilu-interview"); setSession(null); setSummary(null); setSelected({}); setBackgroundNotes(""); setFileMessage(""); setLocalError(null); }}>重新开始</button>
-        {summary ? <button className="research-primary" disabled={locked} onClick={() => onCreate({ ...summary, userContext: { ...summary.userContext, confirmed: true }, goalContract: { ...summary.goalContract, confirmed: true } })}>{busy ? "正在创建…" : "确认背景，生成知乎计划 →"}</button>
-          : <button className="research-primary" disabled={locked || (!session ? !goal.trim() : pending.some(question => !answerIsComplete(question, selected[question.id])))} onClick={() => void submit()}>{waiting ? "正在生成…" : session ? `提交本轮 ${pending.length} 题 →` : "开始了解背景 →"}</button>}
+        <button disabled={locked || saveState === "正在保存回答…"} onClick={() => { sessionStorage.removeItem(storageKey); sessionStorage.removeItem("zhilu-interview"); window.history.replaceState(null, "", "?page=interview"); setSession(null); setSummary(null); setSelected({}); setBackgroundNotes(""); setFileMessage(""); setLocalError(null); }}>重新开始</button>
+        {summary ? <button className="research-primary" disabled={locked || Boolean(session?.projectId)} onClick={() => onCreate({ ...summary, ...(session ? { interviewId: session.id } : {}), userContext: { ...summary.userContext, confirmed: true }, goalContract: { ...summary.goalContract, confirmed: true } })}>{busy ? "正在创建…" : "确认背景，生成知乎计划 →"}</button>
+          : <button className="research-primary" disabled={locked || (!session ? !goal.trim() : pending.some(question => !answerIsComplete(question, selected[question.id])))} onClick={() => void submit()}>{waiting ? "正在生成…" : session ? pending.length ? `提交本轮 ${pending.length} 题 →` : "继续生成 →" : "开始了解背景 →"}</button>}
       </footer>
     </section>
   </main>;

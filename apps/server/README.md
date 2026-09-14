@@ -102,15 +102,45 @@ M3 原本共享同一周执行窗口的 task→task 依赖，在局部排期输�
 
 - `POST /api/interviews`：`{ goal }`，用现有 Roadmapper 模型配置生成首批背景题。
 - `GET /api/interviews/:id`：恢复会话。会话位于数据目录 `interviews/`，与项目正式计划分开。
-- `POST /api/interviews/:id/answers`：`{ answers: [{ questionId, optionIds, text?, skipped? }] }`。单选/多选/toggle 使用 `optionIds`，填空只传 `text`，跳过只传 `{ questionId, skipped: true }`；旧版单选 `optionId` 仍兼容。后端校验本轮完整答案，输入目标及累计题目、选项、答案和跳过标记；每批 1–5 题，总数最多 30。模型结束时返回 `confirmed: false` 的可编辑摘要，用户显式确认后再通过创建项目接口保存。
+- `POST /api/interviews/:id/answers`：`{ answers: [{ questionId, optionIds, text?, skipped? }] }`。单选/多选/toggle 使用 `optionIds`，填空只传 `text`，跳过只传 `{ questionId, skipped: true }`；旧版单选 `optionId` 仍兼容。后端校验本轮完整答案，输入目标及累计题目、选项、答案和跳过标记；按每轮 5 题组织，总数最多 30 题。每轮提交后由模型重新判断是否需要补充背景，信息足够则生成摘要；没有固定的提前结束题数。剩余额度不足 5 题时按剩余数量生成，28 题时仍可补问 2 题，到 30 题后必须生成摘要。模型结束时返回 `confirmed: false` 的可编辑摘要，用户显式确认后再通过创建项目接口保存。
 - `POST /api/projects/:id/baseline/revise`：`{ proposalId, routeId, message }`。只对未确认的真实知乎草稿生效，输入选中草稿、累计调整对话和缓存证据，不调用知乎检索。新草稿使用新 ID，拒绝旧草稿确认；失败保留原稿。对话持久化在提案中。
 - `POST /api/projects/:id/baseline/apply`：用户确认最新草稿后才写入正式计划与版本历史；调整进行中拒绝确认。
 
 题目 `type` 为 `single | multiple | text | toggle`，未声明类型的旧题按单选处理。选择题有 2–6 个选项，`allowsText: true` 或“其他”选项选中后必须填写补充。填空题全程最多 3 道（包括跳过），文本最多 1,000 字符。模型输入包含剩余填空题预算，后端验证上限。
 
+提问以目标成果、起点、投入时间和主要限制是否足以形成初稿为收尾标准。零经验用户只需回答生活化的期望与限制，引擎、框架等专业选择留到规划阶段；已答、已导入、跳过或尚不清楚的信息不通过换措辞反复追问，缺项在摘要中标为待确认。此语义策略由模型遵循，题数和结构上限由后端强制。
+
+访谈的 JSON/模型响应格式错误或问题/摘要校验失败，会保留同一份已提交回答并携带具体结构校验原因自动重新生成，合计最多 3 次模型调用。中间失败不返回前端；三次仍不通过才提示继续生成。网络、授权/额度和超时错误不作为格式错误重试。每次调用仍受 `ROADMAP_TIMEOUT_MS` 限制；浏览器等待上限覆盖 3 次最长调用。
+
+访谈诊断默认保存到当前账号数据目录的 `diagnostics/interviews/<访谈 ID>/<运行 ID>-attempt-<次数>.json`，权限仅服务进程账号可读写。每次尝试先写 `running`，结束后记录结果；不同轮次和重试有不同文件。包括已有题目及选项、累计用户回答与跳过标记、模型输入与提示词、`transport.rawContent` 原始模型文本、`modelOutput` 解析结果、`acceptedQuestions` 实际展示的问题、`decision.done` 继续/结束判断及模型提供的简短理由/缺口、具体校验错误和耗时。旧格式输出若未提供判断理由，日志明确留为 null，不伪造。模型 JSON 解析失败时仍保留原文；不记录认证头或 API Key，不通过前端静态资源公开。控制台的 `[interview-generation]` 只记录安全结构摘要。部署时这些诊断随账号数据目录一起持久化。
+
 研究失败按规划/检索阶段显示具体原因，例如 `rate_or_quota_limit` 对应知乎限流或额度不足；不会自动重试。安全诊断写入项目 `.plan/research-failure.json`，包含阶段、停止原因和调用计数，不保存原始日志或凭据。
+
+排查 Planner 的模型输出时，在 `apps/server/.env.local` 或部署环境中设置 `ZHIHU_PLANNER_DIAGNOSTIC_DIR` 为后端私有绝对目录，重启后端生效。推荐放在数据目录下的 `diagnostics/planner/`；每次调用生成独立 JSON，包含输入、提示词、原始模型文本、具体校验原因、时间和源码哈希。先按项目 `research-failure.json` 的时间匹配，再用诊断中的目标及 `input_sha256` 核对。不要将这些用户背景日志通过静态资源公开；云端目录需要持久化，OAuth Token 和 HTTP 认证头不记录。字段说明见 [Planner 诊断](../../packages/zhihu/README.md#2026-09-12-新分工首轮预算批量证据缓存)。
 
 问题、摘要和计划调整均调用模型，不提供固定题库回退。无需打开知乎开关即可访谈；真实研究仍需 `ZHIHU_LIVE_ENABLED=true` 和已有知乎配置。重启服务后新接口才生效。
 
 
 2026-09-13：[证据不足时的模型规划](../../docs/MODEL_PLANNING_WITH_INSUFFICIENT_EVIDENCE.md) 已接入 live Baseline。严格 Controller 默认值保留给旧调用方；页面使用 `allow_insufficient`，不自动补搜。
+
+### 知乎登录与账号历史
+
+接入协议以官方 Skill `0.7.2-beta.20260911131715` 的 `hackathon-oauth.md` 与 `hackathon-user-profile-api.md` 为准。旧上传模板缺少 state 校验、误用基础信息鉴权的逻辑未复用。
+
+- `GET /api/auth/status`：登录状态、缺失配置、当前用户昵称和应用内账号标识，无密钥或 OAuth Token。
+- `GET /api/auth/login`：跳转知乎授权；`GET /api/auth/callback`：校验一次性 state 后交换 Token，并用 OAuth Token 调用 `/user`。
+- `POST /api/auth/logout`：销毁应用会话；写请求必须来自登记回调的同源站点。
+- `GET /api/projects/:id/planning-history`：读取确认前调整对话的各次草稿记录；正式确认或替换草稿不会删除这些记录。
+- `GET /api/history`：仅列出当前账号的访谈和计划。访谈详情仍通过 `GET /api/interviews/:id` 读取；原计划接口包含版本 History。
+- `POST /api/interviews/:id/draft`：保存本轮部分/未完成的回答（含“其他”补充、跳过），不调用模型、不改变正式提交记录。
+- `POST /api/interviews/:id/answers`：先校验并持久化整批答案，再调用模型；失败返回非 2xx 和已保存的 `session`，历史中记录失败。
+- `POST /api/interviews/:id/next`：仅当当前题目全部已提交时重试生成；不能借此跳过未提交问题。首次生成失败也可通过此入口恢复。
+- 创建项目可携带已完成的 `interviewId`，保存关联项目和确认事件；再次创建被拒绝，可从历史直接打开项目。
+
+服务端会保存题目及选项、每轮提交答案、当前草稿、生成/提交/失败时间、摘要和关联项目。前端停止输入 500 ms 后自动保存草稿，页面显示保存状态；尚未保存时离页会提示。提交中的模型失败不会抹掉已保存答案。浏览器 sessionStorage 只记当前账号的会话指针，历史数据来自服务端，重新登录/刷新可恢复。
+
+本地未配置 OAuth 时沿用 `data/`。开启 OAuth 后，每个账号使用 `data/accounts/<用户标识的 SHA-256>/`，包括访谈、计划、版本、提案与导出；旧的未归属本地数据不自动迁入某个账号。用户 ID 无损解析，邮箱和手机号不保存。应用 Cookie 使用 HttpOnly、Secure、SameSite=Lax；授权 state 有效期 10 分钟，应用会话至多 8 小时且不超过 OAuth 有效期。仅用于登录的 OAuth Token 在请求基础信息后丢弃，凭据不落入历史。
+
+本地配置参考 `.env.example`，填写 `ZHIHU_OAUTH_APP_ID`、`ZHIHU_OAUTH_APP_KEY`、`ZHIHU_OAUTH_REDIRECT_URI`。回调必须是登记过的公网 HTTPS 地址，路径固定 `/api/auth/callback`；前端与 `/api` 通过同一域名反向代理。App Key 不同于 Access Secret；仅登录无需 Access Secret，也不会增加搜索额度。
+
+任何 OAuth 配置存在、`ZHILU_AUTH_MODE=zhihu` 或 `NODE_ENV=production` 时均强制登录，缺配置不会退回公开本地模式。当前会话存内存，重启需重新登录，账号数据保存在持久磁盘上。部署必须使用持久数据目录 `ZHILU_DATA_DIR` 和单个 Node 实例；多实例/Serverless 的共享会话、共享存储与公开服务调用保护需另外完成。代码和模拟回调测试通过不代表已完成公网真实授权；开发者需亲自确认最终授权。

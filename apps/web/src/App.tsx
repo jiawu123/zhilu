@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
+import { trackedFetch, useRequestProgress } from "./request-progress";
+import { WaitStatus } from "./WaitStatus";
+import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import type {
   BaselineProposal,
   CreateProjectInput,
@@ -17,11 +19,12 @@ import type {
 import { positionDateInRange, shiftIsoDate, weeksFromDragDistance } from "./roadmap-date";
 import { getWeekFocusTasks } from "./roadmap-focus";
 import { getPlanDiff } from "./plan-diff";
-import { selectCurrentPending } from "./pending-selection";
+import { RoadmapChat } from "./RoadmapChat";
+import { WorkspaceDialog } from "./WorkspaceDialog";
 import { formatApiError } from "./api-error";
 import { Onboarding } from "./Onboarding";
 import { readFlowPage, resolveFlowPage, type FlowPage } from "./onboarding-model";
-import { CollectedSourcesDisclosure, InsufficientEvidenceNotice, InsufficientSourcesDisclosure } from "./ResearchEvidence";
+import { InsufficientEvidenceNotice, InsufficientSourcesDisclosure } from "./ResearchEvidence";
 import { WeeklyOverrunNotice } from "./WeeklyOverrunNotice";
 
 const demoProjectId = "agent-engineer-demo";
@@ -72,6 +75,8 @@ interface NodeDragState {
   startX: number;
   currentX: number;
   weeks: number;
+  pixelsPerWeek: number;
+  scale: number;
 }
 
 interface CanvasPanState {
@@ -87,13 +92,11 @@ interface PanOffset {
   y: number;
 }
 
-export function App() {
+export function App({ interviewStorageKey = "zhilu-interview:local", onOpenHistory }: { interviewStorageKey?: string; onOpenHistory?: () => void }) {
   const [activeProjectId, setActiveProjectId] = useState(initialProjectId);
   const [workspace, setWorkspace] = useState<WorkspacePayload | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [pending, setPending] = useState<PendingChange | null>(null);
-  const [eventContext, setEventContext] = useState<{ nodeId?: string; nodeTitle?: string } | null>(null);
   const [page, setPage] = useState<FlowPage>(() => readFlowPage(window.location.search));
   const navigate = (next: FlowPage, projectId = activeProjectId) => {
     window.history.pushState(null, "", `?project=${encodeURIComponent(projectId)}&page=${next}`);
@@ -112,15 +115,9 @@ export function App() {
   const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [replanning, setReplanning] = useState(false);
-  const [pendingError, setPendingError] = useState<string | null>(null);
-  const [unchangedReplan, setUnchangedReplan] = useState<UnchangedEventReplan | null>(null);
 
   const acceptWorkspace = (payload: WorkspacePayload | null) => {
     setWorkspace(payload);
-    setPending(payload ? selectCurrentPending(payload.pending, payload.plan) : null);
-    setPendingError(null);
-    setUnchangedReplan(null);
   };
 
   const loadGeneration = useRef(0);
@@ -148,10 +145,6 @@ export function App() {
   }, [activeProjectId]);
 
   const selectedNode = workspace?.plan.nodes.find((node) => node.id === selectedId) ?? null;
-  const selectedEvidence = useMemo(
-    () => workspace?.plan.evidence.filter((evidence) => selectedNode?.evidenceIds.includes(evidence.id)) ?? [],
-    [workspace, selectedNode],
-  );
 
   const updateNode = async (nodeId: string, changes: PlanNodeUpdate) => {
     setBusy(true);
@@ -207,57 +200,6 @@ export function App() {
     }
   };
 
-  const submitHoursEvent = async (weeklyHours: number) => {
-    setBusy(true);
-    try {
-      const result = await api<PendingChange & { before: PlanState }>(`/api/projects/${activeProjectId}/events`, {
-        method: "POST",
-        body: JSON.stringify({
-          type: "constraint_changed",
-          title: "每周可投入时间变化",
-          description: `每周投入调整为 ${weeklyHours} 小时`,
-          targetNodeIds: [],
-          changes: { weeklyHours },
-        }),
-      });
-      setPending(result);
-      setPendingError(null);
-      setUnchangedReplan(null);
-      setEventContext(null);
-      setSelectedId(null);
-      setError(null);
-    } catch (requestError) {
-      setError(toMessage(requestError));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const submitNodeEvent = async (nodeId: string, nodeTitle: string, description: string) => {
-    setBusy(true);
-    try {
-      const result = await api<PendingChange & { before: PlanState }>(`/api/projects/${activeProjectId}/events`, {
-        method: "POST",
-        body: JSON.stringify({
-          type: "custom",
-          title: `${nodeTitle} 遇到变化`,
-          description,
-          targetNodeIds: [nodeId],
-        }),
-      });
-      setPending(result);
-      setPendingError(null);
-      setUnchangedReplan(null);
-      setEventContext(null);
-      setSelectedId(null);
-      setError(null);
-    } catch (requestError) {
-      setError(toMessage(requestError));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const archiveNode = async (node: PlanNode) => {
     if (!window.confirm(`收起“${node.title}”？它会保留在版本历史中。`)) return;
     setBusy(true);
@@ -272,45 +214,6 @@ export function App() {
     }
   };
 
-  const applyPending = async () => {
-    if (!pending || unchangedReplan?.patchId === pending.patch.id || pending.patch.baseVersion !== workspace?.plan.version) return;
-    setBusy(true);
-    setPendingError(null);
-    try {
-      await api(`/api/projects/${activeProjectId}/diff/apply`, {
-        method: "POST",
-        body: JSON.stringify({ patchId: pending.patch.id }),
-      });
-      setPending(null);
-      await load();
-    } catch (requestError) {
-      setPendingError(toMessage(requestError));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const replanPending = async () => {
-    if (!pending || pending.patch.baseVersion !== workspace?.plan.version) return;
-    setBusy(true);
-    setReplanning(true);
-    setPendingError(null);
-    try {
-      const result = await api<EventReplanResponse>(`/api/projects/${activeProjectId}/diff/replan`, {
-        method: "POST",
-        body: JSON.stringify({ patchId: pending.patch.id }),
-      });
-      const next = mergeEventReplanResponse(pending, result);
-      setPending(next.pending);
-      setUnchangedReplan(next.unchangedReplan);
-    } catch (requestError) {
-      setPendingError(`AI 排期未完成，上一份预演已保留。${toMessage(requestError)}`);
-    } finally {
-      setBusy(false);
-      setReplanning(false);
-    }
-  };
-
   const createProject = async (input: CreateProjectInput) => {
     setBusy(true);
     setError(null);
@@ -320,7 +223,7 @@ export function App() {
         body: JSON.stringify(input),
       });
       loadGeneration.current += 1;
-      sessionStorage.removeItem("zhilu-interview");
+      sessionStorage.removeItem(interviewStorageKey);
       acceptWorkspace(created);
       setBaselineProposal(null);
       setSelectedRouteId(null);
@@ -398,7 +301,7 @@ export function App() {
     finally { setBusy(false); }
   };
 
-  if (page === "interview") return <Onboarding busy={busy} error={error}
+  if (page === "interview") return <Onboarding storageKey={interviewStorageKey} busy={busy} error={error}
     onClose={() => { setError(null); navigate("roadmap"); }} onCreate={input => void createProject(input)} />;
 
   if (workspace?.plan.projectId === activeProjectId && resolveFlowPage(page, workspace.plan.evidence.some(item => item.riskTags.includes("等待知乎研究"))) === "plan" && (baselineProposal || workspace.plan.evidence.some(item => item.riskTags.includes("等待知乎研究")))) {
@@ -432,15 +335,14 @@ export function App() {
         </button>
         <button className="goal-capsule" onClick={() => setSidebarOpen(true)}>
           <span className="goal-spark">✦</span>
-          <span className="goal-copy"><small>{researchPending ? "研究准备版" : workspace.plan.research?.mode === "mock" ? "Mock 研究路线" : workspace.plan.research?.roadmapper?.evidenceStatus === "insufficient" ? "证据不足 · 暂定计划" : "正在前往"}</small><strong>{workspace.plan.goal}</strong></span>
+          <span className="goal-copy"><small>{researchPending ? "研究准备版" : workspace.plan.research?.mode === "mock" ? "Mock 研究路线" : "正在前往"}</small><strong>{workspace.plan.goal}</strong></span>
           <span className="goal-progress">{progress}%</span>
         </button>
-        <button className="change-trigger" onClick={() => setEventContext({})}><span>↯</span><span>现实有变化</span></button>
       </header>
 
       {error && <div className="error-toast">{error}<button onClick={() => setError(null)}>×</button></div>}
 
-      <RoadmapGraph workspace={workspace} selectedId={selectedId} focusId={focusTasks[0]?.id ?? null} pending={pending} onSelect={setSelectedId} onReschedule={(node, weeks) => void rescheduleNode(node, weeks)} />
+      <RoadmapGraph workspace={workspace} selectedId={selectedId} focusId={focusTasks[0]?.id ?? null} pending={null} onSelect={setSelectedId} onReschedule={(node, weeks) => void rescheduleNode(node, weeks)} />
 
       <div className="canvas-hint"><span className="hint-dot" /> 拖动画布查看全图 · 横向拖动路标按周改期</div>
       <div className="commit-whisper">v{workspace.plan.currentCommitId}</div>
@@ -451,8 +353,9 @@ export function App() {
         plan={workspace.plan}
         projectId={activeProjectId}
         history={workspace.history}
+        {...(onOpenHistory ? { onOpenHistory } : {})}
         focusTasks={focusTasks}
-        pendingCount={pending ? 1 : 0}
+        pendingCount={0}
         busy={busy}
         onClose={() => setSidebarOpen(false)}
         onAddTask={() => void addTask()}
@@ -462,13 +365,10 @@ export function App() {
 
       <Inspector
         node={selectedNode}
-        plan={workspace.plan}
-        evidence={selectedEvidence}
         busy={busy}
         onClose={() => setSelectedId(null)}
         onSave={(changes) => selectedNode && void updateNode(selectedNode.id, changes)}
         onComplete={() => selectedNode && void updateNode(selectedNode.id, { status: "done", adjustmentReason: "用户在路线图中标记抵达" })}
-        onReportChange={() => selectedNode && setEventContext({ nodeId: selectedNode.id, nodeTitle: selectedNode.title })}
         onArchive={() => selectedNode && void archiveNode(selectedNode)}
       />
 
@@ -476,8 +376,7 @@ export function App() {
         <button className="drawer-scrim" aria-label="关闭面板" onClick={() => { setSidebarOpen(false); setSelectedId(null); }} />
       )}
 
-      {eventContext && <EventDialog currentHours={workspace.plan.weeklyHours} {...(eventContext.nodeId && eventContext.nodeTitle ? { target: { id: eventContext.nodeId, title: eventContext.nodeTitle } } : {})} busy={busy} onClose={() => setEventContext(null)} onSubmitHours={(hours) => void submitHoursEvent(hours)} onSubmitNode={(nodeId, nodeTitle, description) => void submitNodeEvent(nodeId, nodeTitle, description)} />}
-      {pending && <DiffPanel pending={pending} before={workspace.plan} busy={busy} replanning={replanning} error={pendingError} unchangedReplan={unchangedReplan} onApply={() => void applyPending()} onReplan={() => void replanPending()} onClose={() => { setPending(null); setUnchangedReplan(null); }} />}
+      <RoadmapChat key={activeProjectId} plan={workspace.plan} onApplied={load} />
 
     </div>
   );
@@ -496,6 +395,9 @@ export function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose
   onRevise: (message: string) => void;
 }) {
   const [message, setMessage] = useState("");
+  const requests = useRequestProgress();
+  const progress = requests.filter(item => item.path.includes("/baseline")).at(-1);
+  const applying = busy && progress?.path.endsWith("/baseline/apply");
   useEffect(() => { setMessage(""); }, [proposal?.id]);
   if (!proposal) {
     return <main className="flow-page plan-page"><section className="research-intro" aria-labelledby="research-title">
@@ -506,6 +408,7 @@ export function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose
       <p>从你的目标与背景出发，检索知乎证据，再规划路线、任务与时间。你可以检查依据，选好路线后再点亮图。</p>
       <div className="research-steps"><span><b>01</b>拆出研究问题</span><span><b>02</b>检索并压缩证据</span><span><b>03</b>你确认后写入图</span></div>
       {error && <div className="research-error" role="alert">{error}</div>}
+      {busy && <div className="inline-operation-status"><WaitStatus label="正在准备知乎研究与计划生成…" progress={progress} /></div>}
       <button className="research-primary" disabled={busy} onClick={onRunLive}>{busy ? "正在研究并规划路线…" : "用知乎证据规划路线"}<span>→</span></button>
       <button className="research-secondary" disabled={busy} onClick={onRunMock}>本机尚未配置？使用 Mock 演示</button>
     </section></main>;
@@ -516,7 +419,7 @@ export function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose
   const insufficientSources = proposal.researchRun.evidencePacks.flatMap(pack => pack.insufficientSources ?? []);
   const route = proposal.researchRun.routeCandidates.find((item) => item.id === selectedRouteId) ?? proposal.researchRun.routeCandidates[0];
   const preview = proposal.previews.find((item) => item.routeId === route?.id)?.plan;
-  const previewReviewNodes = preview?.nodes.filter((node) => node.type === "checkpoint" || node.type === "assumption") ?? [];
+  const previewAssumptions = preview?.nodes.filter((node) => node.type === "assumption") ?? [];
   const researchEvidence = [...new Map(proposal.researchRun.evidencePacks.flatMap((pack) => pack.evidence).map((card) => [card.id, card])).values()];
   const recommendationEvidence = researchEvidence.filter((card) => roadmapper?.recommendationEvidenceIds.includes(card.id));
   const routeEvidence = researchEvidence.filter((card) => route?.evidenceIds.includes(card.id));
@@ -595,10 +498,10 @@ export function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose
                 </div>
               </article>
             ))}
-            {previewReviewNodes.length > 0 && (
+            {previewAssumptions.length > 0 && (
               <details className="research-details review-preview">
-                <summary>复盘与待确认假设 · {previewReviewNodes.length}</summary>
-                {previewReviewNodes.map((node) => (
+                <summary>待确认假设 · {previewAssumptions.length}</summary>
+                {previewAssumptions.map((node) => (
                   <div key={node.id}>
                     <small>{nodeTypeLabel(node.type)} · {formatDateRange(node)}</small>
                     <strong>{node.title}</strong>
@@ -614,13 +517,17 @@ export function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose
             <p>告诉我哪些安排不合适。每次调整都会更新左侧草稿，确认后才生成路线图。</p>
             <div className="plan-messages" aria-live="polite">
               {(proposal.conversation ?? []).map((entry, index) => <article key={index} className={`message-${entry.role}`}><small>{entry.role === "user" ? "你" : "知路"}</small><p>{entry.content}</p></article>)}
-              {busy && <p role="status">正在处理，请稍候…</p>}
+              {busy && <div className="inline-operation-status"><WaitStatus label="正在发送你的调整意见…" progress={progress} /></div>}
             </div>
             <form onSubmit={event => { event.preventDefault(); if (message.trim() && !busy) onRevise(message.trim()); }}>
               <label htmlFor="plan-adjustment">你的调整意见</label>
               <textarea id="plan-adjustment" maxLength={2000} value={message} disabled={busy || !isLive} onChange={event => setMessage(event.target.value)} placeholder="例如：前两周先做一个小成果，减少纯理论任务" />
               <button className="research-primary" type="submit" disabled={busy || !isLive || !message.trim()}>发送并调整草稿</button>
             </form>
+            <div className="plan-confirm-action">
+              <button className="research-primary" disabled={busy || !selectedRouteId} onClick={onApply}>{applying ? "正在保存路线图…" : "直接确认当前计划 →"}</button>
+              <small>{busy && !applying ? "调整结束后即可确认最新草稿。" : "采用当前草稿，直接进入路线图，无需再次生成。"}</small>
+            </div>
             {!isLive && <small>演示草稿无法调用真实模型调整，请先生成知乎计划。</small>}
             <details className="research-details"><summary>查看研究问题与待确认点</summary>
               {proposal.researchRun.questions.map(question => <p key={question.question}>{question.question}</p>)}
@@ -630,7 +537,7 @@ export function ResearchStudio({ proposal, selectedRouteId, busy, error, onClose
         </div>
         <footer>
           <div><span className="route-proof-dot" /><small>{isLive ? insufficient ? "证据不足：这份暂定计划由模型推断，确认前请核实关键安排。" : "知乎内容提供依据；路线安排仍需结合你的实际情况确认。" : "这是机制演示，不是已验证的知乎研究结论。"}</small></div>
-          <button className="research-primary" disabled={busy || !selectedRouteId} onClick={onApply}>{busy ? "正在写入路线…" : "确认计划，生成路线图 / Plan Bundle"}<span>→</span></button>
+          <button className="research-primary" disabled={busy || !selectedRouteId} onClick={onApply}>{applying ? "正在保存路线图…" : "确认当前计划，进入路线图"}<span>→</span></button>
         </footer>
       </section>
     </main>
@@ -698,6 +605,9 @@ function RoadmapGraph({ workspace, selectedId, focusId, pending, onSelect, onRes
   const denseLayout = isDense ? buildDenseGraphLayout(tasks, milestones) : null;
   const graphWidth = denseLayout?.width ?? canvasWidth;
   const points = denseLayout?.points ?? buildGraphPoints(tasks, milestones);
+  const dateStart = milestones.flatMap(node => node.startDate ? [node.startDate] : []).sort()[0];
+  const dateEnd = milestones.flatMap(node => node.endDate ? [node.endDate] : []).sort().at(-1);
+  const pixelsPerWeek = denseLayout?.pixelsPerWeek ?? (dateStart && dateEnd && dateEnd > dateStart ? 895 * 7 / ((Date.parse(dateEnd) - Date.parse(dateStart)) / 86400000) : 72);
   const pointMap = new Map(points.map((point) => [point.id, point]));
   const start = { id: "start", x: 70, y: 355 };
   const goal = { id: "goal", x: graphWidth - 70, y: 270 };
@@ -756,7 +666,7 @@ function RoadmapGraph({ workspace, selectedId, focusId, pending, onSelect, onRes
         {tasks.map((task, index) => {
           const point = pointMap.get(task.id); if (!point) return null;
           const affected = pending?.impact.affectedNodeIds.includes(task.id);
-          const dragX = dragging?.id === task.id ? dragging.currentX - dragging.startX : 0;
+          const dragX = dragging?.id === task.id ? dragging.weeks * dragging.pixelsPerWeek / dragging.scale : 0;
           return (
             <button
               key={task.id}
@@ -764,14 +674,14 @@ function RoadmapGraph({ workspace, selectedId, focusId, pending, onSelect, onRes
               style={{ "--x": `${(point.x / graphWidth) * 100}%`, "--y": `${(point.y / canvasHeight) * 100}%`, "--delay": `${index * -0.55}s`, "--drag-x": `${dragX}px` } as CSSProperties}
               title={`${task.title} · ${formatDateRange(task)}；点击查看，水平拖动按周调整日期`}
               onClick={(event) => { if (suppressClick.current) event.preventDefault(); else onSelect(task.id); }}
-              onPointerDown={(event) => beginNodePointerDrag(event, task.id, setDragging)}
+              onPointerDown={(event) => beginNodePointerDrag(event, task.id, pixelsPerWeek, graphWidth, setDragging)}
               onPointerMove={(event) => moveNodePointerDrag(event, dragging, setDragging)}
               onPointerUp={(event) => endNodePointerDrag(event, task, dragging, setDragging, suppressClick, onReschedule)}
               onPointerCancel={() => setDragging(null)}
             >
               {focusId === task.id && <span className="next-badge">下一站</span>}
-              {dragging?.id === task.id && dragging.weeks !== 0 && <span className="drag-badge">{dragging.weeks > 0 ? `顺延 ${dragging.weeks} 周` : `提前 ${Math.abs(dragging.weeks)} 周`}</span>}
-              <span className="node-index">{String(index + 1).padStart(2, "0")}</span><span className="node-status-dot" /><strong>{task.title}</strong><small>{task.estimatedHours ?? "—"}h</small><span className="node-arrow">↗</span>
+              {dragging?.id === task.id && dragging.weeks !== 0 && <span className="drag-badge">{task.startDate ? shiftIsoDate(task.startDate, dragging.weeks * 7) : ""} · {dragging.weeks > 0 ? `顺延 ${dragging.weeks} 周` : `提前 ${Math.abs(dragging.weeks)} 周`}</span>}
+              <span className="node-index">{String(index + 1).padStart(2, "0")}</span><span className="node-status-dot" /><strong>{task.title}</strong><small>{formatDateRange(task)} · {task.estimatedHours ?? "—"}h</small><span className="node-arrow">↗</span>
             </button>
           );
         })}
@@ -781,35 +691,30 @@ function RoadmapGraph({ workspace, selectedId, focusId, pending, onSelect, onRes
   );
 }
 
-export function Sidebar({ open, plan, projectId, history, focusTasks, pendingCount, busy, onClose, onAddTask, onNewProject, onSelectTask }: { open: boolean; plan: PlanState; projectId: string; history: PlanCommit[]; focusTasks: PlanNode[]; pendingCount: number; busy: boolean; onClose: () => void; onAddTask: () => void; onNewProject: () => void; onSelectTask: (id: string) => void }) {
+export function Sidebar({ open, plan, projectId, history, focusTasks, pendingCount, busy, onClose, onAddTask, onNewProject, onSelectTask, onOpenHistory }: { open: boolean; plan: PlanState; projectId: string; history: PlanCommit[]; focusTasks: PlanNode[]; pendingCount: number; busy: boolean; onClose: () => void; onAddTask: () => void; onNewProject: () => void; onSelectTask: (id: string) => void; onOpenHistory?: () => void }) {
+  const [dialog, setDialog] = useState<"changes" | "export" | null>(null);
   const tasks = plan.nodes.filter((node) => node.type === "task" && node.status !== "archived");
-  const reviewNodes = plan.nodes.filter((node) => (node.type === "checkpoint" || node.type === "assumption") && node.status !== "archived");
   const done = tasks.filter((task) => task.status === "done").length;
   return (
-    <aside className={`side-drawer ${open ? "is-open" : ""}`} aria-hidden={!open}>
+    <><aside className={`side-drawer ${open ? "is-open" : ""}`} aria-hidden={!open}>
       <div className="drawer-head"><div><span className="brand-symbol">路</span><strong>路线背包</strong></div><button onClick={onClose}>×</button></div>
       <div className="drawer-scroll">
         <section className="drawer-goal"><small>你的目的地</small><p>{plan.goal}</p></section>
-        <WeeklyOverrunNotice overruns={plan.research?.roadmapper?.weeklyOverruns} routeId={plan.research?.selectedRouteId} />
-        {plan.research?.mode === "live" && plan.research.roadmapper?.evidenceStatus === "insufficient" && <InsufficientEvidenceNotice />}
-        <InsufficientSourcesDisclosure sources={plan.research?.insufficientSources ?? []} showEmpty={plan.research?.mode === "live" && plan.research.roadmapper?.evidenceStatus === "insufficient" && !plan.evidence.some(card => card.sourceType === "zhihu")} />
         <section className="progress-card"><div className="progress-ring" style={{ "--progress": `${tasks.length ? (done / tasks.length) * 360 : 0}deg` } as CSSProperties}><span>{done}/{tasks.length}</span></div><div><strong>{plan.weeklyHours} 小时</strong><small>每周探索时间</small></div></section>
         {pendingCount > 0 && <div className="pending-callout"><span>↯</span><div><strong>{pendingCount} 个变化待确认</strong><small>正式路线还没有被改变</small></div></div>}
         <section className="week-focus"><p className="section-kicker">接下来 7 天</p>{focusTasks.length === 0 ? <div className="focus-empty">这周没有必须抵达的路标。</div> : focusTasks.map((task, index) => <button key={task.id} onClick={() => onSelectTask(task.id)}><span>{index === 0 ? "下一站" : formatDateRange(task)}</span><strong>{task.title}</strong><small>{task.estimatedHours ?? "—"}h · {statusLabel(task.status)}</small></button>)}</section>
-        {reviewNodes.length > 0 && (
-          <details className="research-details review-nodes">
-            <summary>复盘与待确认假设 · {reviewNodes.length}</summary>
-            {reviewNodes.map((node) => (
-              <button key={node.id} onClick={() => onSelectTask(node.id)}>
-                <span>{nodeTypeLabel(node.type)} · {formatDateRange(node)}</span>
-                <strong>{node.title}</strong>
-                <small>{statusLabel(node.status)}</small>
-              </button>
-            ))}
-          </details>
-        )}
-        <section className="export-panel"><p className="section-kicker">带走这张路线</p><div><a href={`/api/projects/${projectId}/export/json`} download>JSON</a><a href={`/api/projects/${projectId}/export/markdown`} download>Markdown</a><a href={`/api/projects/${projectId}/export/zip`} download>Plan Bundle</a></div></section>
-        <section className="drawer-history"><p className="section-kicker">路线足迹</p>{history.slice(0, 5).map((commit) => <div className="history-step" key={commit.id}>
+
+      </div>
+      <div className="drawer-footer"><div className="drawer-actions"><button disabled={busy} onClick={onNewProject}>✦ 新路线</button><button disabled={busy} onClick={onAddTask}>＋ 新路标</button></div>
+        <nav className="drawer-utilities" aria-label="路线工具">
+          {onOpenHistory && <button onClick={onOpenHistory}>历史记录 <span aria-hidden="true">↗</span></button>}
+          <button onClick={() => setDialog("changes")}>修改记录 <span aria-hidden="true">↗</span></button>
+          <button onClick={() => setDialog("export")}>带走这张路线 <span aria-hidden="true">↗</span></button>
+        </nav>
+      </div>
+    </aside>
+    {dialog && <WorkspaceDialog title={dialog === "changes" ? "修改记录" : "带走这张路线"} onClose={() => setDialog(null)}>
+      {dialog === "changes" ? <section className="drawer-history">{history.map((commit) => <div className="history-step" key={commit.id}>
           <span />
           <div>
             <strong>v{commit.id}</strong><small>{commit.reason}</small>
@@ -820,21 +725,14 @@ export function Sidebar({ open, plan, projectId, history, focusTasks, pendingCou
               {commit.processing.warnings.length > 0 && <ul>{commit.processing.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>}
             </details>}
           </div>
-        </div>)}</section>
-      </div>
-      <div className="drawer-actions"><button disabled={busy} onClick={onNewProject}>✦ 新路线</button><button disabled={busy} onClick={onAddTask}>＋ 新路标</button></div>
-    </aside>
+        </div>)}</section> : <section className="export-panel"><div><a href={`/api/projects/${projectId}/export/json`} download>JSON</a><a href={`/api/projects/${projectId}/export/markdown`} download>Markdown</a><a href={`/api/projects/${projectId}/export/zip`} download>Plan Bundle</a></div></section>}
+    </WorkspaceDialog>}</>
   );
 }
 
-export function Inspector({ node, plan, evidence, busy, onClose, onSave, onComplete, onReportChange, onArchive }: { node: PlanNode | null; plan?: PlanState; evidence: EvidenceCard[]; busy: boolean; onClose: () => void; onSave: (changes: PlanNodeUpdate) => void; onComplete: () => void; onReportChange: () => void; onArchive: () => void }) {
+export function Inspector({ node, busy, onClose, onSave, onComplete, onArchive }: { node: PlanNode | null; busy: boolean; onClose: () => void; onSave: (changes: PlanNodeUpdate) => void; onComplete: () => void; onArchive: () => void }) {
   const [title, setTitle] = useState(""); const [startDate, setStartDate] = useState(""); const [endDate, setEndDate] = useState("");
   useEffect(() => { setTitle(node?.title ?? ""); setStartDate(node?.startDate ?? ""); setEndDate(node?.endDate ?? ""); }, [node]);
-  const visibleEvidence = evidence.filter(card => card.sourceType !== "ai" && card.contentType !== "ai_inference");
-  const collectedEvidence = plan?.evidence.filter(card => card.sourceType === "zhihu" && !node?.evidenceIds.includes(card.id)) ?? [];
-  const insufficientSources = plan?.research?.insufficientSources ?? [];
-  const showEmptySources = plan?.research?.mode === "live" && plan.research.roadmapper?.evidenceStatus === "insufficient" && !plan.evidence.some(card => card.sourceType === "zhihu");
-  const showEvidence = visibleEvidence.length > 0 || collectedEvidence.length > 0 || insufficientSources.length > 0 || showEmptySources;
   return (
     <aside className={`inspector-drawer ${node ? "is-open" : ""}`} aria-hidden={!node}>
       {node && <><div className="drawer-head"><div><span className="node-mini-dot" /><strong>{nodeTypeLabel(node.type)}详情</strong></div><button onClick={onClose}>×</button></div>
@@ -844,27 +742,12 @@ export function Inspector({ node, plan, evidence, busy, onClose, onSave, onCompl
           <div className="date-row"><label>开始<input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} /></label><label>结束<input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} /></label></div>
           <label>状态<select value={node.status} onChange={(event) => onSave({ status: event.target.value as PlanNode["status"] })}><option value="draft">草稿</option><option value="todo">待开始</option><option value="ready">可开始</option><option value="in_progress">进行中</option><option value="blocked">受阻</option><option value="done">已完成</option><option value="archived">已归档</option></select></label>
           <div className="node-actions"><button className="save-node" disabled={busy || !title.trim()} onClick={() => onSave({ title: title.trim(), startDate, endDate })}>保存修改</button>{node.type === "task" && node.status !== "done" && <button className="complete-node" disabled={busy} onClick={onComplete}>✓ 抵达此站</button>}</div>
-          {node.type === "task" && <div className="node-secondary-actions"><button disabled={busy} onClick={onReportChange}>↯ 这里有变化</button><button className="archive-node" disabled={busy} onClick={onArchive}>收起此路标</button></div>}
+          {node.type === "task" && <div className="node-secondary-actions"><button className="archive-node" disabled={busy} onClick={onArchive}>收起此路标</button></div>}
           <section className="node-story"><p className="section-kicker">抵达证明</p><h3>{node.deliverable ?? "待补充可检查的产出"}</h3>{node.description && <p className="inference-note">{node.description}</p>}<ul>{node.acceptanceCriteria?.map((item) => <li key={item}>{item}</li>) ?? <li>尚未补充完成标准</li>}</ul></section>
-          {showEvidence && <section className="evidence-stack">
-            <p className="section-kicker">这枚路标从哪里来</p>
-            <InsufficientSourcesDisclosure key={`insufficient-${node.id}`} sources={insufficientSources}
-              description="这些原帖来自本次研究，未作为计划依据；不代表这些内容支持当前路标。保留原文片段和链接，供你自行判断。"
-              showEmpty={showEmptySources} />
-            <CollectedSourcesDisclosure key={`collected-${node.id}`} evidence={collectedEvidence} />
-            {visibleEvidence.map((card) => <EvidenceCardView key={card.id} card={card} nodes={plan?.nodes ?? [node]}
-              application={card.sourceType === "zhihu" ? plan?.research?.roadmapper?.evidenceApplications?.find(item =>
-                item.routeId === plan.research?.selectedRouteId && item.evidenceId === card.id && item.taskIds.includes(node.id)) : undefined} />)}
-          </section>}
+
         </div></>}
     </aside>
   );
-}
-
-function EventDialog({ currentHours, target, busy, onClose, onSubmitHours, onSubmitNode }: { currentHours: number; target?: { id: string; title: string }; busy: boolean; onClose: () => void; onSubmitHours: (hours: number) => void; onSubmitNode: (nodeId: string, nodeTitle: string, description: string) => void }) {
-  const [hours, setHours] = useState(Math.max(1, Math.floor(currentHours / 2)));
-  const [description, setDescription] = useState("");
-  return <div className="modal-backdrop"><section className="event-modal" role="dialog" aria-modal="true" aria-labelledby="event-title"><button className="modal-close" onClick={onClose}>×</button><div className="event-orb">↯</div><p className="section-kicker">现实事件</p><h2 id="event-title">{target ? "这枚路标发生了什么？" : "路线需要转弯了吗？"}</h2><p>{target ? `先记录“${target.title}”遇到的新情况。我只检查它和下游路径。` : "先告诉我现在每周能投入多少时间。我只点亮受影响的路径，不会重写整张图。"}</p>{target ? <><label className="event-note-label">变化说明<textarea autoFocus value={description} onChange={(event) => setDescription(event.target.value)} placeholder="例如：原本依赖的数据暂时拿不到，需要先找替代方案" /></label><button className="modal-primary" disabled={busy || !description.trim()} onClick={() => onSubmitNode(target.id, target.title, description.trim())}>预演受影响路径 <span>→</span></button></> : <><label>每周可投入<input type="number" min="1" max="80" value={hours} onChange={(event) => setHours(Number(event.target.value))} /><span>小时</span></label><button className="modal-primary" disabled={busy || hours <= 0} onClick={() => onSubmitHours(hours)}>看看路线会怎样变化 <span>→</span></button></>}</section></div>;
 }
 
 export function DiffPanel({ pending, before, busy, replanning, error, unchangedReplan, onApply, onReplan, onClose }: {
@@ -939,7 +822,7 @@ function buildGraphPoints(tasks: PlanNode[], milestones: PlanNode[]): GraphPoint
   }));
 }
 
-function buildDenseGraphLayout(tasks: PlanNode[], milestones: PlanNode[]): { width: number; points: GraphPoint[] } {
+export function buildDenseGraphLayout(tasks: PlanNode[], milestones: PlanNode[]): { width: number; points: GraphPoint[]; pixelsPerWeek: number } {
   const dayOf = (date: string | undefined) => date ? Date.parse(date) / 86_400_000 : NaN;
   const dates = [...tasks, ...milestones].flatMap((node) => [dayOf(node.startDate), dayOf(node.endDate)]).filter(Number.isFinite);
   const start = dates.length ? Math.min(...dates) : 0;
@@ -963,7 +846,7 @@ function buildDenseGraphLayout(tasks: PlanNode[], milestones: PlanNode[]): { wid
     x: 145 + (day - start) * pixelsPerDay + Math.floor(index / 4) * columnGap,
     y: laneY[taskIndex++ % 4]!,
   })));
-  return { width, points };
+  return { width, points, pixelsPerWeek: pixelsPerDay * 7 };
 }
 
 function smoothPath(points: Array<Pick<GraphPoint, "x" | "y">>): string {
@@ -972,24 +855,26 @@ function smoothPath(points: Array<Pick<GraphPoint, "x" | "y">>): string {
   return path;
 }
 
-function beginNodePointerDrag(event: ReactPointerEvent<HTMLButtonElement>, id: string, setDragging: (value: NodeDragState) => void): void {
+function beginNodePointerDrag(event: ReactPointerEvent<HTMLButtonElement>, id: string, pixelsPerWeek: number, graphWidth: number, setDragging: (value: NodeDragState) => void): void {
   if (event.button !== 0) return;
   event.stopPropagation();
   event.currentTarget.setPointerCapture(event.pointerId);
-  setDragging({ id, pointerId: event.pointerId, startX: event.clientX, currentX: event.clientX, weeks: 0 });
+  const stage = event.currentTarget.parentElement!;
+  const scale = stage.getBoundingClientRect().width / graphWidth;
+  setDragging({ id, pointerId: event.pointerId, startX: event.clientX, currentX: event.clientX, weeks: 0, pixelsPerWeek: pixelsPerWeek * scale, scale });
 }
 
 function moveNodePointerDrag(event: ReactPointerEvent<HTMLButtonElement>, dragging: NodeDragState | null, setDragging: (value: NodeDragState | null) => void): void {
   if (!dragging || dragging.pointerId !== event.pointerId) return;
   const distance = event.clientX - dragging.startX;
-  setDragging({ ...dragging, currentX: event.clientX, weeks: weeksFromDragDistance(distance) });
+  setDragging({ ...dragging, currentX: event.clientX, weeks: weeksFromDragDistance(distance, dragging.pixelsPerWeek) });
 }
 
 function endNodePointerDrag(event: ReactPointerEvent<HTMLButtonElement>, task: PlanNode, dragging: NodeDragState | null, setDragging: (value: null) => void, suppressClick: { current: boolean }, onReschedule: (node: PlanNode, weeks: number) => void): void {
   if (!dragging || dragging.pointerId !== event.pointerId) return;
   event.stopPropagation();
   event.currentTarget.releasePointerCapture(event.pointerId);
-  const weeks = weeksFromDragDistance(event.clientX - dragging.startX);
+  const weeks = weeksFromDragDistance(event.clientX - dragging.startX, dragging.pixelsPerWeek);
   setDragging(null);
   if (weeks === 0) return;
   suppressClick.current = true;
@@ -1020,7 +905,7 @@ function endCanvasPan(event: ReactPointerEvent<HTMLElement>, panning: { pointerI
 }
 
 async function api<T = unknown>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, { ...init, headers: { "content-type": "application/json", ...(init?.headers ?? {}) } }); const body: unknown = await response.json();
+  const response = await trackedFetch(path, { ...init, headers: { "content-type": "application/json", ...(init?.headers ?? {}) } }); const body: unknown = await response.json();
   if (!response.ok) throw new Error(formatApiError(body, response.status)); return body as T;
 }
 

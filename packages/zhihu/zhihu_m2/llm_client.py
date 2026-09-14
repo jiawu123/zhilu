@@ -63,6 +63,7 @@ def generate_json(
     user_prompt: str,
     *,
     max_tokens: int = 1024,
+    diagnostic: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Request one JSON object from deepseek-v4-pro (non-thinking mode).
 
@@ -98,6 +99,10 @@ def generate_json(
         "stream": False,
         "max_tokens": max_tokens,
     }
+    if diagnostic is not None:
+        # Exact model input, without HTTP headers or authentication configuration.
+        diagnostic["request"] = payload
+        diagnostic["api_url"] = API_URL
 
     try:
         with httpx.Client(timeout=60.0, follow_redirects=False) as client:
@@ -106,6 +111,8 @@ def generate_json(
                 headers={"Authorization": f"Bearer {api_key}"},
                 json=payload,
             )
+            if diagnostic is not None:
+                diagnostic["http_status"] = response.status_code
             response.raise_for_status()
     except httpx.TimeoutException:
         raise LLMError("DeepSeek request timed out. No automatic retry was performed.") from None
@@ -118,7 +125,23 @@ def generate_json(
     try:
         body = response.json()
     except ValueError:
+        if diagnostic is not None:
+            diagnostic["http_body_json_valid"] = False
         raise LLMError("DeepSeek HTTP response was not valid JSON.") from None
+    if diagnostic is not None:
+        diagnostic["http_body_json_valid"] = True
+        envelope = body if isinstance(body, dict) else {}
+        choices = envelope.get("choices")
+        choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+        message = choice.get("message")
+        message = message if isinstance(message, dict) else {}
+        # Capture before JSON parsing/finish_reason validation, including truncated output.
+        diagnostic["raw_content"] = message.get("content") if isinstance(message.get("content"), str) else None
+        diagnostic["finish_reason"] = choice.get("finish_reason") if isinstance(choice.get("finish_reason"), str) else None
+        diagnostic["response_id"] = envelope.get("id") if isinstance(envelope.get("id"), str) else None
+        usage = envelope.get("usage")
+        diagnostic["usage"] = {key: usage[key] for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+                               if isinstance(usage, dict) and type(usage.get(key)) is int and usage[key] >= 0}
     return parse_json_response(body)
 
 
