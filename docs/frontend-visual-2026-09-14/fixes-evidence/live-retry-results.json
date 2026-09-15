@@ -1,0 +1,76 @@
+{
+  "startedAt": "2026-09-14T09:47:16.287Z",
+  "steps": [
+    {
+      "path": "/research/live/baseline",
+      "status": 502,
+      "durationMs": 38918,
+      "error": {
+        "error": "知乎检索与证据处理：知乎证据编译失败，模型返回未通过证据校验；请查看后端诊断后重试。",
+        "code": "process_failed",
+        "controller": {
+          "coverage": {
+            "status": "insufficient",
+            "evidenceCount": 7,
+            "targetMin": 6,
+            "targetMax": 8,
+            "hasCaveat": true,
+            "gaps": [
+              {
+                "kind": "route",
+                "reason": "还有 1 个研究问题未完成，后续请求未执行或未返回有效结果。"
+              }
+            ],
+            "reviewStatus": "needs_human_review"
+          },
+          "questionCoverage": [
+            {
+              "requestId": "rq-live-86e5ae6c-8b0e-4f0b-8bf9-057123fcf8eb",
+              "evidenceIds": [
+                "ev_0b7aca283c17a810",
+                "ev_327b0247d6f34e6b",
+                "ev_370ad0d67f850cd0",
+                "ev_4f61cf4e0e391e92",
+                "ev_7a20721a0e8cd7c4",
+                "ev_8fd6fbd13fbbfac1",
+                "ev_b87b487b43f0e8ce"
+              ]
+            },
+            {
+              "requestId": "rq-live-fd00ca5e-0127-4a58-983e-1d74169062db",
+              "evidenceIds": []
+            }
+          ],
+          "rounds": 1,
+          "queryBudget": 6,
+          "queriesAttempted": 3,
+          "searchCallsAttempted": 3,
+          "cacheHits": 0,
+          "stages": [
+            {
+              "stage": "plan",
+              "durationMs": 7077,
+              "status": "ready_for_review"
+            },
+            {
+              "stage": "research",
+              "requestId": "rq-live-86e5ae6c-8b0e-4f0b-8bf9-057123fcf8eb",
+              "durationMs": 30463,
+              "status": "ok"
+            },
+            {
+              "stage": "research",
+              "requestId": "rq-live-fd00ca5e-0127-4a58-983e-1d74169062db",
+              "durationMs": 1339,
+              "status": "failed"
+            }
+          ],
+          "stopReason": "compilation_failed"
+        }
+      }
+    }
+  ],
+  "completed": false,
+  "failure": "502 /research/live/baseline",
+  "finishedAt": "2026-09-14T09:47:55.207Z"
+}

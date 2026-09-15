@@ -1,0 +1,14 @@
+# 模型 API Key。这里只保留空值，不填写真实密钥。
+
+
+cd C:\Users\YOUR_WORKING_DIRECTORY
+
+if (-not (Test-Path .env)) {
+    Copy-Item .env.example .env
+}
+
+code .env
+
+DEEPSEEK_API_KEY=""
+
+

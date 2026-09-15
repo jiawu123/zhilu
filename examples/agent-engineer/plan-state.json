@@ -1,0 +1,147 @@
+{
+  "schemaVersion": "bundle@1",
+  "projectId": "agent-engineer-demo",
+  "title": "12 周 Agent 工程师路线",
+  "goal": "在 12 周内完成一个有评测与可观测性的 Agent 项目，并形成可展示 Demo",
+  "version": 1,
+  "currentCommitId": "000001",
+  "weeklyHours": 12,
+  "nodes": [
+    {
+      "id": "m-foundation",
+      "type": "milestone",
+      "title": "基础能力与评测基线",
+      "status": "in_progress",
+      "startDate": "2026-09-14",
+      "endDate": "2026-10-04",
+      "evidenceIds": ["e-observability"],
+      "manualFields": []
+    },
+    {
+      "id": "t-eval-set",
+      "type": "task",
+      "title": "建立 20 条人工评测集",
+      "status": "ready",
+      "milestoneId": "m-foundation",
+      "startDate": "2026-09-14",
+      "endDate": "2026-09-20",
+      "estimatedHours": 3,
+      "deliverable": "eval_dataset.json 与评测说明",
+      "acceptanceCriteria": ["覆盖事实查找、跨段推理和拒答", "运行一次基线并记录结果"],
+      "evidenceIds": ["e-observability"],
+      "manualFields": ["title"]
+    },
+    {
+      "id": "t-rag-baseline",
+      "type": "task",
+      "title": "实现可复现的 RAG 基线",
+      "status": "todo",
+      "milestoneId": "m-foundation",
+      "startDate": "2026-09-21",
+      "endDate": "2026-10-04",
+      "estimatedHours": 10,
+      "deliverable": "可运行的检索与回答脚本",
+      "acceptanceCriteria": ["评测集可一键运行", "输出召回与回答结果"],
+      "evidenceIds": ["e-small-project"],
+      "manualFields": []
+    },
+    {
+      "id": "m-runtime",
+      "type": "milestone",
+      "title": "Agent Runtime 与错误恢复",
+      "status": "todo",
+      "startDate": "2026-10-05",
+      "endDate": "2026-11-01",
+      "evidenceIds": ["e-observability", "e-risk"],
+      "manualFields": []
+    },
+    {
+      "id": "t-runtime",
+      "type": "task",
+      "title": "加入状态、日志和失败恢复",
+      "status": "todo",
+      "milestoneId": "m-runtime",
+      "startDate": "2026-10-05",
+      "endDate": "2026-10-18",
+      "estimatedHours": 12,
+      "deliverable": "带 run_id 与重试记录的 Agent Runtime",
+      "acceptanceCriteria": ["每次运行可追踪", "工具失败后可以重试或终止"],
+      "evidenceIds": ["e-observability", "e-risk"],
+      "manualFields": []
+    },
+    {
+      "id": "m-demo",
+      "type": "milestone",
+      "title": "可展示项目",
+      "status": "todo",
+      "startDate": "2026-11-02",
+      "endDate": "2026-12-06",
+      "evidenceIds": ["e-small-project"],
+      "manualFields": []
+    },
+    {
+      "id": "t-demo",
+      "type": "task",
+      "title": "完成演示和复盘",
+      "status": "todo",
+      "milestoneId": "m-demo",
+      "startDate": "2026-11-16",
+      "endDate": "2026-12-06",
+      "estimatedHours": 16,
+      "deliverable": "Demo、README、评测报告",
+      "acceptanceCriteria": ["三分钟内跑通主链路", "README 说明失败案例与取舍"],
+      "evidenceIds": ["e-small-project", "e-risk"],
+      "manualFields": []
+    }
+  ],
+  "relations": [
+    { "id": "r-2-1", "type": "depends_on", "sourceId": "t-rag-baseline", "targetId": "t-eval-set", "hard": true },
+    { "id": "r-3-2", "type": "depends_on", "sourceId": "t-runtime", "targetId": "t-rag-baseline", "hard": true },
+    { "id": "r-4-3", "type": "depends_on", "sourceId": "t-demo", "targetId": "t-runtime", "hard": true }
+  ],
+  "evidence": [
+    {
+      "id": "e-observability",
+      "title": "Agent 项目需要先建立评测和可观测性",
+      "summary": "工程实践应先记录输入、工具调用和输出，再讨论复杂自治。",
+      "sourceType": "zhihu",
+      "contentType": "experience",
+      "verificationStatus": "unverified",
+      "sourceTitle": "Agent 工程实践经验（Mock）",
+      "sourceUrl": "https://www.zhihu.com/mock/observability",
+      "applicableWhen": ["目标是完成可运行项目", "需要定位失败原因"],
+      "caveats": [],
+      "riskTags": ["Mock 数据，待接入官方接口替换"],
+      "adoptionReason": "与用户需要可展示且可复盘的项目条件一致"
+    },
+    {
+      "id": "e-small-project",
+      "title": "先完成小而完整的项目",
+      "summary": "一个有数据、评测和部署说明的小项目比堆叠框架更容易验证能力。",
+      "sourceType": "zhihu",
+      "contentType": "opinion",
+      "verificationStatus": "unverified",
+      "sourceTitle": "转型经验讨论（Mock）",
+      "sourceUrl": "https://www.zhihu.com/mock/project",
+      "applicableWhen": ["每周时间有限", "需要面试作品"],
+      "caveats": ["不能替代具体岗位调研"],
+      "riskTags": ["观点性内容", "不能替代岗位调研"],
+      "adoptionReason": "路线受 12 周和每周 12 小时约束"
+    },
+    {
+      "id": "e-risk",
+      "title": "不要把框架调用当作工程能力",
+      "summary": "反方观点认为只完成 happy path 无法证明系统可靠性。",
+      "sourceType": "zhihu",
+      "contentType": "opinion",
+      "verificationStatus": "unverified",
+      "sourceTitle": "Agent 学习路线反方意见（Mock）",
+      "sourceUrl": "https://www.zhihu.com/mock/risk",
+      "applicableWhen": ["作品用于技术评估"],
+      "caveats": ["需要用测试验证"],
+      "riskTags": ["反方观点", "需要用测试验证"],
+      "adoptionReason": "用于要求错误恢复与失败案例，而非扩大功能"
+    }
+  ],
+  "updatedAt": "2026-09-11T08:00:00.000Z"
+}

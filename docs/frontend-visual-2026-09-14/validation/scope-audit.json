@@ -1,0 +1,15 @@
+{
+  "removedExistingJsxText": [],
+  "changedExistingHandlers": [],
+  "changedTopLevelFunctions": [
+    "ResearchStudio",
+    "RoadmapGraph",
+    "Sidebar",
+    "buildGraphPoints",
+    "buildDenseGraphLayout"
+  ],
+  "trackedChangedFiles": [
+    "apps/web/src/App.tsx",
+    "apps/web/src/styles.css"
+  ]
+}

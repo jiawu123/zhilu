@@ -7,3 +7,28 @@ coverage/
 !.env.example
 data/
 *.log
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Python local environment and caches
+.venv/
+__pycache__/
+.pytest_cache/
+.DS_Store
+node_modules/
+dist/
+.vite/
+coverage/
+data/
+*.tsbuildinfo
+
+# Local research runs (already tracked artifacts are intentionally left alone)
+packages/zhihu/artifacts/
+packages/zhihu/latest_*.json
+
+# Local browser QA sessions; selected evidence is copied into docs.
+.playwright-cli/
+output/playwright/

@@ -1,0 +1,75 @@
+{
+  "scope": "documentation_and_fixture_integrity_only",
+  "utf8_and_json_files_checked": 9,
+  "python_fenced_blocks_syntax_checked": 9,
+  "synthetic_case_count": 12,
+  "unexecuted_evaluation_questions": 12,
+  "development_question_count": 8,
+  "holdout_question_count": 4,
+  "new_production_code_written": false,
+  "user_repository_modified": false,
+  "new_model_api_calls": 0,
+  "notes": [
+    "检验了Markdown示例Python语法，没有执行新函数的测试。",
+    "执行了4段合成文本的旧ranker诊断，见snapshot_probe_results。",
+    "没有验证V3效果，也没有运行Windows测试或读取API凭据。",
+    "使用了公开网页查询论文与官方技术文档；0次指新增知乎业务API与模型API调用。"
+  ],
+  "files": [
+    {
+      "file": "CODEX_RETRIEVAL_OPTIMIZATION.md",
+      "utf8": true,
+      "bytes": 38800,
+      "sha256": "d7497dfe2f8e5ce683bb0c827e9d20e098be9adcb48aa119d148d3781a73cc72"
+    },
+    {
+      "file": "EVALUATION_RUBRIC.md",
+      "utf8": true,
+      "bytes": 8004,
+      "sha256": "916b2c991d5ab8374b843d8871cfbc3a5d2cf4671161f7f58d916d2c77fa8bc0"
+    },
+    {
+      "file": "README.md",
+      "utf8": true,
+      "bytes": 3157,
+      "sha256": "0b8073c93c60c4f8e8c344026dc527c4d40cb067edb17ce67a4ef706c7227edb"
+    },
+    {
+      "file": "SOURCES.md",
+      "utf8": true,
+      "bytes": 3166,
+      "sha256": "63a4538b5fb563afa776b39d483fa1de748cd48221dbcd0825fdb1d7ed62e0ae"
+    },
+    {
+      "file": "SOURCE_AUDIT.md",
+      "utf8": true,
+      "bytes": 56470,
+      "sha256": "b3d0bf095fd75802406cc6016775eca2e4b7273b2700069764e761f876008f91"
+    },
+    {
+      "file": "ZHIHU_RETRIEVAL_OPTIMIZATION.md",
+      "utf8": true,
+      "bytes": 16213,
+      "sha256": "20ae80a25eee40e816cfc362e91c06d5586710f29e8d88c8fbb230fee89206a8"
+    },
+    {
+      "file": "fixtures/evaluation_questions.json",
+      "utf8": true,
+      "bytes": 7871,
+      "sha256": "0a2399e4167e929ec046d9107cfe52278fdbbf8900d320dc6784598792d846d1"
+    },
+    {
+      "file": "fixtures/synthetic_cases.json",
+      "utf8": true,
+      "bytes": 38649,
+      "sha256": "593246cf6ee4700792b7498d191d92b31e4f956d49f9580cdbf6b0233fff0586"
+    },
+    {
+      "file": "snapshot_probe_results.json",
+      "utf8": true,
+      "bytes": 1489,
+      "sha256": "3aebb112972ca5facee7a95dd9f7af41ace3a4b21687679d4b5d0804df8a2c89"
+    }
+  ],
+  "new_zhihu_api_calls": 0
+}

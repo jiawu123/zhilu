@@ -1,0 +1,13 @@
+
+> @zhilu/web@0.0.1 build /Users/norda/Development/zhilu-roadmapper/zhilu/apps/web
+> vite build
+
+vite v7.3.6 building client environment for production...
+transforming...
+✓ 48 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.53 kB │ gzip:  0.34 kB
+dist/assets/index-CMXdWBb6.css   49.49 kB │ gzip: 11.05 kB
+dist/assets/index-ByKA5Bjp.js   291.46 kB │ gzip: 91.71 kB
+✓ built in 1.58s

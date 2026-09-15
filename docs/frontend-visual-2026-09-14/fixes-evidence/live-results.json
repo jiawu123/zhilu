@@ -1,0 +1,104 @@
+{
+  "startedAt": "2026-09-14T09:38:13.049Z",
+  "steps": [
+    {
+      "path": "/api/capabilities",
+      "status": 200,
+      "durationMs": 30
+    },
+    {
+      "path": "/api/interviews",
+      "status": 201,
+      "durationMs": 6710
+    },
+    {
+      "path": "/api/interviews/interview-5dc375ef-a513-4d38-8bc5-85af65348bde/answers",
+      "status": 200,
+      "durationMs": 6840
+    },
+    {
+      "path": "/api/interviews/interview-5dc375ef-a513-4d38-8bc5-85af65348bde/answers",
+      "status": 200,
+      "durationMs": 8326
+    },
+    {
+      "path": "/api/interviews/interview-5dc375ef-a513-4d38-8bc5-85af65348bde/answers",
+      "status": 200,
+      "durationMs": 7943
+    },
+    {
+      "path": "/api/interviews/interview-5dc375ef-a513-4d38-8bc5-85af65348bde/answers",
+      "status": 200,
+      "durationMs": 5597
+    },
+    {
+      "path": "/api/interviews/interview-5dc375ef-a513-4d38-8bc5-85af65348bde/answers",
+      "status": 200,
+      "durationMs": 4700
+    },
+    {
+      "path": "/api/interviews/interview-5dc375ef-a513-4d38-8bc5-85af65348bde/answers",
+      "status": 200,
+      "durationMs": 10817
+    },
+    {
+      "path": "/api/projects",
+      "status": 201,
+      "durationMs": 17
+    },
+    {
+      "path": "/api/projects/project-d23edba4/research/live/baseline",
+      "status": 502,
+      "durationMs": 7640,
+      "error": {
+        "error": "研究问题规划：研究问题规划失败，模型输出未通过校验；尚未开始知乎检索。",
+        "code": "process_failed",
+        "controller": {
+          "coverage": {
+            "status": "insufficient",
+            "evidenceCount": 0,
+            "targetMin": 6,
+            "targetMax": 8,
+            "hasCaveat": false,
+            "gaps": [
+              {
+                "kind": "evidence_count",
+                "reason": "尚未取得研究证据"
+              }
+            ],
+            "reviewStatus": "needs_human_review"
+          },
+          "questionCoverage": [],
+          "rounds": 0,
+          "queryBudget": 6,
+          "queriesAttempted": 0,
+          "searchCallsAttempted": 0,
+          "cacheHits": 0,
+          "stages": [
+            {
+              "stage": "plan",
+              "durationMs": 7635,
+              "status": "failed"
+            }
+          ],
+          "stopReason": "invalid_plan_output"
+        }
+      }
+    }
+  ],
+  "capabilities": {
+    "interview": true,
+    "research": true,
+    "researchEnabled": true,
+    "replan": true
+  },
+  "interview": {
+    "id": "interview-5dc375ef-a513-4d38-8bc5-85af65348bde",
+    "status": "complete",
+    "questionCount": 25
+  },
+  "projectId": "project-d23edba4",
+  "failure": "Validation request failed: 502 /api/projects/project-d23edba4/research/live/baseline",
+  "completed": false,
+  "finishedAt": "2026-09-14T09:39:11.677Z"
+}

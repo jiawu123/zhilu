@@ -1,0 +1,14 @@
+[
+  {
+    "level": "error",
+    "message": "Error: prompt() is not supported.\n    at addTask (http://127.0.0.1:5178/src/App.tsx?t=1789370833494:107:26)\n    at onAddTask (http://127.0.0.1:5178/src/App.tsx?t=1789370833494:528:31)\n    at executeDispatch (http://127.0.0.1:5178/node_modules/.vite/deps/react-dom_client.js?v=92a623c8:14738:11)\n    at runWithFiberInDEV (http://127.0.0.1:5178/node_modules/.vite/deps/react-dom_client.js?v=92a623c8:1131:72)\n    at processDispatchQueue (http://127.0.0.1:5178/node_modules/.vite/deps/react-dom_client.js?v=92a623c8:14774:37)\n    at http://127.0.0.1:5178/node_modules/.vite/deps/react-dom_client.js?v=92a623c8:15168:11\n    at batchedUpdates$1 (http://127.0.0.1:5178/node_modules/.vite/deps/react-dom_client.js?v=92a623c8:2767:42)\n    at dispatchEventForPluginEventSystem (http://127.0.0.1:5178/node_modules/.vite/deps/react-dom_client.js?v=92a623c8:14879:9)\n    at dispatchEvent (http://127.0.0.1:5178/node_modules/.vite/deps/react-dom_client.js?v=92a623c8:18442:13)\n    at dispatchDiscreteEvent (http://127.0.0.1:5178/node_modules/.vite/deps/react-dom_client.js?v=92a623c8:18423:62)",
+    "timestamp": "2026-09-14T07:45:42.598Z",
+    "url": "http://127.0.0.1:5178/src/App.tsx?t=1789370833494"
+  },
+  {
+    "level": "error",
+    "message": "Error: prompt() is not supported.\n    at addTask (http://127.0.0.1:5178/src/App.tsx?t=1789370833494:107:26)\n    at onAddTask (http://127.0.0.1:5178/src/App.tsx?t=1789370833494:528:31)\n    at executeDispatch (http://127.0.0.1:5178/node_modules/.vite/deps/react-dom_client.js?v=92a623c8:14738:11)\n    at runWithFiberInDEV (http://127.0.0.1:5178/node_modules/.vite/deps/react-dom_client.js?v=92a623c8:1131:72)\n    at processDispatchQueue (http://127.0.0.1:5178/node_modules/.vite/deps/react-dom_client.js?v=92a623c8:14774:37)\n    at http://127.0.0.1:5178/node_modules/.vite/deps/react-dom_client.js?v=92a623c8:15168:11\n    at batchedUpdates$1 (http://127.0.0.1:5178/node_modules/.vite/deps/react-dom_client.js?v=92a623c8:2767:42)\n    at dispatchEventForPluginEventSystem (http://127.0.0.1:5178/node_modules/.vite/deps/react-dom_client.js?v=92a623c8:14879:9)\n    at dispatchEvent (http://127.0.0.1:5178/node_modules/.vite/deps/react-dom_client.js?v=92a623c8:18442:13)\n    at dispatchDiscreteEvent (http://127.0.0.1:5178/node_modules/.vite/deps/react-dom_client.js?v=92a623c8:18423:62)",
+    "timestamp": "2026-09-14T07:46:02.047Z",
+    "url": "http://127.0.0.1:5178/src/App.tsx?t=1789370833494"
+  }
+]

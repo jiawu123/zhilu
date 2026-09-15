@@ -1,0 +1,73 @@
+{
+  "protocol_version": "m2-entry-v0.1",
+  "run_id": "entry_0371b535798d4a0585634c06b613b351",
+  "action": "plan",
+  "ok": true,
+  "data": {
+    "planner_version": "m2-query-planner-v0.1.0",
+    "status": "ready_for_review",
+    "generation_basis": "model_proposal_not_evidence",
+    "input_scope": "goal_and_user_context_only",
+    "requires_human_review": true,
+    "human_approved": false,
+    "semantic_quality_checked": false,
+    "coverage_verified": false,
+    "queries_executed": false,
+    "new_zhihu_search": false,
+    "evidence_compilation_performed": false,
+    "goal": "8周内完成一个可运行、带基本测试的 Agent 小项目。",
+    "user_context": {
+      "python_level": "beginner",
+      "weekly_hours": 10
+    },
+    "limits": {
+      "max_questions": 3,
+      "queries_per_question": 2
+    },
+    "reason": "目标包含产物和期限，但实现方法、检验标准和风险需分别调研。",
+    "research_questions": [
+      {
+        "question_id": "rq_8c7f1b295cfd18f6",
+        "research_question": "Python 初学者在 8 周内完成可运行 Agent 小项目，适合采用哪些最小可行实现路径？",
+        "evidence_need": "method",
+        "why_needed": "确定适合初学者的项目范围和关键技术选型，避免不切实际的方案。",
+        "queries": [
+          "Python 初学者 Agent 小项目 最小可行实现",
+          "beginner-friendly agent project minimal implementation"
+        ]
+      },
+      {
+        "question_id": "rq_855e4192d60ab914",
+        "research_question": "对于 Python 初学者编写的 Agent 项目，应使用哪些基本测试方法来验证核心功能？",
+        "evidence_need": "verification",
+        "why_needed": "明确如何在有限时间内加入基本测试，确保项目可运行且验证有效。",
+        "queries": [
+          "Python 基础测试 单元测试 Agent 功能验证",
+          "simple tests for Python agent project"
+        ]
+      },
+      {
+        "question_id": "rq_0417bc4627c78815",
+        "research_question": "Python 初学者在 8 周内边学边做 Agent 项目时，常见的技术难点和时间风险有哪些？",
+        "evidence_need": "risk",
+        "why_needed": "识别可能阻碍项目按期完成的风险点，为后续调整计划提供依据。",
+        "queries": [
+          "Python 新手 项目 时间风险 Agent 开发挑战",
+          "common pitfalls for beginner Python project timeline"
+        ]
+      }
+    ],
+    "clarification_questions": [],
+    "planned_query_count": 6
+  },
+  "error": null,
+  "metrics": {
+    "planner_calls_attempted": 1,
+    "new_zhihu_search": false,
+    "search_calls_attempted": 0,
+    "compiler_calls_attempted": 0,
+    "candidate_count": 0,
+    "evidence_count": 0,
+    "automatic_retries": false
+  }
+}

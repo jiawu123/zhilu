@@ -1,0 +1,191 @@
+{
+  "layout": [
+    {
+      "width": 1280,
+      "height": 800,
+      "composer": {
+        "top": 616,
+        "bottom": 771,
+        "left": 310,
+        "right": 970,
+        "height": 155
+      },
+      "axis": {
+        "top": 526,
+        "bottom": 590,
+        "left": 0,
+        "right": 1280,
+        "height": 64
+      },
+      "column": {
+        "top": 131,
+        "bottom": 508,
+        "left": 392,
+        "right": 684,
+        "height": 377
+      },
+      "header": {
+        "top": 0,
+        "bottom": 66,
+        "left": 0,
+        "right": 1280,
+        "height": 66
+      },
+      "overflow": false
+    },
+    {
+      "width": 1280,
+      "height": 600,
+      "composer": {
+        "top": 430,
+        "bottom": 576,
+        "left": 310,
+        "right": 970,
+        "height": 146
+      },
+      "axis": {
+        "top": 336,
+        "bottom": 400,
+        "left": 0,
+        "right": 1280,
+        "height": 64
+      },
+      "column": {
+        "top": 109,
+        "bottom": 324,
+        "left": 392,
+        "right": 684,
+        "height": 215
+      },
+      "header": {
+        "top": 0,
+        "bottom": 66,
+        "left": 0,
+        "right": 1280,
+        "height": 66
+      },
+      "overflow": false
+    },
+    {
+      "width": 768,
+      "height": 1024,
+      "composer": {
+        "top": 840,
+        "bottom": 995,
+        "left": 54,
+        "right": 714,
+        "height": 155
+      },
+      "axis": {
+        "top": 750,
+        "bottom": 814,
+        "left": 0,
+        "right": 768,
+        "height": 64
+      },
+      "column": {
+        "top": 131,
+        "bottom": 732,
+        "left": 392,
+        "right": 684,
+        "height": 601
+      },
+      "header": {
+        "top": 0,
+        "bottom": 66,
+        "left": 0,
+        "right": 768,
+        "height": 66
+      },
+      "overflow": false
+    },
+    {
+      "width": 390,
+      "height": 844,
+      "composer": {
+        "top": 660,
+        "bottom": 815,
+        "left": 15,
+        "right": 375,
+        "height": 155
+      },
+      "axis": {
+        "top": 570,
+        "bottom": 634,
+        "left": 0,
+        "right": 390,
+        "height": 64
+      },
+      "column": {
+        "top": 125,
+        "bottom": 552,
+        "left": 342,
+        "right": 612,
+        "height": 427
+      },
+      "header": {
+        "top": 0,
+        "bottom": 64,
+        "left": 0,
+        "right": 390,
+        "height": 64
+      },
+      "overflow": false
+    }
+  ],
+  "requests": [
+    {
+      "path": "/api/projects/hybrid-preview/chat",
+      "body": {
+        "message": "项目资源已发生变化。",
+        "baseVersion": 1
+      }
+    },
+    {
+      "path": "/api/projects/hybrid-preview/chat/apply",
+      "body": {
+        "proposalId": "proposal-1"
+      }
+    },
+    {
+      "path": "/api/projects/hybrid-preview/chat",
+      "body": {
+        "message": "关联任务：集成验收后的任务\n关联任务 ID：task-2\n请结合这些任务及其依赖关系评估调整，并提供可确认的修改方案。\n\n变更说明：补充任务背景。",
+        "baseVersion": 2
+      }
+    },
+    {
+      "path": "/api/projects/hybrid-preview/chat/discard",
+      "body": {
+        "proposalId": "proposal-3"
+      }
+    },
+    {
+      "path": "/api/projects/hybrid-preview/chat",
+      "body": {
+        "message": "关联阶段：2026-09-15 — 2026-09-18\n关联任务 ID：task-1、task-2、task-3、task-4、task-5、task-6、task-7、task-8、task-9\n请结合这些任务及其依赖关系评估调整，并提供可确认的修改方案。\n\n变更说明：调整本阶段安排。",
+        "baseVersion": 2
+      }
+    },
+    {
+      "path": "/api/projects/hybrid-preview/chat/discard",
+      "body": {
+        "proposalId": "proposal-5"
+      }
+    },
+    {
+      "path": "/api/projects/hybrid-preview/chat",
+      "body": {
+        "message": "失败时保留的变更说明",
+        "baseVersion": 3
+      }
+    }
+  ],
+  "browserErrors": [],
+  "authGate": true,
+  "history": true,
+  "proposalApply": true,
+  "staleGuard": true,
+  "failurePreservesInput": true,
+  "automaticResends": 0
+}

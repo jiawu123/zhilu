@@ -1,0 +1,25 @@
+{
+  "goal": "8周内完成一个可运行、带基本测试的 Agent 小项目。",
+  "user_context": {
+    "current_situation": "Python 初学者，已掌握函数和基本文件操作",
+    "weekly_hours": 10,
+    "constraints": [
+      "只能使用业余时间"
+    ],
+    "target_date": "2026-11-06",
+    "success_criteria": [
+      "演示一个可运行项目，并运行基本自动化测试"
+    ],
+    "non_goals": [
+      "不以实现多智能体平台为目标"
+    ],
+    "must_have_outcomes": [
+      "项目代码",
+      "基本测试",
+      "运行说明"
+    ],
+    "tradeoffs": [
+      "优先完成小范围闭环"
+    ]
+  }
+}

@@ -1,0 +1,247 @@
+{
+  "schema_version": "zhihu-retrieval-eval-questions-v1",
+  "status": "proposed_not_executed",
+  "split_note": "8题开发集，4题留出集。首次采集前锁定。没有真实候选或人工标签。",
+  "questions": [
+    {
+      "case_id": "learn-01",
+      "domain": "learning",
+      "split": "development",
+      "goal": "8周内完成一个带基本测试的Agent项目。",
+      "user_context": {},
+      "request": {
+        "id": "rq-eval-learn-01",
+        "question": "初学者怎样验证工具调用参数符合预期？",
+        "searchQueries": [
+          "Agent 工具调用 参数 测试",
+          "智能体 参数检查 固定样例"
+        ],
+        "relevantUserConditions": [],
+        "evidenceLimit": 2
+      },
+      "capture_status": "not_collected",
+      "human_label_status": "needs_human_review",
+      "grades": null
+    },
+    {
+      "case_id": "learn-02",
+      "domain": "learning",
+      "split": "development",
+      "goal": "建立可检查的Python学习练习。",
+      "user_context": {},
+      "request": {
+        "id": "rq-eval-learn-02",
+        "question": "怎样检查练习程序的输出，而不是只看它能运行？",
+        "searchQueries": [
+          "Python 练习 输出 检查",
+          "程序 固定输入 期望结果 比较"
+        ],
+        "relevantUserConditions": [],
+        "evidenceLimit": 2
+      },
+      "capture_status": "not_collected",
+      "human_label_status": "needs_human_review",
+      "grades": null
+    },
+    {
+      "case_id": "learn-03",
+      "domain": "learning",
+      "split": "holdout",
+      "goal": "为初学者项目选择测试学习资源。",
+      "user_context": {},
+      "request": {
+        "id": "rq-eval-learn-03",
+        "question": "挑选Agent测试资源时应核对哪些适用条件？",
+        "searchQueries": [
+          "Agent 测试 资源 适用条件",
+          "智能体 测试教程 前提 限制"
+        ],
+        "relevantUserConditions": [],
+        "evidenceLimit": 2
+      },
+      "capture_status": "not_collected",
+      "human_label_status": "needs_human_review",
+      "grades": null
+    },
+    {
+      "case_id": "career-01",
+      "domain": "career",
+      "split": "development",
+      "goal": "准备一份能展示能力的转岗作品集。",
+      "user_context": {},
+      "request": {
+        "id": "rq-eval-career-01",
+        "question": "怎样判断作品集是否展示了实际解决问题的能力？",
+        "searchQueries": [
+          "作品集 能力 验证 项目",
+          "转岗 作品集 展示 实际问题"
+        ],
+        "relevantUserConditions": [],
+        "evidenceLimit": 2
+      },
+      "capture_status": "not_collected",
+      "human_label_status": "needs_human_review",
+      "grades": null
+    },
+    {
+      "case_id": "career-02",
+      "domain": "career",
+      "split": "development",
+      "goal": "通过经验访谈理解一个陌生岗位。",
+      "user_context": {},
+      "request": {
+        "id": "rq-eval-career-02",
+        "question": "访谈从业者时怎样获取具体工作经历而不是泛泛建议？",
+        "searchQueries": [
+          "职业访谈 具体经历 提问",
+          "从业者 访谈 工作案例 方法"
+        ],
+        "relevantUserConditions": [],
+        "evidenceLimit": 2
+      },
+      "capture_status": "not_collected",
+      "human_label_status": "needs_human_review",
+      "grades": null
+    },
+    {
+      "case_id": "career-03",
+      "domain": "career",
+      "split": "holdout",
+      "goal": "评估一个兼职学习计划是否适合自己。",
+      "user_context": {},
+      "request": {
+        "id": "rq-eval-career-03",
+        "question": "兼职学习者怎样识别课程中的不现实时间承诺？",
+        "searchQueries": [
+          "兼职 学习 课程 时间 承诺",
+          "课程 学习周期 经验 限制"
+        ],
+        "relevantUserConditions": [],
+        "evidenceLimit": 2
+      },
+      "capture_status": "not_collected",
+      "human_label_status": "needs_human_review",
+      "grades": null
+    },
+    {
+      "case_id": "team-01",
+      "domain": "small_team",
+      "split": "development",
+      "goal": "三人团队每周推进一个小项目。",
+      "user_context": {},
+      "request": {
+        "id": "rq-eval-team-01",
+        "question": "怎样检查周任务产物是否真正完成？",
+        "searchQueries": [
+          "小团队 周任务 产物 验收",
+          "团队 复盘 检查 完成标准"
+        ],
+        "relevantUserConditions": [],
+        "evidenceLimit": 2
+      },
+      "capture_status": "not_collected",
+      "human_label_status": "needs_human_review",
+      "grades": null
+    },
+    {
+      "case_id": "team-02",
+      "domain": "small_team",
+      "split": "development",
+      "goal": "为小团队建立简明分工。",
+      "user_context": {},
+      "request": {
+        "id": "rq-eval-team-02",
+        "question": "任务延期时怎样区分需求变化和执行阻碍？",
+        "searchQueries": [
+          "团队 任务延期 原因 复盘",
+          "小团队 需求变化 执行阻碍"
+        ],
+        "relevantUserConditions": [],
+        "evidenceLimit": 2
+      },
+      "capture_status": "not_collected",
+      "human_label_status": "needs_human_review",
+      "grades": null
+    },
+    {
+      "case_id": "team-03",
+      "domain": "small_team",
+      "split": "holdout",
+      "goal": "独立开发者先验证一个小产品需求。",
+      "user_context": {},
+      "request": {
+        "id": "rq-eval-team-03",
+        "question": "产品开发前怎样用小规模访谈检查需求是否具体？",
+        "searchQueries": [
+          "独立开发 产品 需求 访谈",
+          "小规模 用户访谈 验证问题"
+        ],
+        "relevantUserConditions": [],
+        "evidenceLimit": 2
+      },
+      "capture_status": "not_collected",
+      "human_label_status": "needs_human_review",
+      "grades": null
+    },
+    {
+      "case_id": "craft-01",
+      "domain": "noncoding",
+      "split": "development",
+      "goal": "做一张可以稳定使用的小木桌。",
+      "user_context": {},
+      "request": {
+        "id": "rq-eval-craft-01",
+        "question": "怎样检查自制木桌是否稳固？",
+        "searchQueries": [
+          "自制 木桌 稳固 检查",
+          "木桌 连接 松动 检验"
+        ],
+        "relevantUserConditions": [],
+        "evidenceLimit": 2
+      },
+      "capture_status": "not_collected",
+      "human_label_status": "needs_human_review",
+      "grades": null
+    },
+    {
+      "case_id": "craft-02",
+      "domain": "noncoding",
+      "split": "development",
+      "goal": "改善面包练习的可重复性。",
+      "user_context": {},
+      "request": {
+        "id": "rq-eval-craft-02",
+        "question": "怎样记录一次烘焙练习以便比较下一次结果？",
+        "searchQueries": [
+          "烘焙 练习 记录 比较",
+          "面包 实验 配方 结果 复盘"
+        ],
+        "relevantUserConditions": [],
+        "evidenceLimit": 2
+      },
+      "capture_status": "not_collected",
+      "human_label_status": "needs_human_review",
+      "grades": null
+    },
+    {
+      "case_id": "craft-03",
+      "domain": "noncoding",
+      "split": "holdout",
+      "goal": "完成一个小型摄影练习。",
+      "user_context": {},
+      "request": {
+        "id": "rq-eval-craft-03",
+        "question": "怎样根据拍摄结果检查曝光练习中的问题？",
+        "searchQueries": [
+          "摄影 曝光 练习 检查",
+          "曝光 练习 结果 比较"
+        ],
+        "relevantUserConditions": [],
+        "evidenceLimit": 2
+      },
+      "capture_status": "not_collected",
+      "human_label_status": "needs_human_review",
+      "grades": null
+    }
+  ]
+}

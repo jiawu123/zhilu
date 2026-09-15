@@ -1,0 +1,19 @@
+{
+  "name": "@zhilu/server",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@zhilu/agent-runtime": "workspace:*",
+    "@zhilu/contracts": "workspace:*",
+    "@zhilu/plan-engine": "workspace:*",
+    "fflate": "^0.8.3"
+  },
+  "scripts": {
+    "smoke:zhihu": "tsx scripts/smoke_zhihu_provider.ts",
+    "dev": "tsx watch src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "build": "tsup src/index.ts --format esm --out-dir dist --clean"
+  }
+}

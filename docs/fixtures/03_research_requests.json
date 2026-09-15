@@ -1,0 +1,44 @@
+[
+  {
+    "id": "fixture-controller-rq-01",
+    "question": "Python 初学者完成一个简单 Agent 项目需要先掌握哪些必要技能？",
+    "searchQueries": [
+      "Python 初学者 Agent 项目 必要基础",
+      "Agent 开发 入门 最小技能集"
+    ],
+    "relevantUserConditions": [
+      "Python 初学者，已掌握函数和基本文件操作",
+      "每周可投入10小时",
+      "只能使用业余时间"
+    ],
+    "evidenceLimit": 4
+  },
+  {
+    "id": "fixture-controller-rq-02",
+    "question": "每周投入十小时的初学者应如何控制 Agent 项目的功能范围？",
+    "searchQueries": [
+      "Agent 新手 项目 范围 控制",
+      "业余时间 Agent 项目 最小可用 实践"
+    ],
+    "relevantUserConditions": [
+      "Python 初学者，已掌握函数和基本文件操作",
+      "每周可投入10小时",
+      "只能使用业余时间"
+    ],
+    "evidenceLimit": 4
+  },
+  {
+    "id": "fixture-controller-rq-03",
+    "question": "初学者怎样为 Agent 项目编写基本测试并验收项目是否可用？",
+    "searchQueries": [
+      "Agent 项目 初学者 自动化测试",
+      "Python Agent 项目 验收 调试 实践"
+    ],
+    "relevantUserConditions": [
+      "Python 初学者，已掌握函数和基本文件操作",
+      "每周可投入10小时",
+      "只能使用业余时间"
+    ],
+    "evidenceLimit": 4
+  }
+]

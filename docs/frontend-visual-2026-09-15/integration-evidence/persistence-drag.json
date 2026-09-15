@@ -1,0 +1,13 @@
+{
+  "draftRestored": true,
+  "accountIsolation": true,
+  "dragWeeks": -1,
+  "regrouped": true,
+  "patches": [
+    {
+      "adjustmentReason": "在路线流程图中拖动，提前 1 周",
+      "startDate": "2026-09-15",
+      "endDate": "2026-09-15"
+    }
+  ]
+}
